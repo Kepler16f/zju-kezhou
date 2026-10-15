@@ -1,10 +1,12 @@
 /// pages/settings_page.dart — 设置页（Helechron Option 风格）：分组卡片列表。
-/// 组：账号（教务网登录）/ 数据（数据源+方案+学期+运行）/ 通用（诊断/合规）/ 关于。
+/// 组：账号（教务网登录）/ 数据（数据源+方案+学期+运行）/ 通用（诊断/合规）/ AI 解读 / 关于。
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../data/ai_config.dart';
+import '../data/ai_prompts.dart';
 import '../data/app_version.dart';
 import '../data/diagnostic_log.dart';
 
@@ -27,6 +29,9 @@ class SettingsPage extends StatefulWidget {
   final String? loggedInAs; // 已记住的学号（自动登录状态）
   final DateTime? lastDataAt; // 上次成功拉取数据的时间
   final VoidCallback onClearData;
+  final AiConfig aiConfig; // AI 解读配置（默认关闭）
+  final Future<void> Function(AiConfig config) onAiConfigChange;
+  final Future<String> Function(AiConfig config) onTestAi;
 
   const SettingsPage(
       {super.key, required this.mode, required this.onModeChange,
@@ -34,24 +39,25 @@ class SettingsPage extends StatefulWidget {
       required this.current, required this.onCurrentChange,
       required this.majors, required this.userCtl, required this.passCtl,
       required this.pasteCtl, required this.busy, required this.onRun,
-      this.notice, this.loggedInAs, this.lastDataAt, required this.onClearData});
+      this.notice, this.loggedInAs, this.lastDataAt, required this.onClearData,
+      required this.aiConfig, required this.onAiConfigChange,
+      required this.onTestAi});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  static const _semesters = [
-    '2023-A','2023-B','2024-A','2024-B','2025-A','2025-B',
-    '2026-A','2026-B','2027-A','2027-B',
-  ];
-
   /// 已登录时默认收起学号/密码输入区（需求 #2：不用一直开着）。
   /// null = 跟随登录状态（已登录收起、未登录展开）；true/false = 用户手动切换。
   bool? _credsExpanded;
 
-  bool get _showCreds =>
-      _credsExpanded ?? (widget.loggedInAs == null);
+  bool get _showCreds => _credsExpanded ?? (widget.loggedInAs == null);
+
+  static const _semesters = [
+    '2023-A','2023-B','2024-A','2024-B','2025-A','2025-B',
+    '2026-A','2026-B','2027-A','2027-B',
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -70,6 +76,9 @@ class _SettingsPageState extends State<SettingsPage> {
     final onMajorChange = widget.onMajorChange;
     final onCurrentChange = widget.onCurrentChange;
     final lastDataAt = widget.lastDataAt;
+    final aiConfig = widget.aiConfig;
+    final onAiConfigChange = widget.onAiConfigChange;
+    final onTestAi = widget.onTestAi;
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
@@ -249,13 +258,15 @@ class _SettingsPageState extends State<SettingsPage> {
               ListTile(
                 leading: const Icon(Icons.privacy_tip_outlined),
                 title: const Text('数据与合规'),
-                subtitle: const Text('凭证沙箱存储、Cookie 仅内存、只读通道',
+                subtitle: const Text('凭证沙箱存储、Cookie 仅内存、只读通道；AI 解读默认关闭',
                     style: TextStyle(fontSize: 11)),
                 onTap: () => _showCompliance(context),
               ),
             ],
           ),
         ),
+        _groupHeader('AI 解读'),
+        _AiCard(config: aiConfig, onSave: onAiConfigChange, onTest: onTestAi),
         _groupHeader('关于'),
         const Card(
           child: Column(
@@ -263,7 +274,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ListTile(
                 leading: Icon(Icons.info_outline),
                 title: Text('课舟 v$kAppVersion'),
-                subtitle: Text('培养方案结构化与选课风险审计；学分计算全部本地完成',
+                subtitle: Text('培养方案结构化与选课风险审计；学分/缺口/冲突全部在本机计算；AI 仅做文字解读（可选、可关闭）',
                     style: TextStyle(fontSize: 11)),
               ),
               Divider(height: 1, indent: 16),
@@ -367,8 +378,10 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('数据与合规'),
+        // AI 段引用 ai_prompts.dart 的唯一常量（禁止在本页另写一份，文案分叉即事故）
         content: const Text('凭证存储：App 沙箱私有文件（用户态隔离，混淆编码）；'
-            '会话 Cookie 仅驻内存，退出即清除；教务通道只读、无任何写操作。'),
+            '会话 Cookie 仅驻内存，退出即清除；教务通道只读、无任何写操作。\n\n'
+            '$kAiComplianceDataNote'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -382,6 +395,208 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: const Icon(Icons.delete_outline),
             label: const Text('一键清除全部本地数据'),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// AI 解读配置卡（自持编辑状态；保存/测试经回调上抛，密钥输入默认遮蔽）。
+/// 文案（标题/发送范围）统一来自 ai_prompts.dart 常量，禁止在本页另写一份（合规一致性）。
+class _AiCard extends StatefulWidget {
+  final AiConfig config;
+  final Future<void> Function(AiConfig config) onSave;
+  final Future<String> Function(AiConfig config) onTest;
+  const _AiCard(
+      {required this.config, required this.onSave, required this.onTest});
+
+  @override
+  State<_AiCard> createState() => _AiCardState();
+}
+
+class _AiCardState extends State<_AiCard> {
+  late AiProvider _provider = widget.config.provider;
+  late final TextEditingController _base =
+      TextEditingController(text: widget.config.baseUrl);
+  late final TextEditingController _key =
+      TextEditingController(text: widget.config.apiKey);
+  late final TextEditingController _model =
+      TextEditingController(text: widget.config.model);
+  bool _busy = false;
+  bool _obscure = true;
+  String? _result;
+  late AiConfig _synced = widget.config;
+
+  @override
+  void didUpdateWidget(covariant _AiCard old) {
+    super.didUpdateWidget(old);
+    // 外部配置变化（启动加载 / 保存回写 / 一键清除）必须同步回编辑框。
+    // 少做这一步：清除数据后卡片仍持有旧密钥，用户只按一次"保存"就把密钥复活
+    // （评审实测的"一键清除不闭环"路径）；清除时 config 归 none，此处即清空输入。
+    if (!identical(widget.config, _synced)) {
+      _synced = widget.config;
+      _provider = widget.config.provider;
+      _base.text = widget.config.baseUrl;
+      _key.text = widget.config.apiKey;
+      _model.text = widget.config.model;
+    }
+  }
+
+  @override
+  void dispose() {
+    _base.dispose();
+    _key.dispose();
+    _model.dispose();
+    super.dispose();
+  }
+
+  AiConfig _collect() => AiConfig(
+        provider: _provider,
+        baseUrl: AiConfig.normalizeBaseUrl(_base.text),
+        apiKey: _key.text.trim(),
+        model: _model.text.trim(),
+      );
+
+  Future<void> _save() async {
+    final cfg = _collect();
+    await widget.onSave(cfg);
+    _synced = cfg; // 保存即视为已同步，避免 didUpdateWidget 回写输入框
+    if (mounted) {
+      setState(() => _result = cfg.enabled
+          ? '已保存并启用'
+          : '已保存（尚未启用：需填写以 http(s):// 开头的接口地址与 API Key）');
+    }
+  }
+
+  Future<void> _test() async {
+    final cfg = _collect();
+    await widget.onSave(cfg); // 测试即保存：避免"测了一个没存下来的配置"
+    _synced = cfg;
+    if (mounted) {
+      setState(() {
+        _busy = true;
+        _result = null;
+      });
+    }
+    final r = await widget.onTest(cfg);
+    if (mounted) {
+      setState(() {
+        _busy = false;
+        _result = r;
+      });
+    }
+  }
+
+  void _onProviderChanged(AiProvider p) {
+    setState(() {
+      _provider = p;
+      final preset = AiConfig.preset(p);
+      if (preset.baseUrl.isNotEmpty && _base.text.trim().isEmpty) {
+        _base.text = preset.baseUrl;
+      }
+      if (preset.model.isNotEmpty && _model.text.trim().isEmpty) {
+        _model.text = preset.model;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 12, 16, 2),
+            child: Text(kAiPanelTitle,
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child:
+                Text(kAiSendNotice, style: TextStyle(fontSize: 11, color: Colors.grey)),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: SegmentedButton<AiProvider>(
+              segments: const [
+                ButtonSegment(value: AiProvider.none, label: Text('关闭')),
+                ButtonSegment(value: AiProvider.openai, label: Text('OpenAI 兼容')),
+                ButtonSegment(value: AiProvider.anthropic, label: Text('Anthropic')),
+                ButtonSegment(value: AiProvider.dify, label: Text('Dify')),
+              ],
+              selected: {_provider},
+              onSelectionChanged: (s) => _onProviderChanged(s.first),
+            ),
+          ),
+          if (_provider != AiProvider.none) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: TextField(
+                controller: _base,
+                decoration: const InputDecoration(
+                    labelText: '接口地址（例：https://api.deepseek.com/v1 或 https://api.anthropic.com）',
+                    border: OutlineInputBorder()),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: TextField(
+                controller: _key,
+                obscureText: _obscure,
+                decoration: InputDecoration(
+                  labelText: 'API Key（仅存本机沙箱）',
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                        _obscure ? Icons.visibility_off : Icons.visibility,
+                        size: 18),
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: TextField(
+                controller: _model,
+                decoration: const InputDecoration(
+                    labelText: '模型名（例：deepseek-chat / claude-opus-5-5；Dify 可留空）',
+                    border: OutlineInputBorder()),
+              ),
+            ),
+          ],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Row(
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: _busy ? null : _save,
+                  icon: const Icon(Icons.save_outlined, size: 18),
+                  label: const Text('保存'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: (_busy || _provider == AiProvider.none) ? null : _test,
+                  icon: _busy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.network_check, size: 18),
+                  label: const Text('测试连接'),
+                ),
+              ],
+            ),
+          ),
+          if (_result != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(_result!,
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: _result!.contains('正常') ? Colors.green : Colors.grey)),
+            ),
         ],
       ),
     );

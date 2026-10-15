@@ -23,6 +23,8 @@ import 'credential_store.dart';
 import 'diagnostic_log.dart';
 import 'plan_models.dart';
 import 'request_throttle.dart';
+import 'xk_models.dart';
+import 'xk_parse.dart';
 import 'zju_parse.dart';
 import 'zju_parse_ext.dart';
 
@@ -1434,5 +1436,348 @@ class ZjuClient {
       if (e.location.isNotEmpty) 'jsmc': e.location,
       if (e.seat.isNotEmpty) 'zwh': e.seat,
     };
+  }
+
+  // ── 业务接口：选课(xsxk)（只读；提交/退课等写接口绝不调用，见 docs/选课模块接入说明.md）──
+
+  static const _xkIndexPath = 'xsxk/zzxkyzb_cxZzxkYzbIndex.html';
+  static const _xkListPath = 'xsxk/zzxkyzb_cxZzxkYzbPartDisplay.html';
+  static const _xkMenu = 'N253512';
+
+  /// 缓存键分量编码：base64url（去掉 '='）保住原值，避免 _cacheSafe 把不同 xkkzId
+  /// 清洗成同一个键（如 'AB-CD' 与 'ABCD' 撞键，评审L2）。
+  static String _cacheToken(String s) =>
+      base64Url.encode(utf8.encode(s)).replaceAll('=', '');
+
+  /// 上次选课入口是否来自缓存（UI 据此提示"离线/可能过期"）。
+  bool lastXkIndexFromCache = false;
+
+  /// 选课首页：入口（类别×轮次）发现 + 查询参数采集（隐藏域）。
+  /// 轮次信息内嵌于页面 onclick（无独立轮次接口，评审A1）；xklc 拿不到就留空，不臆取。
+  /// 缓存策略（评审L2 改口径）：**缓存优先**——回读带「可能过期」标注，「刷新入口」走直连；
+  /// xkkz_id 随选课批次变化，缓存可能过期是已知事实（UI 已如实标注）。
+  Future<XkIndexParseResult> fetchXkIndex({bool refresh = false}) async {
+    const cacheKey = 'xk_index';
+    Future<XkIndexParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached);
+        if (obj is! Map) return null;
+        final rounds = <XkRound>[];
+        for (final r in (obj['rounds'] as List? ?? const [])) {
+          if (r is Map && '${r['xkkz_id'] ?? ''}'.isNotEmpty) {
+            rounds.add(XkRound(
+              xkkzId: '${r['xkkz_id']}',
+              kklxdm: '${r['kklxdm'] ?? ''}',
+              xklc: '${r['xklc'] ?? ''}'.isEmpty ? null : '${r['xklc']}',
+              label: '${r['label'] ?? ''}',
+            ));
+          }
+        }
+        if (rounds.isEmpty) return null;
+        return XkIndexParseResult(
+          rounds: rounds,
+          xkxnm: obj['xkxnm']?.toString(),
+          xkxqm: obj['xkxqm']?.toString(),
+          firstXkkzId: obj['firstXkkzId']?.toString(),
+          issues: const ['读取自本地缓存（可能过期，请刷新）'],
+          queryCourseHits: (obj['hits'] as num?)?.toInt() ?? rounds.length,
+          hiddenFields: {
+            for (final e in ((obj['hidden'] as Map?) ?? const {}).entries)
+              '${e.key}': '${e.value}',
+          },
+          fromCache: true,
+          fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) {
+        lastXkIndexFromCache = true;
+        return cached;
+      }
+    }
+    lastXkIndexFromCache = false;
+    try {
+      await ensureZdbkSession();
+      final html =
+          await _getHtml('$_xkIndexPath?gnmkdm=$_xkMenu&layout=default$_suParam');
+      final parsed = parseXkIndexHtml(html);
+      if (parsed.rounds.isNotEmpty) {
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': DateTime.now().millisecondsSinceEpoch,
+              'xkxnm': parsed.xkxnm,
+              'xkxqm': parsed.xkxqm,
+              'firstXkkzId': parsed.firstXkkzId,
+              'hits': parsed.queryCourseHits,
+              'hidden': parsed.hiddenFields,
+              'rounds': [
+                for (final x in parsed.rounds)
+                  {
+                    'xkkz_id': x.xkkzId,
+                    'kklxdm': x.kklxdm,
+                    'xklc': x.xklc,
+                    'label': x.label,
+                  }
+              ],
+            }));
+      }
+      _log('选课入口',
+          detail: '命中 ${parsed.queryCourseHits} 处｜入口 ${parsed.rounds.length} 个'
+              '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      return parsed;
+    } on RateLimitedException {
+      final cached = await fromCache();
+      lastXkIndexFromCache = cached != null;
+      _log('选课入口', level: 'warn',
+          detail: '限频退避，${cached == null ? '无缓存' : '降级缓存'}');
+      return cached ??
+          const XkIndexParseResult(rounds: [], issues: ['限频退避且无缓存，请稍后再试']);
+    } catch (e) {
+      final cached = await fromCache();
+      lastXkIndexFromCache = cached != null;
+      _log('选课入口', level: 'warn', detail: '$e${cached == null ? '' : '（降级缓存）'}');
+      return cached ??
+          XkIndexParseResult(rounds: const [], issues: ['选课入口获取失败：$e']);
+    }
+  }
+
+  /// 上次课程列表是否来自缓存（UI 据此提示"离线/可能过期"）。
+  bool lastXkListFromCache = false;
+
+  /// 某入口（xkkz_id）的课程列表（只读）。
+  /// 参数策略（评审A2）：以首页采集的 hiddenFields 为底 + 本次 xkkz_id/kklxdm + 防缓存
+  /// nd/time；正方对缺参数回空数据而不报错（更难发现），所以参数宁全勿缺。
+  /// 三态（评审A6）：data/empty 才落缓存；unavailable 绝不落缓存、绝不当「无课」。
+  /// 缓存策略（评审L2）：缓存优先（issues/dropped 原样随缓存落盘回读；回读重解析若降级为
+  /// unavailable 视同无缓存）；键用 base64url 编码分量，防清洗撞键。
+  Future<XkListParseResult> fetchXkCourses({
+    required XkRound round,
+    Map<String, String> hiddenFields = const {},
+    String? xkxnm,
+    String? xkxqm,
+    bool refresh = false,
+  }) async {
+    final term =
+        ((xkxnm ?? '').isNotEmpty && (xkxqm ?? '').isNotEmpty) ? '$xkxnm-$xkxqm' : '';
+    final cacheKey = 'xk_${_cacheToken(term)}_${_cacheToken(round.xkkzId)}';
+    Future<XkListParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached);
+        if (obj is! Map) return null;
+        final state = '${obj['state'] ?? ''}';
+        final at = (obj['fetched_at'] as num?)?.toInt() ?? 0;
+        // 原始 issues/dropped 随缓存落盘并原样回读（重解析会丢"有 N 行被跳过"这类留痕，评审L2）
+        final storedIssues =
+            (obj['issues'] as List? ?? const []).map((e) => '$e').toList();
+        final storedDropped = (obj['dropped'] as num?)?.toInt() ?? 0;
+        if (state == 'empty') {
+          return XkListParseResult(
+              courses: const [],
+              state: 'empty',
+              issues: [...storedIssues, '读取自本地缓存（可能过期，请刷新）'],
+              fromCache: true,
+              fetchedAtMillis: at);
+        }
+        final rows = obj['rows'] as List? ?? const [];
+        final parsed = parseXkCourseList(json.encode({'tmpList': rows}),
+            xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
+        // 回读重解析若降级为 unavailable（行损坏/字段名变更）：视同无缓存，交给网络刷新
+        if (parsed.state == 'unavailable') return null;
+        return XkListParseResult(
+          courses: parsed.courses,
+          state: parsed.state,
+          issues: [...storedIssues, '读取自本地缓存（可能过期，请刷新）'],
+          dropped: storedDropped,
+          fromCache: true,
+          fetchedAtMillis: at,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) {
+        lastXkListFromCache = true;
+        return cached;
+      }
+    }
+    lastXkListFromCache = false;
+    try {
+      await ensureZdbkSession();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final query = <String, String>{
+        ...hiddenFields,
+        'gnmkdm': _xkMenu,
+        'xkkz_id': round.xkkzId,
+        if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
+        if (term.isNotEmpty) 'xkxnm': xkxnm!,
+        if (term.isNotEmpty) 'xkxqm': xkxqm!,
+        'nd': '$now',
+        'time': '0',
+      };
+      final su = _studentId;
+      if (su != null && su.isNotEmpty) query['su'] = su;
+      final uri =
+          Uri.parse('$_zdbk/jwglxt/$_xkListPath').replace(queryParameters: query);
+      final text = await _postQuery(uri, {
+        'xkkz_id': round.xkkzId,
+        if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
+        if (term.isNotEmpty) 'xkxnm': xkxnm!,
+        if (term.isNotEmpty) 'xkxqm': xkxqm!,
+        'kspage': '1',
+        'jspage': '1',
+      });
+      final parsed = parseXkCourseList(text,
+          xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
+      if (parsed.state == 'data' || parsed.state == 'empty') {
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': now,
+              'state': parsed.state,
+              'label': round.label,
+              'issues': parsed.issues,
+              'dropped': parsed.dropped,
+              'rows': [for (final c in parsed.courses) c.raw],
+            }));
+      }
+      // 日志只记 入口/状态/条数/首条 issue —— 绝不记完整 URL（含 su）与响应正文（评审A11）
+      _log('选课列表',
+          detail: '${round.label.isEmpty ? round.xkkzId : round.label}｜${parsed.state}'
+              '｜${parsed.courses.length} 条'
+              '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      return parsed;
+    } on RateLimitedException {
+      final cached = await fromCache();
+      lastXkListFromCache = cached != null;
+      _log('选课列表', level: 'warn',
+          detail: '限频退避，${cached == null ? '无缓存' : '降级缓存'}');
+      return cached ??
+          const XkListParseResult(
+              courses: [], state: 'unavailable', issues: ['限频退避且无缓存，请稍后再试']);
+    } catch (e) {
+      final cached = await fromCache();
+      lastXkListFromCache = cached != null;
+      _log('选课列表', level: 'warn', detail: '$e${cached == null ? '' : '（降级缓存）'}');
+      return cached ??
+          XkListParseResult(
+              courses: const [], state: 'unavailable', issues: ['课程列表获取失败：$e']);
+    }
+  }
+
+  /// 上次课表时隙是否来自缓存。
+  bool lastTimetableFromCache = false;
+
+  /// 当前课表时隙（xskbcx kbList 解析；选课冲突检测的数据源，只读）。
+  /// 学期候选与 fetchStudentProfile 同款（同端点同参数，仅取 kbList）。
+  /// 学期一致性（评审L2）：响应回显学期与请求不符的候选一律不接受；缓存按学期归属校验，
+  /// 不符视同无缓存；第一候选（本学期）明确返回空课表＝真实空，不再向后猜学期。
+  Future<TimetableParseResult> fetchTimetableSlots({bool refresh = false}) async {
+    const cacheKey = 'timetable_slots';
+    final now = DateTime.now();
+    final isAutumn = now.month >= 8;
+    final y0 = isAutumn ? now.year : now.year - 1;
+    final candidates = <List<String>>[
+      ['$y0-${y0 + 1}', isAutumn ? '3' : '12'],
+      ['$y0-${y0 + 1}', isAutumn ? '12' : '3'],
+      ['${y0 - 1}-$y0', '12'],
+      ['${y0 - 1}-$y0', '3'],
+    ];
+    Future<TimetableParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached) as Map<String, dynamic>;
+        // 学期归属校验：缓存学期必须等于本机当前学期第一候选，否则视同无缓存
+        final cxnm = obj['xnm']?.toString() ?? '';
+        final cxqm = obj['xqm']?.toString() ?? '';
+        if (cxnm != candidates[0][0] || cxqm != candidates[0][1]) return null;
+        final slots = (obj['slots'] as List? ?? const [])
+            .whereType<Map>()
+            .map((m) => m.cast<String, dynamic>())
+            .toList();
+        if (slots.isEmpty) return null;
+        return TimetableParseResult(
+          slots: slots,
+          courses: ((obj['courses'] as List? ?? const [])).map((e) => '$e').toList(),
+          issues: const ['读取自本地缓存（可能过期，请刷新）'],
+          fromCache: true,
+          fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) {
+        lastTimetableFromCache = true;
+        return cached;
+      }
+    }
+    lastTimetableFromCache = false;
+    await ensureZdbkSession(); // 评审L2：选课段唯一漏调会话的入口（冷会话下 4 连败）
+    for (final c in candidates) {
+      try {
+        final body = await _postQuery(
+            Uri.parse('$_zdbk/jwglxt/kbcx/xskbcx_cxXsKb.html?gnmkdm=N2151$_suParam'),
+            {'xnm': c[0], 'xqm': c[1]});
+        final t = body.trim();
+        if (!t.startsWith('{')) continue;
+        final decoded = json.decode(t) as Map<String, dynamic>;
+        // 学期回显校验：回显与请求不符 → 该候选不接受（防把别的学期课表当本学期）
+        final echoXnm = decoded['xnm']?.toString() ?? '';
+        final echoXqm = decoded['xqm']?.toString() ?? '';
+        if ((echoXnm.isNotEmpty && echoXnm != c[0]) ||
+            (echoXqm.isNotEmpty && echoXqm != c[1])) {
+          _log('当前课表', level: 'warn',
+              detail: '学期回显不一致（请求 ${c[0]}-${c[1]}，回显 $echoXnm-$echoXqm），跳过');
+          continue;
+        }
+        final parsed = parseXskbListToSlots(decoded['kbList']);
+        if (parsed.courses.isEmpty) {
+          // 本学期明确返回空课表（且回显一致）：如实表现为"未排课/未检查"，不向后猜学期
+          if (identical(c, candidates.first)) {
+            return const TimetableParseResult(
+                slots: [], issues: ['本学期课表为空（尚未排课？）：冲突检测按未检查处理']);
+          }
+          continue;
+        }
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': DateTime.now().millisecondsSinceEpoch,
+              'xnm': c[0],
+              'xqm': c[1],
+              'slots': parsed.slots,
+              'courses': parsed.courses,
+            }));
+        _log('当前课表',
+            detail: '学期 ${c[0]}-${c[1]}｜${parsed.courses.length} 门｜'
+                '${parsed.slots.length} 个时隙');
+        return parsed;
+      } catch (e) {
+        _log('当前课表', level: 'warn', detail: '学期 ${c[0]}-${c[1]}: $e');
+      }
+    }
+    final cached = await fromCache();
+    lastTimetableFromCache = cached != null;
+    _log('当前课表', level: 'warn',
+        detail: '课表接口未返回课程表${cached == null ? '' : '（降级缓存）'}');
+    return cached ??
+        const TimetableParseResult(slots: [], issues: ['课表获取失败：冲突检测将不可用']);
   }
 }

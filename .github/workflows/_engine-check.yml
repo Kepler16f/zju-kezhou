@@ -27,7 +27,17 @@ jobs:
             test/request_throttle_test.dart test/course_marks_test.dart \
             test/zju_parse_test.dart test/zju_parse_ext_test.dart \
             test/plan_models_test.dart test/plan_pdf_parse_test.dart \
-            test/pdf_text_extractor_test.dart test/app_version_test.dart
+            test/pdf_text_extractor_test.dart test/app_version_test.dart \
+            test/xk_parse_test.dart test/xk_models_test.dart \
+            test/selection_test.dart test/ai_client_test.dart \
+            test/ai_compliance_test.dart
+          # 说明：widget_test / live_probe_test / ai_config_store_test 不在本 job
+          # （ai_config_store_test 经 credential_store 依赖 path_provider→Flutter；
+          # 前两者需 Flutter SDK。本机/带 Flutter 的环境用 `flutter test --no-pub` 全量跑。）
+      - name: 只读红线护栏（无教务写接口引用）
+        run: |
+          cd ..
+          python eval/check_readonly.py
       - name: golden/samples 双侧同步校验
         run: |
           cd ..

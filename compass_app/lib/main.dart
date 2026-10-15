@@ -1,6 +1,6 @@
-/// 课舟 App 主入口：底部导航四页（学业/审计/工具/设置）。
+/// 课舟 App 主入口：底部导航六页（学业/方案/审计/工具/选课/设置）。
 /// 数据流：设置页选源运行 → 状态持有 courses/report/practice → 各页消费。
-/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）。
+/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（默认关闭）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
 library;
 
@@ -12,6 +12,8 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import 'data/ai_client.dart';
+import 'data/ai_config.dart';
 import 'data/credential_store.dart';
 import 'data/diagnostic_log.dart';
 import 'data/zju_client.dart';
@@ -22,6 +24,7 @@ import 'engine/audit.dart';
 import 'engine/course_marks.dart';
 import 'engine/exam.dart';
 import 'pages/audit_page.dart';
+import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
@@ -30,9 +33,10 @@ import 'widgets/gpa_tools_view.dart';
 void main(List<String> args) async {
   // 崩溃自动恢复标记（RegisterApplicationRestart 重启时带 --crashed）
   _crashRecovered = args.contains('--crashed');
+  // PiliPlus 同款窗口管理：异步就绪后显示（绕开引擎默认显示/resize 路径）。
+  // 仅桌面（Windows/macOS/Linux）启用：移动端（iOS/Android/ohos）无此插件实现，
+  // 调用即 MissingPluginException 崩溃。
   WidgetsFlutterBinding.ensureInitialized();
-  // 仅桌面（Windows/macOS/Linux）启用 window_manager：它是 Windows resize 崩溃的
-  // 规避手段（PiliPlus 同款）。移动端（iOS/Android/ohos）无此插件实现，调用即崩。
   if (_isDesktopWindowed) {
     await windowManager.ensureInitialized();
     const options = WindowOptions(
@@ -142,11 +146,18 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+  // 页签索引常量（评审B：插入/调序只改这里，禁止散落裸数字）。
+  // 顺序：0 学业 / 1 方案 / 2 审计 / 3 工具 / 4 选课 / 5 设置（1/3 无跳转需求，故不设常量）
+  static const int tabScholar = 0;
+  static const int tabAudit = 2;
+  static const int tabSelect = 4;
+  static const int tabSettings = 5;
+
   final _store = CredentialStore();
   late final ZjuClient _client = ZjuClient(_store);
   AuditEngine? _engine;
   late final Future<void> _assetsReady; // 启动资产加载完成信号（运行审计前等待）
-  int _tabIndex = 0;
+  int _tabIndex = tabScholar;
 
   DataMode _mode = DataMode.sample;
   String _major = 'computer_science'; // 始终为内置 key（下拉框合法值）
@@ -166,6 +177,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _recordSourceLabel;
   bool _busy = false;
   String? _notice;
+  Map<String, dynamic>? _auditPlan; // 当前审计所用方案（选课页做缺口/先修/开课季匹配用）
+  AiConfig _aiConfig = const AiConfig(); // AI 解读配置（默认关闭）
+  int _aiSessionReset = 0; // 一键清除时自增：通知选课页清掉 AI 问答历史等会话态
 
   static const majors = {
     'computer_science': '计算机科学与技术（样例方案）',
@@ -214,6 +228,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _mode = DataMode.zju;
       });
     }
+    // AI 解读配置（默认关闭；缺失/损坏回落 none，绝不拖崩启动）
+    final aiCfg = await _store.loadAiConfig();
+    if (mounted) setState(() => _aiConfig = aiCfg);
     // 本地排除标记随会话恢复（不依赖登录，粘贴/样例模式同样生效）
     final marksRaw = await _store.readCache('course_marks');
     final marks = parseMarks(marksRaw);
@@ -312,12 +329,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() => _notice = out['error'].toString());
       return;
     }
+    // 记录本次审计所用方案（runtime 优先；未知专业静默跳过——选课页对此按"无方案"降级）
+    Map<String, dynamic>? auditPlan;
+    try {
+      auditPlan = engine.findPlan(record['student']['major'] as String);
+    } catch (_) {}
     setState(() {
       _report = out['report'] as Map<String, dynamic>;
       _courses = (record['courses'] as List).cast<Map<String, dynamic>>();
+      _auditPlan = auditPlan;
       _notice = null;
       _lastDataAt = DateTime.now();
-      _tabIndex = 2; // 审计完成后自动切到审计页
+      _tabIndex = tabAudit; // 审计完成后自动切到审计页
     });
     unawaited(_saveSession());
   }
@@ -466,8 +489,38 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (mounted) setState(() => _busy = false);
   }
 
+  /// AI 配置保存（沙箱落盘 + 内存态刷新）。
+  Future<void> _setAiConfig(AiConfig cfg) async {
+    await _store.saveAiConfig(cfg);
+    if (mounted) setState(() => _aiConfig = cfg);
+  }
+
+  /// AI 连接测试：最小请求验证密钥/地址（不携带任何教务数据）。
+  /// 全 catch 兜底：AiClient 有意只捕 Exception（Error 属编程缺陷）；但测试按钮
+  /// 不能因此软锁死，任何意外都要回落成可读文案（评审实测：漏写 scheme 会抛 Error）。
+  Future<String> _testAi(AiConfig cfg) async {
+    try {
+      final client = AiClient(cfg);
+      final out = await client.chat(
+        system: '你是连接测试助手。',
+        messages: const [
+          {'role': 'user', 'content': '请只回复：连接正常'}
+        ],
+        // claude-opus-5-5 自适应思考计入 max_tokens，给小了对端可能只思考不吐字
+        maxTokens: 4096,
+      );
+      return switch (out) {
+        AiReply(:final text) => '连接正常（模型：${text.trim()}）',
+        AiFailure(:final message) => '连接失败：$message',
+      };
+    } catch (_) {
+      return '连接失败：请求异常（请检查接口地址格式后重试）';
+    }
+  }
+
   Future<void> _clearData() async {
     await _store.deleteCredentials();
+    await _store.deleteAiConfig(); // AI 密钥属"全部本地数据"，必须一并删除（合规承诺）
     await _store.clearCache();
     _store.clearMemory();
     _client.disposeClient();
@@ -484,6 +537,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _loggedInAs = null;
       _lastDataAt = null;
       _notice = null;
+      _auditPlan = null;
+      _aiConfig = const AiConfig();
+      _aiSessionReset++; // 让选课页清掉 AI 问答历史（含上一账号的课程名/解读文本）
     });
   }
 
@@ -500,7 +556,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             marks: _marks,
             onMark: _setMark,
             sourceLabel: _recordSourceLabel,
-            onGoSettings: () => setState(() => _tabIndex = 4),
+            onGoSettings: () => setState(() => _tabIndex = tabSettings),
             onRefresh: () async => switch (_mode) {
               DataMode.sample => _fromSample(),
               DataMode.paste => _fromPaste(),
@@ -512,10 +568,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             store: _store,
             loggedIn: _loggedInAs != null,
             transcript: _courses,
-            onGoSettings: () => setState(() => _tabIndex = 4),
+            onGoSettings: () => setState(() => _tabIndex = tabSettings),
           ),
           AuditPage(report: _report, planQuality: _planQuality),
           GpaToolsView(courses: _coursesViewed),
+          CourseSelectPage(
+            client: _client,
+            store: _store,
+            loggedIn: _loggedInAs != null,
+            active: _tabIndex == tabSelect,
+            currentSemester: _current,
+            transcript: _courses,
+            plan: _auditPlan,
+            report: _report,
+            aiConfig: _aiConfig,
+            resetToken: _aiSessionReset,
+            onGoSettings: () => setState(() => _tabIndex = tabSettings),
+          ),
           SettingsPage(
             mode: _mode,
             onModeChange: (m) => setState(() => _mode = m),
@@ -537,6 +606,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             loggedInAs: _loggedInAs,
             lastDataAt: _lastDataAt,
             onClearData: _clearData,
+            aiConfig: _aiConfig,
+            onAiConfigChange: _setAiConfig,
+            onTestAi: _testAi,
           ),
         ],
       ),
@@ -560,6 +632,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               icon: Icon(Icons.trending_up_outlined),
               selectedIcon: Icon(Icons.trending_up),
               label: '工具'),
+          NavigationDestination(
+              icon: Icon(CourseSelectPage.tabIcon),
+              selectedIcon: Icon(CourseSelectPage.tabIconSelected),
+              label: CourseSelectPage.tabLabel),
           NavigationDestination(
               icon: Icon(Icons.settings_outlined),
               selectedIcon: Icon(Icons.settings),

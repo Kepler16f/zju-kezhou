@@ -4,6 +4,8 @@ library;
 
 import 'dart:convert';
 
+import 'disclaimer.dart';
+import 'matching.dart';
 import 'timeline.dart';
 
 class AuditEngine {
@@ -39,47 +41,11 @@ class AuditEngine {
     return p;
   }
 
-  static bool _isPassed(Map<String, dynamic> r) {
-    final passed = r['passed'];
-    if (passed != null) return passed == true;
-    final g = r['grade'];
-    return g != null && (g as num).toDouble() >= Timeline.passGrade;
-  }
-
-  /// 已修记录 ↔ 方案课程：course_id 精确优先，名称相似度≥0.85 兜底
-  (List<List<dynamic>>, List<Map<String, dynamic>>) _match(
-      List<Map<String, dynamic>> recordCourses, Map<String, dynamic> plan) {
-    final byId = <String, Map<String, dynamic>>{};
-    final names = <String>[];
-    final byName = <String, Map<String, dynamic>>{};
-    for (final c in (plan['courses'] as List).cast<Map<String, dynamic>>()) {
-      byId[c['course_id'] as String] = c;
-      names.add(c['name'] as String);
-      byName[c['name'] as String] = c;
-    }
-    final matched = <List<dynamic>>[];
-    final unmatched = <Map<String, dynamic>>[];
-    for (final r in recordCourses) {
-      Map<String, dynamic>? course;
-      final cid = r['course_id'];
-      if (cid != null && byId.containsKey(cid)) {
-        course = byId[cid];
-      } else {
-        final close = getCloseMatches(r['name'] as String, names, n: 1, cutoff: 0.85);
-        if (close.isNotEmpty) course = byName[close.first];
-      }
-      if (course == null) {
-        unmatched.add(r);
-      } else {
-        matched.add([r, course]);
-      }
-    }
-    return (matched, unmatched);
-  }
+  // 已修↔方案的匹配与通过判定已移至 engine/matching.dart（选课建议共用，行为不变）。
 
   Map<String, dynamic> build(Map<String, dynamic> record, Map<String, dynamic> plan) {
     final recordCourses = (record['courses'] as List).cast<Map<String, dynamic>>();
-    final (matched, unmatched) = _match(recordCourses, plan);
+    final (matched, unmatched) = matchRecordToPlan(recordCourses, plan);
 
     final earned = <String, double>{};
     for (final m in (plan['modules'] as List).cast<Map<String, dynamic>>()) {
@@ -88,7 +54,7 @@ class AuditEngine {
     final passedIds = <String>{};
     for (final pair in matched) {
       final r = pair[0] as Map<String, dynamic>, c = pair[1] as Map<String, dynamic>;
-      if (_isPassed(r)) {
+      if (isPassed(r)) {
         earned[c['module_id'] as String] =
             earned[c['module_id'] as String]! + (c['credits'] as num).toDouble();
         passedIds.add(c['course_id'] as String);
@@ -205,7 +171,7 @@ class AuditEngine {
               ? '（隔年开课，仅 ${(cyc as List).join('、')} 学年）'
               : '（仅${(c['offered'] as List).first}开课）';
           final takenFailed = matched.any((pair) =>
-              pair[1]['course_id'] == c['course_id'] && !_isPassed(pair[0] as Map<String, dynamic>));
+              pair[1]['course_id'] == c['course_id'] && !isPassed(pair[0] as Map<String, dynamic>));
           final verb = takenFailed ? '已修未过需重修' : '尚未修';
           warnings.add({
             'type': 'offering_closed',
@@ -221,7 +187,7 @@ class AuditEngine {
     // 先修检查（已修侧）
     for (final pair in matched) {
       final r = pair[0] as Map<String, dynamic>, c = pair[1] as Map<String, dynamic>;
-      if (!_isPassed(r)) continue;
+      if (!isPassed(r)) continue;
       for (final p in (c['prereq'] as List? ?? [])) {
         if (passedIds.contains(p)) continue;
         final pc = byId[p];
@@ -304,7 +270,7 @@ class AuditEngine {
 
     // 未通过课程重修提醒
     for (final r in recordCourses) {
-      if (r['grade'] != null && !_isPassed(r)) {
+      if (r['grade'] != null && !isPassed(r)) {
         warnings.add({
           'type': 'failed_recheck',
           'level': 'yellow',
@@ -335,7 +301,7 @@ class AuditEngine {
       'warnings': warnings,
       'extra_courses': unmatched,
       'totals': totals,
-      'disclaimer': '本报告仅供与导师沟通参考，正式认定以教务系统为准。',
+      'disclaimer': kDisclaimer,
       'trace': {
         'plan': '${plan['meta']['source_doc']}'
             '${(plan['meta']['grade'] ?? '').toString().isEmpty ? '' : ' ${plan['meta']['grade']}级'}'

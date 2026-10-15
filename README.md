@@ -4,7 +4,7 @@
 
 **双轨交付**（详见 `docs/开发方案.md` v2 附录）：
 - **Dify/aihub 轨**（比赛申报）：低代码智能体 + Python 规则引擎，本仓库 `engine/ dify/ prompts/ eval/`；
-- **Flutter 全平台轨**（真实成品）：`compass_app/`，一套 Dart 代码出 Android(arm64/armv7/x86_64)、iOS、鸿蒙 NEXT HAP、Windows(arm64/x64)、Linux(arm64/x64)、macOS(arm64/x64) 安装包，内置真实教务只读接口（ZJUAM 登录→正方成绩），凭证/数据不出设备。
+- **Flutter 全平台轨**（真实成品）：`compass_app/`，一套 Dart 代码出 Android(arm64/armv7/x86_64)、iOS、鸿蒙 NEXT HAP、Windows(arm64/x64)、Linux(arm64/x64)、macOS(arm64/x64) 安装包，内置真实教务只读接口（ZJUAM 登录→正方成绩/课表/培养方案/选课查询）。教务凭证仅存本机沙箱（可一键清除）、会话 Cookie 仅驻内存、通道只读；学分/缺口/冲突一律本机计算。**AI 解读为可选功能、默认关闭**：启用云端 AI 时仅发送课程名/学分/性质/缺口数字/候选教学班信息、本学期课表课程名与时段、与你的问题，不含学号、姓名、成绩明细、凭证与方案原文（与设置页发送范围提示同口径）。
 
 **分工原则：LLM 负责"读和说"，代码负责"对不对"。** 学分/先修/冲突一律由确定性规则引擎计算（Python 与 Dart 双实现、金标对照测试逐字段一致），每条结论可溯源到方案页码。
 
@@ -26,6 +26,7 @@ flutter build apk --release --split-per-abi --no-tree-shake-icons
 
 # ── 双引擎金标对照（CI 必跑）──
 cd .. && python eval/cross_engine_parity.py               # Python↔Dart 逐字段一致
+python eval/check_readonly.py                             # 只读红线：无教务写接口引用
 ```
 
 **CI**：GitHub Actions 按平台拆分（`.github/workflows/build-{android,windows,macos,ios,linux,hap}.yml`，由 `buildAll.yml` 分发器调用；push 到 main 只跑金标门，push `v*` tag 全平台出包）。手动构建：Actions → **Build all platforms** → Run workflow → 勾选需要的平台。
@@ -36,13 +37,18 @@ cd .. && python eval/cross_engine_parity.py               # Python↔Dart 逐字
 
 **真实教务登录排查**：App 右上角 🐞"登录诊断日志"逐步记录卡点（无敏感值），配合 `docs/实测登录指南.md` 定位。
 
-**学业分析套件**（App 四个 Tab）：
+**学业分析套件**（App 六个 Tab）：
 - **培养方案**（「方案」页）：浙大通行证登录后自动「专业名 + 年级」匹配教务培养方案并爬取接口，
   应用内结构化观看（概览/学分学制/培养目标与要求/专业核心课·核心实践课·前沿与荣誉课程 chips（已修高亮）/课程表/辅修/第二三四课堂/官方 PDF）；
   **匹配有歧义时不替用户猜**，列出候选方案让用户点选；详见 `docs/培养方案接入说明.md`
 - **学业审计**：三色达成度报告（教务实时培养方案优先，内置样例兜底；方案打印页解析附数据质量提示）
 - **学业看板**：4.3 制/五分制 GPA、加权百分制、已获学分、按课程性质的学分看板、第二/三/四课堂分（素拓）
 - **GPA 工具**：学期走势折线图（学期+累计双线，CustomPainter 零依赖）、GPA 模拟器（what-if 加课预测 + 目标反推"剩余学分需达到的平均绩点"）
+- **选课**（「选课」页）：教务网登录后按需读取选课入口（类别×轮次内嵌于页面）→ 单轮列表 / 跨轮汇总
+  （同一教学班按「课程+教学班」身份跨轮对齐，容量/已选快照对比）/ 与培养方案和当前课表匹配的建议卡；
+  **只读查询，绝不提交选课/退课**；含离线"加载演示数据（合成样例）"入口；详见 `docs/选课模块接入说明.md`
+- **AI 解读**（可选、默认关闭）：设置页可配 OpenAI 兼容 / Anthropic / Dify；只把本机建议卡与审计数字
+  翻译成文字与核对清单，**不计算、不排序、不推荐、不生成课表**；边界与发送白名单见 `prompts/m5_select.md`
 - 登录后自动：识别专业（学业生涯页 N105515→学籍页兜底）→ 匹配培养方案（列表 N153020 + 打印页）→ 注册为运行时方案 → 审计；课堂分并行拉取（N108001），失败不阻断
 
 > 本机若为定制 Flutter 分支：`flutter test` 会因 SDK hash 挂起，用 `dart test` 替代；构建加 `--no-tree-shake-icons`。
@@ -55,6 +61,7 @@ cd .. && python eval/cross_engine_parity.py               # Python↔Dart 逐字
 | `docs/已知问题-Windows窗口resize崩溃.md` | Windows 改窗口大小闪退的根因（引擎无障碍桥空指针）与规避 |
 | `docs/运行与构建指南.md` | 怎么跑：桌面/真机/各平台打包（含鸿蒙 HAP）、单测、常见问题 |
 | `docs/培养方案接入说明.md` | 培养方案取数与匹配：接口清单、匹配算法、字段、已知限制、回归护栏 |
+| `docs/选课模块接入说明.md` | 选课取数与跨轮匹配：端点与置信度、三态语义、身份三档、时间解析、写接口红线、待探针确认表 |
 | `docs/PDF观看方案-鸿蒙.md` | 应用内看方案 PDF 的鸿蒙可选包（已实测版本约束）与落地方式 |
 | `schema/` | plan / record / report 三数据契约 |
 | `data/golden/` | 两专业培养方案结构化终稿（进 git，演示用合成数据） |
@@ -81,6 +88,8 @@ golden（build_embed 注入为常量）─────────────�
 - 演示数据全部合成：无真实姓名/学号（`student.alias` 为虚拟标识），见 `video/演示固化与自检.md` 检查项；
 - 凭证不落库、不留存；教务真实数据仅在 10/14 go/no-go 通过（书面授权 ≥5 份）后经 `export_csv` 适配器进入，`xuezaizheda_api` 分支为"已设计未启用"状态；
 - 输出固定声明：*本报告仅供与导师沟通参考，正式认定以教务系统为准*（引擎硬编码，LLM 无权删改）。
+- AI 解读默认关闭、可一键清除；启用后仅发送最小字段（见上"Flutter 全平台轨"），首次发送前有范围确认；
+- 选课模块只读红线由 `eval/check_readonly.py` 在 CI 机械拦截（写接口路径零出现）。
 
 ## 每日自检（对应排期"当晚硬验收"）
 

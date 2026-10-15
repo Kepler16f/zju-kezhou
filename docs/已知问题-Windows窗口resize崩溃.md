@@ -119,3 +119,15 @@ powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Applica
   `考试安排: Illegal argument(s): Illegal argument in isolate message: object is unsendable`
   —— `zju_client.dart` 把 `ZjuClient`（含 `Future`）发给了 isolate，导致"考试安排"
   降级为空。属于待修的业务缺陷。
+
+## 附二：选课/AI 模块的门禁决策（2026-10-15）
+
+- AI 解读请求（`lib/data/ai_client.dart`）沿用 zju_client 的「顶层函数 + Isolate.run」模式，
+  且应用级 `ExcludeSemantics` 保持开启 → 崩溃的两个必要条件（语义树启用 + reparent 更新）
+  均不可达，**无需**把 AI 链路接入 `_waitForStableWindow` 稳定窗；若未来把 AI 请求移回
+  主 isolate、或移除 `ExcludeSemantics`，本决策立即失效并必须接入（`didChangeMetrics` 目前
+  只转发给 `ZjuClient`，届时要一并接线）。
+- 上文「附」提到的 isolate unsendable 缺陷（考试安排降级）已在 0.10.5 修复；
+  本次选课模块与 AI 客户端均沿用「isolate 载荷不捕获 this、只传可序列化 Map」写法。
+- 版本号：`pubspec.yaml` 已从 0.10.1+2 一路修正到 0.10.7+7，设置页版本文案同步；
+  旧 WER 事件里的 0.10.1.2 版本资源请按 PE 时间戳辨认。

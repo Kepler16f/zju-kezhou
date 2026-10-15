@@ -6,6 +6,9 @@
 ///    系统Keystore/Keychain（各平台原生），当前纯文件后端保证全平台零原生依赖可构建。
 ///  - SSO Cookie（iPlanetDirectoryPro / JSESSIONID / route）仅驻内存，进程退出即消失。
 ///  - 教务数据缓存（成绩 JSON）放 App 沙箱，提供一键清除。
+///  - AI 解读配置（ai.cfg）与凭证同目录同混淆：仅存本机；启用云端 AI 时发送范围见
+///    设置页「数据与合规」（评审结论：对外口径为「教务凭证与原始教务数据不出设备，
+///    AI 解读默认关闭、启用后仅发送最小字段」，两处文案必须一致）。
 ///  - 任何值不写日志。
 library;
 
@@ -14,6 +17,8 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+
+import 'ai_config.dart';
 
 /// P1 升级点：接入系统级安全存储（Android Keystore / iOS Keychain / Win 凭据管理器）。
 /// 当前 FileBackend 已满足"数据不出设备 + 用户态隔离"；接口留好替换缝。
@@ -125,6 +130,35 @@ class CredentialStore {
       if (await f.exists()) return f.path;
     } catch (_) {/* 沙箱不可用 */}
     return null;
+  }
+
+  /// AI 解读配置落盘（ai.cfg）。**刻意不用 cache_ 前缀**：缓存会被 clearCache 顺带清掉，
+  /// 而 AI 密钥被"清缓存"顺手删除是事故（用户会以为配置丢了）；一键清除全量数据时由
+  /// main.dart 的 _clearData 显式调用 [deleteAiConfig]。
+  Future<void> saveAiConfig(AiConfig config) async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ai.cfg'));
+      await f.writeAsString(_obfuscate(json.encode(config.toJson())));
+    } catch (_) {/* 沙箱不可用（测试环境等）：静默 */}
+  }
+
+  /// 读取 AI 配置：缺文件/坏内容/未知提供方一律回落未配置（none），绝不抛异常
+  /// ——启动早期读配置抛错会把整个 App 拖崩。
+  Future<AiConfig> loadAiConfig() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ai.cfg'));
+      if (!await f.exists()) return const AiConfig();
+      return AiConfig.fromJson(json.decode(_deobfuscate(await f.readAsString())));
+    } catch (_) {
+      return const AiConfig();
+    }
+  }
+
+  Future<void> deleteAiConfig() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ai.cfg'));
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
   }
 
   // 轻量混淆（非加密）：避免明文出现在文件系统搜索中；真实防护来自 OS 沙箱隔离。
