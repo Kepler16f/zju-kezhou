@@ -1,7 +1,7 @@
 # 构建分发器：勾选平台 + 各平台内部勾选架构，一次触发。
 #  - engine-check（双引擎金标一致性）总是先跑，作为所有平台构建的门
 #  - push main/master：只跑质量门（快速反馈，不自动出包）
-#  - push tag v*：全平台按"默认架构"自动出包（发布；Linux arm64 待验证前仅手动）
+#  - push tag v*：全平台按"默认架构"自动出包（发布，含三个 arm64）
 #  - 手动（Actions 页 Run workflow）：按勾选构建；不勾任何平台则只跑质量门
 # 约定：默认勾"常用架构"（Android arm64 / Windows x64+arm64 / macOS arm64 / Linux x64），
 #       其余架构按需勾选。Windows arm64 走托管 windows-11-arm，Linux arm64 走托管
@@ -122,9 +122,7 @@ jobs:
     uses: ./.github/workflows/build-linux.yml
     with:
       x64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_x64 }}
-      # 待验证：跑通一次后改成 github.event_name != 'workflow_dispatch' || inputs.linux_arm64，
-      # 让 tag 发布也默认带 Linux arm64（现在只手动勾选，避免未验证路径进发布流程）
-      arm64: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_arm64 || false }}
+      arm64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_arm64 }}
 
   hap:
     name: HarmonyOS
