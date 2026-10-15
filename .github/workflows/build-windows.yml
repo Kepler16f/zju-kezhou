@@ -91,6 +91,7 @@ jobs:
         with:
           name: kezhou-windows-x64-setup
           archive: false
+          if-no-files-found: error
           path: dist/KeZhouSetup-*-win-x64.exe
 
   windows-arm64:
@@ -188,4 +189,5 @@ jobs:
         with:
           name: kezhou-windows-arm64-setup
           archive: false
+          if-no-files-found: error
           path: dist/KeZhouSetup-*-win-arm64.exe

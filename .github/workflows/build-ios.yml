@@ -20,4 +20,5 @@ jobs:
         with:
           name: kezhou-ios
           archive: false
+          if-no-files-found: error
           path: compass_app/build/ios/ipa/*.ipa

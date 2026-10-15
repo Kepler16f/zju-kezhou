@@ -30,16 +30,19 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build linux --release
-      # bundle 是目录——打 tar.gz 后上传单文件
+      # bundle 是目录——打 tar.gz 后上传单文件（路径与上传步骤严格对齐；曾经写成
+      # ../../../ 导致实际落在 build/ 根下，上传步骤找不到文件却不报错）
       - name: 打包 bundle 为 tar.gz
         run: |
           cd build/linux/x64/release
-          tar czf ../../../KeZhou-linux-x64.tar.gz bundle
+          tar czf "${{ github.workspace }}/compass_app/build/KeZhou-linux-x64.tar.gz" bundle
+          ls -lh "${{ github.workspace }}/compass_app/build/KeZhou-linux-x64.tar.gz"
       - uses: actions/upload-artifact@v7
         with:
-          name: kezhou-linux-x64
+          name: KeZhou-linux-x64.tar.gz
           archive: false
-          path: compass_app/build/linux/KeZhou-linux-x64.tar.gz
+          if-no-files-found: error
+          path: compass_app/build/KeZhou-linux-x64.tar.gz
 
   linux-arm64:
     name: Linux arm64
@@ -77,9 +80,11 @@ jobs:
       - name: 打包 bundle 为 tar.gz
         run: |
           cd build/linux/arm64/release
-          tar czf ../../../KeZhou-linux-arm64.tar.gz bundle
+          tar czf "${{ github.workspace }}/compass_app/build/KeZhou-linux-arm64.tar.gz" bundle
+          ls -lh "${{ github.workspace }}/compass_app/build/KeZhou-linux-arm64.tar.gz"
       - uses: actions/upload-artifact@v7
         with:
-          name: kezhou-linux-arm64
+          name: KeZhou-linux-arm64.tar.gz
           archive: false
-          path: compass_app/build/linux/KeZhou-linux-arm64.tar.gz
+          if-no-files-found: error
+          path: compass_app/build/KeZhou-linux-arm64.tar.gz

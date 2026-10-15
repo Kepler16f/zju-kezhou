@@ -39,6 +39,7 @@ jobs:
         with:
           name: kezhou-macos-arm64
           archive: false
+          if-no-files-found: error
           path: compass_app/build/macos/Build/Products/KeZhou-macos-arm64.zip
 
   macos-x64:
@@ -71,4 +72,5 @@ jobs:
         with:
           name: kezhou-macos-x64
           archive: false
+          if-no-files-found: error
           path: compass_app/build/macos/Build/Products/KeZhou-macos-x64.zip

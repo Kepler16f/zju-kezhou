@@ -45,16 +45,19 @@ jobs:
         with:
           name: kezhou-android-arm64
           archive: false
+          if-no-files-found: error
           path: compass_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
       - uses: actions/upload-artifact@v7
         if: ${{ inputs.armv7 }}
         with:
           name: kezhou-android-armv7
           archive: false
+          if-no-files-found: error
           path: compass_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
       - uses: actions/upload-artifact@v7
         if: ${{ inputs.x64 }}
         with:
           name: kezhou-android-x64
           archive: false
+          if-no-files-found: error
           path: compass_app/build/app/outputs/flutter-apk/app-x86_64-release.apk
