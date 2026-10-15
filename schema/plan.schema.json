@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://学业罗盘/schema/plan.schema.json",
+  "title": "PlanFile — 培养方案结构化结果（M1 产物，golden 数据）",
+  "type": "object",
+  "required": ["meta", "modules", "courses"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["major", "grade", "source_doc", "total_credits", "verified"],
+      "properties": {
+        "major": { "type": "string", "enum": ["computer_science", "software_engineering"] },
+        "grade": { "type": "string", "pattern": "^20\\d{2}$" },
+        "source_doc": { "type": "string" },
+        "total_credits": { "type": "number", "exclusiveMinimum": 0 },
+        "extracted_by": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "verified_at": { "type": "string" }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["module_id", "module_path", "required_credits"],
+        "properties": {
+          "module_id": { "type": "string", "pattern": "^[a-z_]+$" },
+          "module_path": { "type": "string" },
+          "required_credits": { "type": "number", "minimum": 0 },
+          "course_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "courses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["course_id", "name", "credits", "module_id", "nature", "offered", "prereq", "source"],
+        "properties": {
+          "course_id": { "type": "string" },
+          "name": { "type": "string", "minLength": 1 },
+          "credits": { "type": "number", "exclusiveMinimum": 0, "maximum": 20, "multipleOf": 0.5 },
+          "module_id": { "type": "string" },
+          "nature": { "enum": ["通识必修", "必修", "限选", "任选", "实践"] },
+          "offered": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "enum": ["秋", "春"] },
+            "description": "仅秋季=[\"秋\"]，仅春季=[\"春\"]，两学期=[\"秋\",\"春\"]；隔年开课在 plan 数据里以 grade_cycle 字段标记"
+          },
+          "grade_cycle": { "type": ["integer", "null"], "minimum": 1, "description": "隔年开课的周期，如 2=两年一轮；缺省 null 表示每年开" },
+          "prereq": { "type": "array", "items": { "type": "string" } },
+          "source": {
+            "type": "object",
+            "required": ["page"],
+            "properties": { "page": { "type": ["integer", "null"], "minimum": 1 } }
+          },
+          "note": { "type": "string" }
+        }
+      }
+    }
+  }
+}

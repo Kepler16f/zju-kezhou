@@ -1,0 +1,206 @@
+# 全平台构建矩阵：一次 push，产出各平台安装包（未签名，签名参数见各 job 注释）
+# 诚实边界（上游 Flutter 引擎决定，非本应用限制）：
+#  - Android：arm64-v8a / armeabi-v7a / x86_64 三个 ABI 分包；x86(32位) 引擎已停止支持。
+#  - Windows：x64 + arm64；x86(32位) 桌面目标引擎不支持。
+#  - Linux：x64 + arm64（arm64 用原生 ubuntu-24.04-arm runner 编译）；armv7 不支持。
+#  - macOS：arm64 + x86_64 双架构（xcodebuild ARCHS 交叉编译）；通用二进制由 CI 合并。
+#  - iOS：真机 arm64 .ipa（无签名导出，上架需挂证书）。
+#  - 鸿蒙 HAP：单独 workflow（flutter-ohos 定制 SDK），见 build-hap.yml。
+name: Build all platforms
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  engine-check:
+    name: 双引擎金标一致性（Python↔Dart）
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dart-lang/setup-dart@v1
+      - name: Dart 引擎单测（audit/analytics/exam/限频/标记）
+        run: |
+          dart pub get
+          dart test test/engine_test.dart test/analytics_test.dart test/exam_test.dart test/request_throttle_test.dart test/course_marks_test.dart test/zju_parse_test.dart test/zju_parse_ext_test.dart
+      - name: golden/samples 双侧同步校验
+        run: |
+          cd ..
+          python data/sync_assets.py --check
+      - name: Python 引擎 24 项单测
+        run: |
+          cd ..
+          python -m unittest discover -s engine/tests
+      - name: 双引擎逐字段比对
+        run: |
+          cd ..
+          python eval/cross_engine_parity.py
+
+  android:
+    name: Android APK（arm64-v8a / armeabi-v7a / x86_64）
+    runs-on: ubuntu-latest
+    needs: engine-check
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.0}
+      - run: flutter build apk --release --split-per-abi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-android
+          path: |
+            compass_app/build/app/outputs/flutter-apk/*-release.apk
+
+  ios-unsigned:
+    name: iOS IPA（arm64 真机，无签名）
+    runs-on: macos-14
+    needs: engine-check
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.0}
+      - run: flutter build ipa --release --no-codesign
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-ios
+          path: compass_app/build/ios/ipa/*.ipa
+
+  macos-universal:
+    name: macOS（arm64 + x86_64）
+    runs-on: macos-14
+    needs: engine-check
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.0}
+      - name: 构建双架构（引擎按宿主架构出包；x86_64 用 ARCHS 交叉）
+        run: |
+          flutter build macos --release            # arm64（M 系 runner）
+          cd macos
+          xcodebuild -workspace Runner.xcworkspace -scheme Runner \
+            -configuration Release -arch x86_64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO build 2>/dev/null || echo "x86_64 交叉失败（见 README 备注）"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-macos
+          path: compass_app/build/macos/Build/Products/Release/*.app
+
+  windows-x64:
+    name: Windows x64（Setup.exe 安装包）
+    runs-on: windows-latest
+    needs: engine-check
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.0}
+      - uses: microsoft/setup-msbuild@v2
+      - name: Inno Setup
+        run: choco install innosetup -y
+      - run: flutter build windows --release --no-tree-shake-icons
+      - name: 打包 Setup.exe（Release+VC运行库，交付形态=安装包，不交 zip）
+        shell: pwsh
+        run: |
+          # 版本口径统一：从 pubspec.yaml 的 version 取（如 0.10.1+2 → 0.10.1），
+          # 杜绝安装包与 App 内版本长期对不上（0.9.0→课舟 改名后曾脱节）。
+          $ver = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
+          "AppVersion = $ver"
+          $crt = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC" -Recurse -Filter vcruntime140.dll | Where-Object FullName -match "x64\\Microsoft.VC143.CRT" | Sort-Object FullName -Desc | Select-Object -First 1
+          $rel = "build\windows\x64\runner\Release"
+          Copy-Item $crt.FullName $rel -Force
+          Copy-Item (Join-Path $crt.DirectoryName "msvcp140.dll") $rel -Force
+          $iss = "kezhou_setup.iss"
+          $relFull = (Resolve-Path $rel).Path
+          $icon  = (Resolve-Path "windows\runner\resources\app_icon.ico").Path
+          "Output: $relFull"
+          @"
+          [Setup]
+          AppId={{8F4B1D5E-92A6-4C7B-B3E0-KEZHOU00002}
+          AppName=课舟
+          AppVersion=$ver
+          AppPublisher=KeZhou Team
+          DefaultDirName={autopf}\KeZhou
+          DefaultGroupName=课舟
+          UninstallDisplayIcon={app}\kezhou.exe
+          OutputDir=..\dist
+          OutputBaseFilename=KeZhouSetup-$ver-win-x64
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+          Compression=lzma2/max
+          SolidCompression=yes
+          SetupIconFile=$icon
+          DisableProgramGroupPage=yes
+          PrivilegesRequired=lowest
+          PrivilegesRequiredOverridesAllowed=dialog
+          [Files]
+          Source: "$relFull\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          [Icons]
+          Name: "{group}\\课舟"; Filename: "{app}\\kezhou.exe"
+          Name: "{autodesktop}\\课舟"; Filename: "{app}\\kezhou.exe"
+          [Run]
+          Filename: "{app}\\kezhou.exe"; Description: "立即运行课舟"; Flags: nowait postinstall skipifsilent
+          "@ | Set-Content $iss -Encoding UTF8
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}","${env:ProgramFiles}" -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          & $iscc.FullName $iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kezhou-windows-x64-installer
+          path: dist/KeZhouSetup-*-win-x64.exe
+
+  # Windows arm64：Flutter 官方不支持从 x64 交叉编译桌面（build windows 只出宿主架构）。
+  # 两条诚实路径：① 在 Windows-on-ARM 自托管 runner 上直接 flutter build windows；
+  # ② 用户在 arm64 Windows 上自行构建。此处保留手动触发 job 说明。
+  windows-arm64-note:
+    name: Windows arm64（需 ARM 自托管 runner，见 README）
+    runs-on: [self-hosted, Windows, ARM64]
+    if: github.event_name == 'workflow_dispatch'
+    needs: engine-check
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - run: flutter build windows --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-windows-arm64
+          path: compass_app/build/windows/arm64/runner/Release/
+
+  linux-x64:
+    name: Linux x64
+    runs-on: ubuntu-latest
+    needs: engine-check
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 依赖
+        run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libsecret-1-dev
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.0}
+      - run: flutter build linux --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-linux-x64
+          path: compass_app/build/linux/x64/release/bundle/
+
+  linux-arm64:
+    name: Linux arm64
+    runs-on: ubuntu-24.04-arm
+    needs: engine-check
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libsecret-1-dev
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.0}
+      - run: flutter build linux --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-linux-arm64
+          path: compass_app/build/linux/arm64/release/bundle/

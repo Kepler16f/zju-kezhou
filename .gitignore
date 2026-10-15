@@ -1,0 +1,18 @@
+# 构建产物
+compass_app/build/
+compass_app/.dart_tool/
+compass_app/.idea/
+compass_app/windows/flutter/ephemeral/
+compass_app/linux/flutter/ephemeral/
+dist/
+*.log
+*.dmp
+
+# 教务页面现场转储（含真实学号/课表内容，勿入库）
+_diag_*
+
+# 临时/系统
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc

@@ -1,0 +1,502 @@
+{
+  "summary": [
+    {
+      "module_id": "general_required",
+      "module_path": "通识教育/通识必修",
+      "required": 34.0,
+      "earned": 32.0,
+      "gap": 2.0,
+      "remaining_future": 2.0,
+      "color": "yellow",
+      "status": "🟡 待补",
+      "missing_courses": [
+        {
+          "course_id": "GS1016",
+          "name": "人工智能通识",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "page": 21
+        }
+      ]
+    },
+    {
+      "module_id": "major_core",
+      "module_path": "专业教育/专业核心",
+      "required": 39.0,
+      "earned": 23.0,
+      "gap": 16.0,
+      "remaining_future": 16.0,
+      "color": "yellow",
+      "status": "🟡 待补",
+      "missing_courses": [
+        {
+          "course_id": "CS2002",
+          "name": "计算机组成原理",
+          "credits": 4.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "page": 25
+        },
+        {
+          "course_id": "CS2003",
+          "name": "算法设计与分析",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "page": 25
+        },
+        {
+          "course_id": "CS3002",
+          "name": "编译原理",
+          "credits": 3.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "page": 26
+        },
+        {
+          "course_id": "CS3004",
+          "name": "数据库系统",
+          "credits": 3.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "page": 27
+        },
+        {
+          "course_id": "CS3006",
+          "name": "计算机体系结构",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "page": 28
+        }
+      ]
+    },
+    {
+      "module_id": "major_limited",
+      "module_path": "专业教育/专业限选",
+      "required": 8.0,
+      "earned": 3.0,
+      "gap": 5.0,
+      "remaining_future": 7.0,
+      "color": "yellow",
+      "status": "🟡 待补",
+      "missing_courses": [
+        {
+          "course_id": "CS4101",
+          "name": "机器学习",
+          "credits": 4.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "page": 31
+        },
+        {
+          "course_id": "CS4102",
+          "name": "数据挖掘",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2025,
+            2026,
+            2027
+          ],
+          "terms": [
+            "2027-A(秋)"
+          ],
+          "closed": false,
+          "page": 31
+        },
+        {
+          "course_id": "CS3102",
+          "name": "信息安全导论",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2027
+          ],
+          "terms": [
+            "2027-B(春)"
+          ],
+          "closed": false,
+          "page": 30
+        },
+        {
+          "course_id": "CS3103",
+          "name": "区块链技术导论",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "page": 32
+        }
+      ]
+    },
+    {
+      "module_id": "intensive_practice",
+      "module_path": "集中实践",
+      "required": 18.0,
+      "earned": 0.0,
+      "gap": 18.0,
+      "remaining_future": 16.0,
+      "color": "red",
+      "status": "🔴 学籍年限内无法补足",
+      "missing_courses": [
+        {
+          "course_id": "PR4003",
+          "name": "毕业设计（论文）",
+          "credits": 8.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "page": 35
+        },
+        {
+          "course_id": "PR4002",
+          "name": "专业实习",
+          "credits": 4.0,
+          "offered": [
+            "秋",
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-A(秋)",
+            "2027-B(春)",
+            "2028-A(秋)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "page": 34
+        },
+        {
+          "course_id": "PR3001",
+          "name": "课程设计（数据结构）",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "page": 33
+        },
+        {
+          "course_id": "PR3002",
+          "name": "科研训练",
+          "credits": 2.0,
+          "offered": [
+            "秋",
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-A(秋)",
+            "2027-B(春)",
+            "2028-A(秋)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "page": 33
+        },
+        {
+          "course_id": "PR4001",
+          "name": "生产实习",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "page": 34
+        }
+      ]
+    },
+    {
+      "module_id": "free_elective",
+      "module_path": "任意选修",
+      "required": 4.0,
+      "earned": 0.0,
+      "gap": 4.0,
+      "remaining_future": 2.0,
+      "color": "red",
+      "status": "🔴 学籍年限内无法补足",
+      "missing_courses": [
+        {
+          "course_id": "EL001",
+          "name": "创新设计思维",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "page": 36
+        },
+        {
+          "course_id": "EL002",
+          "name": "数据可视化",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2024,
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "page": 36
+        },
+        {
+          "course_id": "EL003",
+          "name": "科技伦理",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2024,
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "page": 36
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "「人工智能通识」2分尚未修，（仅春开课），可选窗口：2026-B(春)、2027-B(春)、2028-B(春)；错过需等待。",
+      "refs": [
+        "GS1016@p21"
+      ]
+    },
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "「计算机组成原理」4分已修未过需重修，（仅秋开课），可选窗口：2027-A(秋)、2028-A(秋)；错过需等待。",
+      "refs": [
+        "CS2002@p25"
+      ]
+    },
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "「算法设计与分析」3分尚未修，（仅秋开课），可选窗口：2027-A(秋)、2028-A(秋)；错过需等待。",
+      "refs": [
+        "CS2003@p25"
+      ]
+    },
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "「数据挖掘」3分尚未修，（隔年开课，仅 2025、2026、2027 学年），可选窗口：2027-A(秋)；错过需等待。",
+      "refs": [
+        "CS4102@p31"
+      ]
+    },
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "「信息安全导论」2分尚未修，（隔年开课，仅 2027 学年），可选窗口：2027-B(春)；错过需等待。",
+      "refs": [
+        "CS3102@p30"
+      ]
+    },
+    {
+      "type": "graduation_risk",
+      "level": "red",
+      "text": "「集中实践」缺口 18 分，即使重修补上（可补 16 分），缺口 18 分仍超出未来可选学分。存在延毕风险，请尽快与教务确认替代方案。",
+      "refs": [
+        "PR4001@p34"
+      ]
+    },
+    {
+      "type": "graduation_risk",
+      "level": "red",
+      "text": "「任意选修」缺口 4 分，方案内该模块剩余课程在学籍年限内已无开课窗口：《数据可视化》2分、《科技伦理》2分。存在延毕风险，请尽快与教务确认替代方案。",
+      "refs": [
+        "EL002@p36",
+        "EL003@p36"
+      ]
+    },
+    {
+      "type": "prereq_gap",
+      "level": "red",
+      "text": "「操作系统」已通过，但其先修「计算机组成原理」在记录中未通过（或缺失），选课资格存疑，请与教务核实。",
+      "refs": [
+        "CS3001@p26",
+        "CS2002@p25"
+      ]
+    },
+    {
+      "type": "prereq_gap",
+      "level": "red",
+      "text": "「计算机网络」已通过，但其先修「计算机组成原理」在记录中未通过（或缺失），选课资格存疑，请与教务核实。",
+      "refs": [
+        "CS3003@p27",
+        "CS2002@p25"
+      ]
+    },
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "计划选课「算法设计与分析」排在 2026-B(春)，但培养方案标注仅秋开课，需调整学期。",
+      "refs": [
+        "CS2003@p25"
+      ]
+    },
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "计划选课「信息安全导论」排在 2026-B(春)，但该课隔年开课（仅 2027 学年），本学期不开，需等到对应学年。",
+      "refs": [
+        "CS3102@p30"
+      ]
+    },
+    {
+      "type": "prereq_same_semester",
+      "level": "red",
+      "text": "计划选课「计算机体系结构」需先修「计算机组成原理」，但先修排在同一学期或更晚（2027-A(秋) vs 2027-A(秋)），会选不上，需拆开两学期。",
+      "refs": [
+        "CS3006@p28",
+        "CS2002@p25"
+      ]
+    },
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "计划选课「区块链技术导论」排在 2027-A(秋)，但培养方案标注仅春开课，需调整学期。",
+      "refs": [
+        "CS3103@p32"
+      ]
+    },
+    {
+      "type": "time_conflict",
+      "level": "red",
+      "text": "2027-A 计划课表冲突：计算机体系结构 与 区块链技术导论 周5 第1-2节（第1-16周）重叠。",
+      "refs": []
+    },
+    {
+      "type": "failed_recheck",
+      "level": "yellow",
+      "text": "《计算机组成原理》成绩 55 未通过，需重修或补考，该课程学分未计入。",
+      "refs": []
+    },
+    {
+      "type": "failed_recheck",
+      "level": "yellow",
+      "text": "《数据库系统》成绩 58 未通过，需重修或补考，该课程学分未计入。",
+      "refs": []
+    },
+    {
+      "type": "unmatched_courses",
+      "level": "info",
+      "text": "以下 1 门课程未在培养方案中匹配到，未计入模块学分（多为超修任选或名称差异过大，请人工核对）：创业实践。",
+      "refs": []
+    }
+  ],
+  "extra_courses": [
+    {
+      "course_id": null,
+      "name": "创业实践",
+      "credits": 1.0,
+      "grade": 90,
+      "semester": "2025-A"
+    }
+  ],
+  "totals": {
+    "required": 103.0,
+    "earned": 58.0,
+    "gap": 45.0
+  },
+  "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
+  "trace": {
+    "plan": "2023级计算机专业本科培养方案（合成演示样例） 2023级（核验日 2026-10-13）",
+    "engine": "v1.1"
+  }
+}

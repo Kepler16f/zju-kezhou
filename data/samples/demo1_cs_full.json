@@ -1,0 +1,274 @@
+{
+  "student": {
+    "alias": "演示同学01",
+    "major": "computer_science",
+    "grade": "2023",
+    "current_semester": "2026-A",
+    "planned_next": [
+      "2026-B",
+      "2027-A"
+    ]
+  },
+  "source": "paste",
+  "courses": [
+    {
+      "course_id": "GS1001",
+      "name": "思想道德与法治",
+      "credits": 3.0,
+      "grade": 85,
+      "semester": "2023-A"
+    },
+    {
+      "course_id": "GS1002",
+      "name": "英语学术读写",
+      "credits": 2.0,
+      "grade": 78,
+      "semester": "2023-A"
+    },
+    {
+      "course_id": "GS1003",
+      "name": "英语国际交流",
+      "credits": 2.0,
+      "grade": 82,
+      "semester": "2023-B"
+    },
+    {
+      "course_id": "GS1004",
+      "name": "体育（基础）",
+      "credits": 1.0,
+      "grade": 90,
+      "semester": "2023-A"
+    },
+    {
+      "course_id": "GS1005",
+      "name": "体育（选项）",
+      "credits": 1.0,
+      "grade": 88,
+      "semester": "2024-B"
+    },
+    {
+      "course_id": "GS1006",
+      "name": "军事理论",
+      "credits": 2.0,
+      "grade": 88,
+      "semester": "2023-A"
+    },
+    {
+      "course_id": "GS1007",
+      "name": "计算机基础",
+      "credits": 2.0,
+      "grade": 92,
+      "semester": "2023-A"
+    },
+    {
+      "course_id": "GS1008",
+      "name": "毛泽东思想和中国特色社会主义理论体系概论",
+      "credits": 3.0,
+      "grade": 79,
+      "semester": "2024-A"
+    },
+    {
+      "course_id": "GS1009",
+      "name": "中国近现代史纲要",
+      "credits": 3.0,
+      "grade": 84,
+      "semester": "2024-B"
+    },
+    {
+      "course_id": "GS1010",
+      "name": "马克思主义基本原理",
+      "credits": 3.0,
+      "grade": 80,
+      "semester": "2024-A"
+    },
+    {
+      "course_id": "GS1011",
+      "name": "形势与政策",
+      "credits": 2.0,
+      "grade": 90,
+      "semester": "2024-A"
+    },
+    {
+      "course_id": "GS1012",
+      "name": "劳动教育",
+      "credits": 2.0,
+      "grade": 87,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": "GS1013",
+      "name": "国家安全教育",
+      "credits": 2.0,
+      "grade": 91,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": "GS1014",
+      "name": "创新创业基础",
+      "credits": 2.0,
+      "grade": 83,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": "GS1015",
+      "name": "心理与人格发展",
+      "credits": 2.0,
+      "grade": 86,
+      "semester": "2025-B"
+    },
+    {
+      "course_id": "CS1001",
+      "name": "程序设计基础",
+      "credits": 4.0,
+      "grade": 91,
+      "semester": "2023-A"
+    },
+    {
+      "course_id": "CS1002",
+      "name": "离散数学",
+      "credits": 3.0,
+      "grade": 76,
+      "semester": "2023-A"
+    },
+    {
+      "course_id": "CS2001",
+      "name": "数据结构与算法",
+      "credits": 4.0,
+      "grade": 83,
+      "semester": "2024-B"
+    },
+    {
+      "course_id": "CS2002",
+      "name": "计算机组成原理",
+      "credits": 4.0,
+      "grade": 55,
+      "semester": "2024-A"
+    },
+    {
+      "course_id": "CS3001",
+      "name": "操作系统",
+      "credits": 4.0,
+      "grade": 78,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": "CS3003",
+      "name": "计算机网络",
+      "credits": 3.0,
+      "grade": 80,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": "CS3004",
+      "name": "数据库系统",
+      "credits": 3.0,
+      "grade": 58,
+      "semester": "2025-B"
+    },
+    {
+      "course_id": "CS3005",
+      "name": "软件工程导论",
+      "credits": 2.0,
+      "grade": 85,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": "CS3007",
+      "name": "数值分析",
+      "credits": 3.0,
+      "grade": 77,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": "CS3101",
+      "name": "人工智能导论",
+      "credits": 3.0,
+      "grade": 88,
+      "semester": "2025-A"
+    },
+    {
+      "course_id": null,
+      "name": "创业实践",
+      "credits": 1.0,
+      "grade": 90,
+      "semester": "2025-A"
+    }
+  ],
+  "planned_courses": [
+    {
+      "course_id": "CS2003",
+      "name": "算法设计与分析",
+      "credits": 3.0,
+      "semester": "2026-B",
+      "time_slots": [
+        {
+          "day": 2,
+          "start": 3,
+          "end": 4,
+          "week_start": 1,
+          "week_end": 16
+        }
+      ]
+    },
+    {
+      "course_id": "CS3102",
+      "name": "信息安全导论",
+      "credits": 2.0,
+      "semester": "2026-B",
+      "time_slots": [
+        {
+          "day": 3,
+          "start": 1,
+          "end": 3,
+          "week_start": 1,
+          "week_end": 16
+        }
+      ]
+    },
+    {
+      "course_id": "CS2002",
+      "name": "计算机组成原理",
+      "credits": 4.0,
+      "semester": "2027-A",
+      "time_slots": [
+        {
+          "day": 1,
+          "start": 1,
+          "end": 2,
+          "week_start": 1,
+          "week_end": 16
+        }
+      ]
+    },
+    {
+      "course_id": "CS3006",
+      "name": "计算机体系结构",
+      "credits": 3.0,
+      "semester": "2027-A",
+      "time_slots": [
+        {
+          "day": 5,
+          "start": 1,
+          "end": 2,
+          "week_start": 1,
+          "week_end": 16
+        }
+      ]
+    },
+    {
+      "course_id": "CS3103",
+      "name": "区块链技术导论",
+      "credits": 2.0,
+      "semester": "2027-A",
+      "time_slots": [
+        {
+          "day": 5,
+          "start": 1,
+          "end": 2,
+          "week_start": 1,
+          "week_end": 16
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "major": "software_engineering",
+    "grade": "2023",
+    "source_doc": "2023级软件学院本科培养方案（合成样例）",
+    "total_credits": 61.0,
+    "extracted_by": "M1 workflow v1",
+    "verified": true,
+    "verified_at": "2026-10-13"
+  },
+  "modules": [
+    { "module_id": "general_required", "module_path": "通识教育/通识必修", "required_credits": 21.0, "kind": "必修" },
+    { "module_id": "major_core", "module_path": "专业教育/专业核心", "required_credits": 19.0, "kind": "必修" },
+    { "module_id": "major_limited", "module_path": "专业教育/专业限选", "required_credits": 5.0, "kind": "限选" },
+    { "module_id": "intensive_practice", "module_path": "集中实践", "required_credits": 14.0, "kind": "必修" },
+    { "module_id": "free_elective", "module_path": "任意选修", "required_credits": 2.0, "kind": "限选" }
+  ],
+  "courses": [
+    { "course_id": "GS1001", "name": "思想道德与法治", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 12 } },
+    { "course_id": "GS1002", "name": "英语学术读写", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 13 } },
+    { "course_id": "GS1003", "name": "英语国际交流", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 13 } },
+    { "course_id": "GS1004", "name": "体育（基础）", "credits": 1.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 14 } },
+    { "course_id": "GS1005", "name": "体育（选项）", "credits": 1.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 14 } },
+    { "course_id": "GS1006", "name": "军事理论", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 15 } },
+    { "course_id": "GS1007", "name": "计算机基础", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 16 } },
+    { "course_id": "GS1008", "name": "毛泽东思想和中国特色社会主义理论体系概论", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 17 } },
+    { "course_id": "GS1009", "name": "中国近现代史纲要", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 17 } },
+    { "course_id": "GS1010", "name": "形势与政策", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 18 } },
+
+    { "course_id": "SE1001", "name": "程序设计基础", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 21 } },
+    { "course_id": "SE2001", "name": "面向对象设计", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": ["SE1001"], "source": { "page": 22 } },
+    { "course_id": "SE2002", "name": "数据结构", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["SE1001"], "source": { "page": 22 } },
+    { "course_id": "SE3001", "name": "软件需求工程", "credits": 2.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 23 } },
+    { "course_id": "SE3002", "name": "软件测试", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["SE2001"], "source": { "page": 23 } },
+    { "course_id": "SE3003", "name": "软件体系结构", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": ["SE2002"], "source": { "page": 24 } },
+
+    { "course_id": "SE3101", "name": "移动应用开发", "credits": 2.0, "module_id": "major_limited", "nature": "限选", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 25 } },
+    { "course_id": "SE4101", "name": "云原生技术", "credits": 3.0, "module_id": "major_limited", "nature": "限选", "offered": ["春"], "grade_cycle": null, "offered_years": [2026], "prereq": [], "source": { "page": 25 } },
+
+    { "course_id": "SE4001", "name": "企业实习", "credits": 6.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["春"], "grade_cycle": null, "offered_years": [2026], "prereq": [], "source": { "page": 26 } },
+    { "course_id": "SE4002", "name": "毕业设计（论文）", "credits": 8.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 26 } },
+
+    { "course_id": "EL101", "name": "IT项目管理", "credits": 2.0, "module_id": "free_elective", "nature": "任选", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": { "page": 27 } }
+  ]
+}

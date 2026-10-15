@@ -1,0 +1,88 @@
+# 鸿蒙 HarmonyOS NEXT HAP 构建（流程参考开源项目 Helechron 验证过的 GitHub Actions 配置）
+# 说明：本仓库不提交 ohos/ 脚手架，CI 用 flutter-ohos 的 `flutter create --platforms ohos` 现场生成，
+#       并注入 openharmony-sig 的 path_provider 依赖覆盖（仅本 job 生效，不影响其他平台构建）。
+name: Build HarmonyOS HAP
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-hap:
+    runs-on: ubuntu-latest
+    env:
+      FLUTTER_OHOS_REPO: https://gitcode.com/openharmony-tpc/flutter_flutter.git
+      FLUTTER_OHOS_REF: 3.27.5-ohos-1.0.8
+      PUB_HOSTED_URL: https://pub.flutter-io.cn
+      FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev
+
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+
+      - name: Setup HarmonyOS SDK
+        uses: ErBWs/setup-ohos@v2
+        with: {version: 26.0.0.821, cache: true}
+
+      - name: Clone Flutter-ohos SDK
+        run: |
+          FLUTTER_OHOS_DIR="$RUNNER_TEMP/flutter_ohos"
+          git clone --branch "$FLUTTER_OHOS_REF" --depth 1 "$FLUTTER_OHOS_REPO" "$FLUTTER_OHOS_DIR"
+          git config --global --add safe.directory "$FLUTTER_OHOS_DIR"
+          echo "$FLUTTER_OHOS_DIR/bin" >> "$GITHUB_PATH"
+          echo "FLUTTER_ROOT=$FLUTTER_OHOS_DIR" >> "$GITHUB_ENV"
+        timeout-minutes: 20
+
+      - name: Configure npm registry (hvigor 依赖)
+        run: |
+          echo "registry=https://repo.huaweicloud.com/repository/npm/" > ~/.npmrc
+          echo "@ohos:registry=https://repo.harmonyos.com/npm/" >> ~/.npmrc
+
+      - name: 注入 ohos 依赖覆盖（path_provider openharmony-sig fork）
+        working-directory: compass_app
+        run: |
+          cat >> pubspec.yaml <<'EOF'
+        dependency_overrides:
+          path_provider:
+            git:
+              url: https://gitee.com/openharmony-sig/flutter_packages.git
+              path: packages/path_provider/path_provider
+        EOF
+
+      - name: 生成 ohos 平台脚手架（已存在则跳过）
+        run: |
+          [ -d ohos ] || flutter create --platforms ohos .
+          sed -i 's/bundleName": ".*"/bundleName": "edu.zju.compass"/' ohos/AppScope/app.json5 || true
+
+      - name: Get dependencies
+        run: |
+          for i in 1 2 3 4 5; do
+            flutter pub get && exit 0
+            echo "::warning::pub get failed (gitee 限流可能)，20s 后重试"
+            sleep 20
+          done
+          exit 1
+
+      - name: Build HAP
+        run: |
+          set +e
+          flutter build hap --release --target-platform ohos-arm64
+          STATUS=$?
+          set -e
+          HAP="$(find ohos/entry/build -type f -name '*unsigned*.hap' 2>/dev/null | head -n 1)"
+          [ -z "$HAP" ] && { echo "::error::未产出 HAP"; find ohos -name '*.hap'; exit 1; }
+          [ "$STATUS" -ne 0 ] && echo "::notice::flutter 退出码 $STATUS（缺签名配置），已回收未签名 HAP"
+          mkdir -p build/ohos && cp "$HAP" build/ohos/compass_unsigned.hap
+        timeout-minutes: 40
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compass-hap-unsigned
+          path: compass_app/build/ohos/compass_unsigned.hap
+          if-no-files-found: error

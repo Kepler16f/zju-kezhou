@@ -1,0 +1,29 @@
+{
+  "student": { "alias": "演示同学02", "major": "software_engineering", "grade": "2023", "current_semester": "2026-A", "planned_next": ["2026-B"] },
+  "source": "export_csv",
+  "courses": [
+    { "course_id": "SE1001", "name": "程序设计基础", "credits": 4.0, "grade": 88, "semester": "2023-A" },
+    { "course_id": "SE2002", "name": "数据结构", "credits": 4.0, "grade": 80, "semester": "2024-A" },
+    { "course_id": "SE2001", "name": "面向对象设计", "credits": 3.0, "grade": 85, "semester": "2024-B" },
+    { "course_id": "SE3001", "name": "软件需求工程", "credits": 2.0, "grade": 79, "semester": "2025-A" },
+    { "course_id": "GS1001", "name": "思想道德与法治", "credits": 3.0, "grade": 84, "semester": "2023-A" },
+    { "course_id": "GS1002", "name": "英语学术读写", "credits": 2.0, "grade": 77, "semester": "2023-A" },
+    { "course_id": "GS1003", "name": "英语国际交流", "credits": 2.0, "grade": 81, "semester": "2023-B" },
+    { "course_id": "GS1004", "name": "体育（基础）", "credits": 1.0, "grade": 89, "semester": "2023-A" },
+    { "course_id": "GS1005", "name": "体育（选项）", "credits": 1.0, "grade": 90, "semester": "2024-B" },
+    { "course_id": "GS1006", "name": "军事理论", "credits": 2.0, "grade": 86, "semester": "2023-A" },
+    { "course_id": "GS1007", "name": "计算机基础", "credits": 2.0, "grade": 93, "semester": "2023-A" },
+    { "course_id": "GS1008", "name": "毛泽东思想和中国特色社会主义理论体系概论", "credits": 3.0, "grade": 80, "semester": "2024-A" },
+    { "course_id": "GS1009", "name": "中国近现代史纲要", "credits": 3.0, "grade": 83, "semester": "2024-B" },
+    { "course_id": "GS1010", "name": "形势与政策", "credits": 2.0, "grade": 88, "semester": "2025-A" },
+    { "course_id": "EL101", "name": "IT项目管理", "credits": 2.0, "grade": 85, "semester": "2025-A" }
+  ],
+  "planned_courses": [
+    { "course_id": "SE3002", "name": "软件测试", "credits": 3.0, "semester": "2026-B",
+      "time_slots": [ { "day": 1, "start": 3, "end": 4, "week_start": 1, "week_end": 16 } ] },
+    { "course_id": "SE3101", "name": "移动应用开发", "credits": 2.0, "semester": "2026-B",
+      "time_slots": [ { "day": 1, "start": 1, "end": 2, "week_start": 1, "week_end": 16 } ] },
+    { "course_id": "SE4101", "name": "云原生技术", "credits": 3.0, "semester": "2026-B",
+      "time_slots": [ { "day": 2, "start": 8, "end": 9, "week_start": 1, "week_end": 16 } ] }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://学业罗盘/schema/record.schema.json",
+  "title": "AcademicRecord — 已修记录（三源适配器统一输出）",
+  "type": "object",
+  "required": ["student", "source", "courses"],
+  "properties": {
+    "student": {
+      "type": "object",
+      "required": ["alias", "major", "grade", "current_semester"],
+      "properties": {
+        "alias": { "type": "string", "description": "演示虚拟标识，禁止真实姓名/学号" },
+        "major": { "type": "string", "enum": ["computer_science", "software_engineering"] },
+        "grade": { "type": "string", "pattern": "^20\\d{2}$" },
+        "current_semester": { "type": "string", "pattern": "^20\\d{2}-[AB]$", "description": "A=秋 B=春" },
+        "planned_next": { "type": "array", "items": { "type": "string", "pattern": "^20\\d{2}-[AB]$" } }
+      }
+    },
+    "source": { "enum": ["paste", "export_csv", "xuezaizheda_api"] },
+    "courses": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": ["name", "credits", "semester"],
+        "properties": {
+          "course_id": { "type": ["string", "null"] },
+          "name": { "type": "string", "minLength": 1 },
+          "credits": { "type": "number", "exclusiveMinimum": 0, "maximum": 20 },
+          "grade": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+          "passed": { "type": ["boolean", "null"], "description": "缺省时引擎按 grade>=60 推断" },
+          "semester": { "type": "string", "pattern": "^20\\d{2}-[AB]$" },
+          "time_slots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["day", "start", "end"],
+              "properties": {
+                "day": { "type": "integer", "minimum": 1, "maximum": 7 },
+                "start": { "type": "integer", "minimum": 1 },
+                "end": { "type": "integer", "minimum": 1 },
+                "week_start": { "type": "integer", "default": 1 },
+                "week_end": { "type": "integer", "default": 16 }
+              }
+            },
+            "description": "计划选课课程带此字段供 M3 时间冲突检测；已修课程不需要"
+          }
+        }
+      }
+    }
+  }
+}

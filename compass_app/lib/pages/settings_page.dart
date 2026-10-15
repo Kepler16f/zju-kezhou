@@ -1,0 +1,338 @@
+/// pages/settings_page.dart — 设置页（Helechron Option 风格）：分组卡片列表。
+/// 组：账号（教务网登录）/ 数据（数据源+方案+学期+运行）/ 通用（诊断/合规）/ 关于。
+library;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../data/diagnostic_log.dart';
+
+enum DataMode { sample, paste, zju }
+
+class SettingsPage extends StatelessWidget {
+  final DataMode mode;
+  final ValueChanged<DataMode> onModeChange;
+  final String major;
+  final ValueChanged<String?> onMajorChange;
+  final String current;
+  final ValueChanged<String?> onCurrentChange;
+  final Map<String, String> majors;
+  final TextEditingController userCtl;
+  final TextEditingController passCtl;
+  final TextEditingController pasteCtl;
+  final bool busy;
+  final VoidCallback onRun;
+  final String? notice;
+  final String? loggedInAs; // 已记住的学号（自动登录状态）
+  final DateTime? lastDataAt; // 上次成功拉取数据的时间
+  final VoidCallback onClearData;
+
+  const SettingsPage(
+      {super.key, required this.mode, required this.onModeChange,
+      required this.major, required this.onMajorChange,
+      required this.current, required this.onCurrentChange,
+      required this.majors, required this.userCtl, required this.passCtl,
+      required this.pasteCtl, required this.busy, required this.onRun,
+      this.notice, this.loggedInAs, this.lastDataAt, required this.onClearData});
+
+  static const _semesters = [
+    '2023-A','2023-B','2024-A','2024-B','2025-A','2025-B',
+    '2026-A','2026-B','2027-A','2027-B',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+      children: [
+        _groupHeader('账号'),
+        Card(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.account_circle_outlined, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(loggedInAs != null
+                          ? '已记住学号 $loggedInAs（启动自动登录，手动刷新免输密码）'
+                          : '未登录（教务网模式输入学号密码后自动记住）',
+                          style: const TextStyle(fontSize: 13)),
+                    ),
+                  ],
+                ),
+              ),
+              if (lastDataAt != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.schedule, size: 16),
+                      const SizedBox(width: 8),
+                      Text('上次数据：${_fmt(lastDataAt!)}',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    ],
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: TextField(
+                  controller: userCtl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                      labelText: '学号', border: OutlineInputBorder()),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: TextField(
+                  controller: passCtl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: '统一身份认证密码（留空则用记住的密码）',
+                      border: OutlineInputBorder()),
+                ),
+              ),
+            ],
+          ),
+        ),
+        _groupHeader('数据'),
+        Card(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                child: SegmentedButton<DataMode>(
+                  segments: const [
+                    ButtonSegment(
+                        value: DataMode.sample,
+                        label: Text('样例'),
+                        icon: Icon(Icons.science_outlined)),
+                    ButtonSegment(
+                        value: DataMode.paste,
+                        label: Text('粘贴'),
+                        icon: Icon(Icons.content_paste_outlined)),
+                    ButtonSegment(
+                        value: DataMode.zju,
+                        label: Text('教务网'),
+                        icon: Icon(Icons.school_outlined)),
+                  ],
+                  selected: {mode},
+                  onSelectionChanged: (s) => onModeChange(s.first),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _selector('培养方案', major, majors, onMajorChange),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _selector(
+                          '当前学期',
+                          current,
+                          {for (final s in _semesters) s: s},
+                          onCurrentChange),
+                    ),
+                  ],
+                ),
+              ),
+              if (mode == DataMode.paste)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: TextField(
+                    controller: pasteCtl,
+                    minLines: 3,
+                    maxLines: 8,
+                    decoration: const InputDecoration(
+                      labelText: '粘贴成绩单（每行：学期 课程代码 课程名 学分 成绩）',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: busy ? null : onRun,
+                    icon: busy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.checklist),
+                    label: Text(switch (mode) {
+                      DataMode.sample => '运行样例审计',
+                      DataMode.paste => '解析并审计',
+                      DataMode.zju => '登录教务网并拉取',
+                    }),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (notice != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 4),
+            child: Text(notice!,
+                style: const TextStyle(color: Colors.red, fontSize: 13)),
+          ),
+        _groupHeader('通用'),
+        Card(
+          child: Column(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.bug_report_outlined),
+                title: const Text('登录诊断日志'),
+                subtitle: const Text('逐步记录登录/取数卡点（不含密码）',
+                    style: TextStyle(fontSize: 11)),
+                onTap: () => _showDiagnostics(context),
+              ),
+              const Divider(height: 1, indent: 16),
+              ListTile(
+                leading: const Icon(Icons.privacy_tip_outlined),
+                title: const Text('数据与合规'),
+                subtitle: const Text('凭证沙箱存储、Cookie 仅内存、只读通道',
+                    style: TextStyle(fontSize: 11)),
+                onTap: () => _showCompliance(context),
+              ),
+            ],
+          ),
+        ),
+        _groupHeader('关于'),
+        const Card(
+          child: Column(
+            children: [
+              ListTile(
+                leading: Icon(Icons.info_outline),
+                title: Text('课舟 v0.10.0'),
+                subtitle: Text('培养方案结构化与选课风险审计；学分计算全部本地完成',
+                    style: TextStyle(fontSize: 11)),
+              ),
+              Divider(height: 1, indent: 16),
+              ListTile(
+                leading: Icon(Icons.favorite_outline),
+                title: Text('开源致谢'),
+                subtitle: Text('字体 Noto Sans SC（OFL）；教务协议参考开源社区成果',
+                    style: TextStyle(fontSize: 11)),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _fmt(DateTime t) {
+    final d = DateTime.now().difference(t);
+    if (d.inMinutes < 1) return '刚刚';
+    if (d.inMinutes < 60) return '${d.inMinutes} 分钟前';
+    if (d.inHours < 24) return '${d.inHours} 小时前';
+    return '${t.month}/${t.day} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  }
+
+  Widget _groupHeader(String title) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 12, 4, 4),
+        child: Text(title,
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: Colors.grey.shade700)),
+      );
+
+  Widget _selector(String label, String value, Map<String, String> items,
+      ValueChanged<String?> onChanged) {
+    return InputDecorator(
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          isExpanded: true,
+          isDense: true,
+          menuMaxHeight: 360,
+          items: [
+            for (final e in items.entries)
+              DropdownMenuItem(
+                  value: e.key,
+                  child: Text(e.value, overflow: TextOverflow.ellipsis)),
+          ],
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+
+  void _showDiagnostics(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('登录/取数诊断日志'),
+        content: SizedBox(
+          width: 460,
+          height: 360,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              DiagnosticLog.instance.entries.isEmpty
+                  ? '（暂无记录——用"教务网"模式登录即可产生步骤日志）'
+                  : DiagnosticLog.instance.dump(),
+              style: const TextStyle(
+                  fontFamily: 'monospace', fontSize: 12, height: 1.5),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(
+                  ClipboardData(text: DiagnosticLog.instance.dump()));
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('复制并关闭'),
+          ),
+          TextButton(
+            onPressed: () {
+              DiagnosticLog.instance.clear();
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showCompliance(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('数据与合规'),
+        content: const Text('凭证存储：App 沙箱私有文件（用户态隔离，混淆编码）；'
+            '会话 Cookie 仅驻内存，退出即清除；教务通道只读、无任何写操作。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () {
+              onClearData();
+              if (ctx.mounted) Navigator.pop(ctx);
+            },
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('一键清除全部本地数据'),
+          ),
+        ],
+      ),
+    );
+  }
+}

@@ -1,0 +1,40 @@
+name: compass_app
+description: "学业罗盘 — 本科培养方案结构化与选课风险审计（全平台 Flutter 成品）"
+publish_to: 'none'
+version: 0.10.7+7
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"   # 兼容 flutter-ohos 3.27（Dart 3.6）与 stable 3.47
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  path: ^1.9.0
+  path_provider: ^2.1.0
+  window_manager: ^0.4.3  # PiliPlus 同款窗口管理（绕开引擎 resize 崩溃路径）        # 沙箱目录（凭证/缓存）
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  test: ^1.25.0
+
+# path_provider_android 2.3+ 依赖 package:jni，其 CMake 在中文用户名路径
+# （C:/Users/<中文名>/AppData/Local/Pub/Cache）下 ninja 报路径语法错。
+# 锁 2.2.12 规避；若未来需要新版，将 PUB_CACHE 迁至纯 ASCII 路径即可解除。
+dependency_overrides:
+  path_provider_android: 2.2.12
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/golden/
+    - assets/samples/
+  fonts:
+    # Noto Sans SC (OFL-1.1)，SubsetOTF 按 GB2312+应用文案裁剪：干净机器上中文一致渲染
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-Regular.ttf
+        - asset: assets/fonts/NotoSansSC-Bold.ttf
+          weight: 700

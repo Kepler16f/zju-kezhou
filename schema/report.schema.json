@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://学业罗盘/schema/report.schema.json",
+  "title": "AuditReport — M2 规则引擎输出契约（LLM 叙事与本地前端的唯一数据源）",
+  "type": "object",
+  "required": ["summary", "warnings", "disclaimer", "trace"],
+  "properties": {
+    "summary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["module_id", "module_path", "required", "earned", "gap", "color", "remaining_future"],
+        "properties": {
+          "module_id": { "type": "string" },
+          "module_path": { "type": "string" },
+          "required": { "type": "number" },
+          "earned": { "type": "number" },
+          "gap": { "type": "number" },
+          "remaining_future": { "type": "number", "description": "毕业前该模块仍可选到的方案内学分" },
+          "color": { "enum": ["green", "yellow", "red"] },
+          "status": { "type": "string" },
+          "missing_courses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "credits"],
+              "properties": {
+                "course_id": { "type": "string" },
+                "name": { "type": "string" },
+                "credits": { "type": "number" },
+                "offered": { "type": "array", "items": { "type": "string" } },
+                "offered_years": { "type": ["array", "null"] },
+                "page": { "type": ["integer", "null"] },
+                "closed": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "text", "refs"],
+        "properties": {
+          "type": { "enum": ["prereq_gap", "prereq_same_semester", "time_conflict", "offering_closed", "graduation_risk", "failed_recheck", "unmatched_courses"] },
+          "text": { "type": "string" },
+          "refs": { "type": "array", "items": { "type": "string" }, "description": "course_id@p页码 列表" }
+        }
+      }
+    },
+    "extra_courses": { "type": "array", "items": { "type": "object" }, "description": "匹配不到方案、不计入模块学分的已修课程" },
+    "totals": {
+      "type": "object",
+      "properties": {
+        "required": { "type": "number" },
+        "earned": { "type": "number" },
+        "gap": { "type": "number" }
+      }
+    },
+    "disclaimer": { "type": "string" },
+    "trace": {
+      "type": "object",
+      "required": ["plan", "engine"],
+      "properties": {
+        "plan": { "type": "string" },
+        "engine": { "type": "string" }
+      }
+    }
+  }
+}
