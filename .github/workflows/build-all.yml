@@ -149,8 +149,12 @@ jobs:
           [Run]
           Filename: "{app}\\kezhou.exe"; Description: "立即运行课舟"; Flags: nowait postinstall skipifsilent
           "@ | Set-Content $iss -Encoding UTF8
-          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}","${env:ProgramFiles}" -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          & $iscc.FullName $iss
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = (Get-ChildItem "${env:ProgramFiles(x86)}\Inno*","${env:ProgramFiles}\Inno*" -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          }
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          & $iscc $iss
       - uses: actions/upload-artifact@v4
         with:
           name: kezhou-windows-x64-installer
@@ -199,7 +203,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libsecret-1-dev
       - uses: subosito/flutter-action@v2
-        with: {channel: stable, flutter-version: 3.47.7}
+        with: {channel: stable}  # 3.47.7 无 linux-arm64 发布档，用最新 stable
       - run: flutter build linux --release
       - uses: actions/upload-artifact@v4
         with:
