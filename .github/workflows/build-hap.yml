@@ -63,6 +63,27 @@ jobs:
           [ -d ohos ] || flutter create --platforms ohos .
           sed -i 's/bundleName": ".*"/bundleName": "edu.zju.compass"/' ohos/AppScope/app.json5 || true
 
+      - name: 注入应用图标（分层：圆角矩形 + 圆形裁切安全区）
+        run: |
+          # 图标由 packaging/make_icons.py 生成并入库；脚手架里是模板默认图标，逐处覆盖。
+          # 分层图标 = 鸿蒙版"自适应图标"：背景铺满，前景（字标）在安全区内，
+          # 桌面按圆形/圆角矩形裁切都不会切到主体。
+          APP_MEDIA="ohos/AppScope/resources/base/media"
+          ENTRY_MEDIA="ohos/entry/src/main/resources/base/media"
+          mkdir -p "$APP_MEDIA" "$ENTRY_MEDIA"
+          cp -v assets/brand/ohos/foreground.png     "$APP_MEDIA/foreground.png"
+          cp -v assets/brand/ohos/background.png     "$APP_MEDIA/background.png"
+          cp -v assets/brand/ohos/layered_image.json "$APP_MEDIA/layered_image.json"
+          cp -v assets/brand/ohos/app_icon.png       "$APP_MEDIA/app_icon.png"
+          cp -v assets/brand/ohos/icon.png           "$ENTRY_MEDIA/icon.png"
+          cp -v assets/brand/ohos/startIcon.png      "$ENTRY_MEDIA/startIcon.png"
+          # AppScope(app.json5) 指向分层图标；无匹配则保持模板引用（不致失败）
+          APP_JSON="ohos/AppScope/app.json5"
+          if [ -f "$APP_JSON" ] && ! grep -q 'layered_image' "$APP_JSON"; then
+            sed -i -E 's|("icon"\s*:\s*)"\$media:[A-Za-z_]+"|\1"$media:layered_image"|' "$APP_JSON" || true
+          fi
+          grep -n '"icon"' "$APP_JSON" || true
+
       - name: Get dependencies
         run: |
           for i in 1 2 3 4 5; do
