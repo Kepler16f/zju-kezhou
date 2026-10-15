@@ -47,13 +47,15 @@ jobs:
       - name: 注入 ohos 依赖覆盖（path_provider openharmony-sig fork）
         working-directory: compass_app
         run: |
-          cat >> pubspec.yaml <<'EOF'
-          dependency_overrides:
-            path_provider:
-              git:
-                url: https://gitee.com/openharmony-sig/flutter_packages.git
-                path: packages/path_provider/path_provider
-          EOF
+          # pubspec 已有 dependency_overrides 段（path_provider_android 锁版本），
+          # 用 sed 插入而非追加，避免重复键。幂等：已注入则跳过。
+          if ! grep -q "openharmony-sig/flutter_packages" pubspec.yaml; then
+            sed -i '/^dependency_overrides:/a\  path_provider:\n    git:\n      url: https://gitee.com/openharmony-sig/flutter_packages.git\n      path: packages/path_provider/path_provider' pubspec.yaml
+            echo "injected path_provider override"
+          else
+            echo "already injected, skip"
+          fi
+          grep -A5 "dependency_overrides" pubspec.yaml | head -8
 
       - name: 生成 ohos 平台脚手架（已存在则跳过）
         run: |
