@@ -63,6 +63,9 @@ jobs:
           [ -d ohos ] || flutter create --platforms ohos .
           sed -i 's/bundleName": ".*"/bundleName": "edu.zju.compass"/' ohos/AppScope/app.json5 || true
 
+      - name: 应用名改「课舟」（AppScope 与 entry 两级 string.json）
+        run: python3 ../packaging/set_ohos_app_name.py ohos
+
       - name: 注入应用图标（分层：圆角矩形 + 圆形裁切安全区）
         run: |
           # 图标由 packaging/make_icons.py 生成并入库；脚手架里是模板默认图标，逐处覆盖。
