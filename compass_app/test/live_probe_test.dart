@@ -11,6 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:compass_app/data/credential_store.dart';
 import 'package:compass_app/data/diagnostic_log.dart';
+import 'package:compass_app/data/pdf_text_extractor.dart';
+import 'package:compass_app/data/plan_pdf_parse.dart';
 import 'package:compass_app/data/zju_client.dart';
 import 'package:compass_app/data/zju_parse.dart';
 
@@ -84,6 +86,15 @@ void main() {
           '${table.isNotEmpty ? '，示例=${table.take(3).map((c) => c.name).join("，")}' : ''}');
       final pdf = await client.fetchPlanPdf(match.best!.plan);
       print('方案PDF: ${pdf == null ? "未获取" : "${pdf.length} 字节"}');
+      if (pdf != null) {
+        final sections = parsePlanPdfText(extractPdfText(pdf));
+        print('PDF 解析: ${sections.topCount} 个一级板块 / '
+            '${sections.sections.length} 个层级条目 / ${sections.courseCount} 门课程');
+        for (final s in sections.sections.take(6)) {
+          print('  [L${s.level}] ${s.label} ${s.creditsRaw}学分 '
+              '课程${s.courses.length}门 说明${s.notes.length}条');
+        }
+      }
     }
     for (final e in DiagnosticLog.instance.entries) {
       print(e.format());

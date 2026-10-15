@@ -118,6 +118,15 @@ class CredentialStore {
     return null;
   }
 
+  /// 已缓存文件的真实路径（不存在返回 null）；命中缓存时复用，免去重新下载。
+  Future<String?> binaryCachePath(String name) async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'cache_$name'));
+      if (await f.exists()) return f.path;
+    } catch (_) {/* 沙箱不可用 */}
+    return null;
+  }
+
   // 轻量混淆（非加密）：避免明文出现在文件系统搜索中；真实防护来自 OS 沙箱隔离。
   String _obfuscate(String s) => base64.encode(utf8.encode(s.split('').reversed.join()));
   String _deobfuscate(String s) => utf8.decode(base64.decode(s)).split('').reversed.join();

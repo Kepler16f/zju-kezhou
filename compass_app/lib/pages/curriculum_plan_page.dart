@@ -13,7 +13,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../data/credential_store.dart';
+import '../data/pdf_text_extractor.dart';
 import '../data/plan_models.dart';
+import '../data/plan_pdf_parse.dart';
 import '../data/zju_client.dart';
 
 class CurriculumPlanPage extends StatefulWidget {
@@ -56,6 +58,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   bool _loading = false;
   bool _loadingCourses = false;
   bool _loadingPdf = false;
+  PlanPdfSections? _pdfSections; // PDF 解析出的各板块修读要求
 
   @override
   void initState() {
@@ -77,6 +80,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _courseTable = const [];
         _searchHits = const [];
         _pdfPath = null;
+        _pdfSections = null;
         _error = null;
         _courseHint = null;
       });
@@ -118,8 +122,12 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _selected = best;
         _courseTable = const [];
         _pdfPath = null;
+        _pdfSections = null;
       });
-      if (best != null) await _loadCourses(best);
+      if (best != null) {
+        await _loadCourses(best);
+        unawaited(_ensurePdfSections(best)); // 各板块修读要求：自动拉取解析
+      }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -153,17 +161,47 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     }
   }
 
+  /// 各板块修读要求：静默拉取并解析官方 PDF（纯 Dart，全平台含鸿蒙）。
+  /// 优先复用沙箱缓存的 PDF；失败不打扰用户（PDF 卡的手动按钮仍可重试）。
+  Future<void> _ensurePdfSections(PlanSummary plan) async {
+    final wanted = plan.id;
+    final id = plan.jxjhh.isNotEmpty ? plan.jxjhh : plan.id;
+    final name =
+        'planpdf_${id.replaceAll(RegExp(r'[^0-9A-Za-z_-]'), '')}.pdf';
+    try {
+      List<int>? bytes = await widget.store.readBinaryCache(name);
+      String? path;
+      if (bytes == null) {
+        bytes = await widget.client.fetchPlanPdf(plan);
+        if (bytes != null) {
+          path = await widget.store.saveBinaryCache(name, bytes);
+        }
+      } else {
+        path = await widget.store.binaryCachePath(name);
+      }
+      if (!mounted || _selected?.id != wanted || bytes == null) return;
+      final parsed = parsePlanPdfText(extractPdfText(bytes));
+      if (!mounted || _selected?.id != wanted) return;
+      setState(() {
+        _pdfSections = parsed;
+        if (path != null) _pdfPath ??= path;
+      });
+    } catch (_) {/* 静默：不阻塞主流程 */}
+  }
+
   Future<void> _pick(PlanSummary plan) async {
     setState(() {
       _selected = plan;
       _courseTable = const [];
       _courseHint = null;
       _pdfPath = null;
+      _pdfSections = null;
       _searchHits = const [];
       _searchCtl.text = '';
     });
     await widget.client.selectPlan(plan);
     await _loadCourses(plan);
+    unawaited(_ensurePdfSections(plan));
   }
 
   Future<void> _search(String keyword) async {
@@ -200,8 +238,15 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _snack('PDF 已下载但写入沙箱失败');
         return;
       }
-      setState(() => _pdfPath = path);
-      _snack('方案 PDF 已保存（${(bytes.length / 1024).round()} KB）');
+      // PDF 解析：提取各板块修读要求（纯 Dart，零依赖，全平台含鸿蒙）
+      final sections = parsePlanPdfText(extractPdfText(bytes));
+      setState(() {
+        _pdfPath = path;
+        _pdfSections = sections;
+      });
+      _snack('方案 PDF 已保存（${(bytes.length / 1024).round()} KB）'
+          '${sections.isEmpty ? '' : '，解析出 ${sections.topCount} 个一级板块、'
+              '${sections.courseCount} 门课程'}');
     } catch (e) {
       _snack('PDF 下载失败：$e');
     } finally {
@@ -447,6 +492,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       if (p.qywkc.isNotEmpty)
         _card('前沿与荣誉课程（${p.qywkc.length} 门）', [_chips(p.qywkc, passed)]),
       _courseCard(),
+      if (_pdfSections != null && _pdfSections!.sections.isNotEmpty)
+        _pdfSectionsCard(),
       if (p.bz.isNotEmpty) _expandCard('辅修/微辅修说明', p.bz),
       if (p.dektbz.isNotEmpty || p.d3ktbz.isNotEmpty || p.dsktbz.isNotEmpty)
         _card('二/三/四课堂修读要求', [
@@ -503,6 +550,114 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
           ],
         ),
       );
+
+  /// 各板块修读要求（从 PDF 解析，用户 #1 诉求）。
+  /// 层级缩进展示每个模块的学分要求、修读说明与课程列表。
+  Widget _pdfSectionsCard() {
+    final ps = _pdfSections!;
+    final passed = widget.transcript
+        .map((c) => (c['name'] ?? '').toString().trim())
+        .where((n) => n.isNotEmpty)
+        .toSet();
+    return _card(
+        '各板块修读要求（PDF 解析：${ps.topCount} 个一级板块 / '
+        '${ps.sections.length} 个层级条目 / ${ps.courseCount} 门课程）', [
+      if (ps.qualityNotes.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text('⚠️ ${ps.qualityNotes.join('；')}',
+              style: TextStyle(
+                  fontSize: 11, color: Theme.of(context).colorScheme.error)),
+        ),
+      for (final s in ps.sections) _moduleSectionTile(s, passed),
+      const SizedBox(height: 4),
+      const Text('数据来源：官方培养方案 PDF（纯 Dart 解析，全平台含鸿蒙）；'
+          '高亮=你的成绩单里已出现同名课程。',
+          style: TextStyle(fontSize: 10, color: Colors.grey)),
+    ]);
+  }
+
+  Widget _moduleSectionTile(PdfModuleSection section, Set<String> passed) {
+    final indent = (section.level - 1) * 10.0;
+    final titleSize = section.level <= 1
+        ? 13.5
+        : (section.level == 2 ? 13.0 : 12.5);
+    return Padding(
+      padding: EdgeInsets.only(left: indent, top: 5, bottom: 3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  section.title,
+                  style: TextStyle(
+                      fontSize: titleSize,
+                      fontWeight: section.level <= 2
+                          ? FontWeight.w700
+                          : FontWeight.w600),
+                ),
+              ),
+              if (section.creditsRaw.isNotEmpty)
+                Text('${section.creditsRaw} 学分',
+                    style: TextStyle(
+                        fontSize: titleSize - 0.5,
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.primary)),
+              if (section.courses.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text('${section.courses.length} 门',
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.grey)),
+                ),
+            ],
+          ),
+          for (final n in section.notes)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text('· $n',
+                  style: TextStyle(
+                      fontSize: 11,
+                      height: 1.45,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.72))),
+            ),
+          if (section.courses.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 8, top: 3),
+              child: Wrap(
+                spacing: 4,
+                runSpacing: 2,
+                children: [
+                  for (final c in section.courses)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        color: passed.contains(c.name)
+                            ? Theme.of(context).colorScheme.primaryContainer
+                            : Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest,
+                      ),
+                      child: Text(
+                          '${c.name} ${_num(c.credits)}分'
+                          '${c.semester.isNotEmpty ? ' ${c.semester}' : ''}',
+                          style: const TextStyle(fontSize: 10)),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _pdfCard(PlanSummary p) => _card('官方培养方案 PDF', [
         const Text('教务"预览"按钮同款文件，含完整课程表与学期安排。',
