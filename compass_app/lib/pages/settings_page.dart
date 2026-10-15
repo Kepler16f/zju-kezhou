@@ -9,7 +9,7 @@ import '../data/diagnostic_log.dart';
 
 enum DataMode { sample, paste, zju }
 
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   final DataMode mode;
   final ValueChanged<DataMode> onModeChange;
   final String major;
@@ -35,13 +35,40 @@ class SettingsPage extends StatelessWidget {
       required this.pasteCtl, required this.busy, required this.onRun,
       this.notice, this.loggedInAs, this.lastDataAt, required this.onClearData});
 
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
   static const _semesters = [
     '2023-A','2023-B','2024-A','2024-B','2025-A','2025-B',
     '2026-A','2026-B','2027-A','2027-B',
   ];
 
+  /// 已登录时默认收起学号/密码输入区（需求 #2：不用一直开着）。
+  /// null = 跟随登录状态（已登录收起、未登录展开）；true/false = 用户手动切换。
+  bool? _credsExpanded;
+
+  bool get _showCreds =>
+      _credsExpanded ?? (widget.loggedInAs == null);
+
   @override
   Widget build(BuildContext context) {
+    final mode = widget.mode;
+    final loggedInAs = widget.loggedInAs;
+    final notice = widget.notice;
+    final busy = widget.busy;
+    final major = widget.major;
+    final current = widget.current;
+    final majors = widget.majors;
+    final userCtl = widget.userCtl;
+    final passCtl = widget.passCtl;
+    final pasteCtl = widget.pasteCtl;
+    final onRun = widget.onRun;
+    final onModeChange = widget.onModeChange;
+    final onMajorChange = widget.onMajorChange;
+    final onCurrentChange = widget.onCurrentChange;
+    final lastDataAt = widget.lastDataAt;
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
@@ -71,30 +98,53 @@ class SettingsPage extends StatelessWidget {
                     children: [
                       const Icon(Icons.schedule, size: 16),
                       const SizedBox(width: 8),
-                      Text('上次数据：${_fmt(lastDataAt!)}',
+                      Text('上次数据：${_fmt(lastDataAt)}',
                           style: const TextStyle(fontSize: 12, color: Colors.grey)),
                     ],
                   ),
                 ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                child: TextField(
-                  controller: userCtl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                      labelText: '学号', border: OutlineInputBorder()),
+              // 需求 #2：已登录时收起学号/密码输入区，点"修改"才展开。
+              if (loggedInAs != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: Row(
+                    children: [
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () =>
+                            setState(() => _credsExpanded = !_showCreds),
+                        icon: Icon(
+                            _showCreds
+                                ? Icons.keyboard_arrow_up
+                                : Icons.keyboard_arrow_down,
+                            size: 18),
+                        label: Text(_showCreds ? '收起' : '修改账号 / 密码',
+                            style: const TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                child: TextField(
-                  controller: passCtl,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                      labelText: '统一身份认证密码（留空则用记住的密码）',
-                      border: OutlineInputBorder()),
+              if (_showCreds) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                  child: TextField(
+                    controller: userCtl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                        labelText: '学号', border: OutlineInputBorder()),
+                  ),
                 ),
-              ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                  child: TextField(
+                    controller: passCtl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                        labelText: '统一身份认证密码（留空则用记住的密码）',
+                        border: OutlineInputBorder()),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -180,7 +230,7 @@ class SettingsPage extends StatelessWidget {
         if (notice != null)
           Padding(
             padding: const EdgeInsets.only(top: 4, bottom: 4),
-            child: Text(notice!,
+            child: Text(notice,
                 style: const TextStyle(color: Colors.red, fontSize: 13)),
           ),
         _groupHeader('通用'),
@@ -325,7 +375,7 @@ class SettingsPage extends StatelessWidget {
           ),
           FilledButton.tonalIcon(
             onPressed: () {
-              onClearData();
+              widget.onClearData();
               if (ctx.mounted) Navigator.pop(ctx);
             },
             icon: const Icon(Icons.delete_outline),

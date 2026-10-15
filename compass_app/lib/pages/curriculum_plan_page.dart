@@ -543,16 +543,41 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         ],
       ]);
 
+  /// 候选方案列表（需求 #4：可收起）。
+  /// 有歧义时默认展开提醒用户确认；选定后可手动收起，只留标题行。
   Widget _pickerSection() {
     final cs = _match.candidates;
     if (cs.length <= 1) return const SizedBox.shrink();
-    return _card('候选方案（${cs.length}）· 点选即切换', [
-      if (_match.ambiguous)
-        Text('⚠️ 存在多条相近方案，已按匹配强度排序，请确认哪条是本人方案。',
-            style: TextStyle(
-                fontSize: 12, color: Theme.of(context).colorScheme.error)),
-      for (final c in cs) _tile(c.plan, subtitle: c.reason),
-    ]);
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        initiallyExpanded: _match.ambiguous && _selected == null,
+        dense: true,
+        title: Text('候选方案（${cs.length}）· 点选即切换',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+        subtitle: _selected != null
+            ? Text('当前：${_selected!.zymc} ${_selected!.synj} 级',
+                style: const TextStyle(fontSize: 11))
+            : null,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_match.ambiguous)
+                  Text('⚠️ 存在多条相近方案，已按匹配强度排序，请确认哪条是本人方案。',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.error)),
+                for (final c in cs) _tile(c.plan, subtitle: c.reason),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _searchSection() => _card('手动搜索方案', [

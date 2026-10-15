@@ -48,12 +48,12 @@ jobs:
         working-directory: compass_app
         run: |
           cat >> pubspec.yaml <<'EOF'
-        dependency_overrides:
-          path_provider:
-            git:
-              url: https://gitee.com/openharmony-sig/flutter_packages.git
-              path: packages/path_provider/path_provider
-        EOF
+          dependency_overrides:
+            path_provider:
+              git:
+                url: https://gitee.com/openharmony-sig/flutter_packages.git
+                path: packages/path_provider/path_provider
+          EOF
 
       - name: 生成 ohos 平台脚手架（已存在则跳过）
         run: |

@@ -21,8 +21,11 @@ void main() {
   }
 
   test('教务网真实链路：登录→会话→成绩/专业/考试/方案', () async {
+    // 沙箱路径从 APPDATA 解析，不硬编码本机用户名（仓库公开，路径里不能带真实姓名）。
+    final appData = Platform.environment['APPDATA'];
+    expect(appData, isNotNull, reason: '未设置 APPDATA（非 Windows 环境？）');
     final dir = Directory(
-        'C:/Users/USER/AppData/Roaming/edu.zju.compass/compass_app/compass');
+        '$appData/edu.zju.compass/compass_app/compass');
     final store = CredentialStore(dir);
     final cred = await store.loadCredentials();
     expect(cred, isNotNull, reason: '沙箱无凭证，请先在 App 内登录一次');
@@ -81,30 +84,6 @@ void main() {
           '${table.isNotEmpty ? '，示例=${table.take(3).map((c) => c.name).join("，")}' : ''}');
       final pdf = await client.fetchPlanPdf(match.best!.plan);
       print('方案PDF: ${pdf == null ? "未获取" : "${pdf.length} 字节"}');
-
-      // 假设1：先打开列表页（建菜单上下文）再取打印页
-      final htmlWarm = await client.debugPlanPrintHtml(match.best!.plan,
-          warmupListPage: true);
-      print('[预热后]打印页 HTML 长度: ${htmlWarm.length}');
-      final html = htmlWarm.isNotEmpty
-          ? htmlWarm
-          : await client.debugPlanPrintHtml(match.best!.plan);
-      print('打印页 HTML 长度: ${html.length}');
-      if (html.isNotEmpty) File('D:/compass/_diag_print.html').writeAsStringSync(html);
-      final modLines = RegExp(
-              r'(通识必修|通识选修|大类基础|学科基础|专业必修|专业核心|专业选修|专业限选|任意选修|集中实践|毕业设计|毕业论文|创新创业|公共选修)[^\n]{0,24}?\d{1,3}(?:\.\d+)?\s*学分')
-          .allMatches(html.replaceAll(RegExp(r'<[^>]+>'), ' '))
-          .take(20)
-          .toList();
-      print('模块声明行命中: ${modLines.length}');
-      for (final m in modLines) {
-        print('  MODULE: ${m.group(0)?.replaceAll(RegExp(r'\s+'), ' ').trim()}');
-      }
-
-      // 假设2：课程修读地图附件（列表字段 kcxddt 的 uid）
-      final uid = (match.best!.plan.raw['kcxddt'] ?? '').toString();
-      print('课程修读地图附件 uid: $uid');
-      await client.debugDumpPlanPages(match.best!.plan);
     }
     for (final e in DiagnosticLog.instance.entries) {
       print(e.format());

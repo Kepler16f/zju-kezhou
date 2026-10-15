@@ -18,6 +18,8 @@ class ReportView extends StatelessWidget {
     final t = report['totals'] as Map<String, dynamic>;
     final summary = (report['summary'] as List).cast<Map<String, dynamic>>();
     final warnings = (report['warnings'] as List).cast<Map<String, dynamic>>();
+    final extra = (report['extra_courses'] as List? ?? const [])
+        .cast<Map<String, dynamic>>();
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
@@ -38,6 +40,14 @@ class ReportView extends StatelessWidget {
         const Text('三色学分达成度', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         const SizedBox(height: 4),
         for (final m in summary) _moduleTile(m),
+        if (extra.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          // 需求：不匹配方案的课也要如实展示，不能只字里行间省略。
+          Text('已修但未匹配到方案（${extra.length} 门）',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 4),
+          _extraCard(extra),
+        ],
         if (warnings.isNotEmpty) ...[
           const SizedBox(height: 10),
           const Text('风险提示（看不见的坑）',
@@ -124,6 +134,41 @@ class ReportView extends StatelessWidget {
         subtitle: refs.isNotEmpty
             ? Text('溯源：${refs.join(' ｜ ')}', style: const TextStyle(fontSize: 11, color: Colors.blueGrey))
             : null,
+      ),
+    );
+  }
+
+  /// 已修但未匹配到方案的课程（成绩单里有、方案模块里没找到）。
+  /// 按学期分组平铺展示，全部列出、一个不漏。
+  Widget _extraCard(List<Map<String, dynamic>> extra) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+                '以下课程在成绩单里有、但未匹配到培养方案模块（多为超修任选/通识大类/名称差异），'
+                '不计入模块学分，仅供参考。',
+                style: TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 8),
+            for (final c in extra)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: Text('${c['name']}', style: const TextStyle(fontSize: 12.5))),
+                    if ('${c['semester'] ?? ''}'.isNotEmpty)
+                      Text(' ${c['semester']} ',
+                          style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                    Text('${c['credits'] ?? '?'} 分',
+                        style: const TextStyle(fontSize: 12)),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
