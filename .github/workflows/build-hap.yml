@@ -83,8 +83,9 @@ jobs:
           mkdir -p build/ohos && cp "$HAP" build/ohos/compass_unsigned.hap
         timeout-minutes: 40
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: compass-hap-unsigned
+          archive: false
           path: compass_app/build/ohos/compass_unsigned.hap
           if-no-files-found: error

@@ -52,9 +52,10 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build apk --release --split-per-abi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kezhou-android
+          archive: false
           path: |
             compass_app/build/app/outputs/flutter-apk/*-release.apk
 
@@ -68,9 +69,10 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build ipa --release --no-codesign
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: compass-ios
+          archive: false
           path: compass_app/build/ios/ipa/*.ipa
 
   macos-universal:
@@ -89,9 +91,10 @@ jobs:
           xcodebuild -workspace Runner.xcworkspace -scheme Runner \
             -configuration Release -arch x86_64 ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO build 2>/dev/null || echo "x86_64 交叉失败（见 README 备注）"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: compass-macos
+          archive: false
           path: compass_app/build/macos/Build/Products/Release/*.app
 
   windows-x64:
@@ -155,9 +158,10 @@ jobs:
           }
           if (-not $iscc) { throw "ISCC.exe not found" }
           & $iscc $iss
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kezhou-windows-x64-installer
+          archive: false
           path: dist/KeZhouSetup-*-win-x64.exe
 
   # Windows arm64：Flutter 官方不支持从 x64 交叉编译桌面（build windows 只出宿主架构）。
@@ -172,9 +176,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: flutter build windows --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: compass-windows-arm64
+          archive: false
           path: compass_app/build/windows/arm64/runner/Release/
 
   linux-x64:
@@ -189,9 +194,10 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build linux --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: compass-linux-x64
+          archive: false
           path: compass_app/build/linux/x64/release/bundle/
 
   linux-arm64:
@@ -205,7 +211,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable}  # 3.47.7 无 linux-arm64 发布档，用最新 stable
       - run: flutter build linux --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: compass-linux-arm64
+          archive: false
           path: compass_app/build/linux/arm64/release/bundle/
