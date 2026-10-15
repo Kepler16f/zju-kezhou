@@ -22,7 +22,12 @@ jobs:
       - name: Dart 引擎单测
         run: |
           flutter pub get
-          dart test test/engine_test.dart test/analytics_test.dart test/exam_test.dart test/request_throttle_test.dart test/course_marks_test.dart test/zju_parse_test.dart test/zju_parse_ext_test.dart
+          # 纯 Dart 用例（真实 PDF 用例在 CI 无沙箱缓存，自动 skip）
+          dart test test/engine_test.dart test/analytics_test.dart test/exam_test.dart \
+            test/request_throttle_test.dart test/course_marks_test.dart \
+            test/zju_parse_test.dart test/zju_parse_ext_test.dart \
+            test/plan_models_test.dart test/plan_pdf_parse_test.dart \
+            test/pdf_text_extractor_test.dart test/app_version_test.dart
       - name: golden/samples 双侧同步校验
         run: |
           cd ..

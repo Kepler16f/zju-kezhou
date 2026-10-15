@@ -5,6 +5,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../data/app_version.dart';
 import '../data/diagnostic_log.dart';
 
 enum DataMode { sample, paste, zju }
@@ -261,7 +262,7 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               ListTile(
                 leading: Icon(Icons.info_outline),
-                title: Text('课舟 v0.10.0'),
+                title: Text('课舟 v$kAppVersion'),
                 subtitle: Text('培养方案结构化与选课风险审计；学分计算全部本地完成',
                     style: TextStyle(fontSize: 11)),
               ),
