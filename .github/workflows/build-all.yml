@@ -2,8 +2,8 @@
 # 诚实边界（上游 Flutter 引擎决定，非本应用限制）：
 #  - Android：arm64-v8a / armeabi-v7a / x86_64 三个 ABI 分包；x86(32位) 引擎已停止支持。
 #  - Windows：x64 + arm64；x86(32位) 桌面目标引擎不支持。
-#  - Linux：x64 + arm64（arm64 用原生 ubuntu-24.04-arm runner 编译）；armv7 不支持。
-#  - macOS：arm64 + x86_64 双架构（xcodebuild ARCHS 交叉编译）；通用二进制由 CI 合并。
+#  - Linux：x64（stable 无 linux-arm64 发布档，arm64 暂缺）。
+#  - macOS：arm64 + x86_64 双架构；通用二进制由 CI 合并。
 #  - iOS：真机 arm64 .ipa（无签名导出，上架需挂证书）。
 #  - 鸿蒙 HAP：单独 workflow（flutter-ohos 定制 SDK），见 build-hap.yml。
 name: Build all platforms
@@ -25,7 +25,7 @@ jobs:
         with: {python-version: "3.11"}
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
-      - name: Dart 引擎单测（audit/analytics/exam/限频/标记）
+      - name: Dart 引擎单测
         run: |
           flutter pub get
           dart test test/engine_test.dart test/analytics_test.dart test/exam_test.dart test/request_throttle_test.dart test/course_marks_test.dart test/zju_parse_test.dart test/zju_parse_ext_test.dart
@@ -33,7 +33,7 @@ jobs:
         run: |
           cd ..
           python data/sync_assets.py --check
-      - name: Python 引擎 24 项单测
+      - name: Python 引擎单测
         run: |
           cd ..
           python -m unittest discover -s engine/tests
@@ -43,7 +43,7 @@ jobs:
           python eval/cross_engine_parity.py
 
   android:
-    name: Android APK（arm64-v8a / armeabi-v7a / x86_64）
+    name: Android APK
     runs-on: ubuntu-latest
     needs: engine-check
     defaults: {run: {working-directory: compass_app}}
@@ -52,12 +52,22 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build apk --release --split-per-abi
+      # archive:false 只支持单文件——每个 APK 单独上传
       - uses: actions/upload-artifact@v7
         with:
-          name: kezhou-android
+          name: kezhou-android-arm64
           archive: false
-          path: |
-            compass_app/build/app/outputs/flutter-apk/*-release.apk
+          path: compass_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-android-armv7
+          archive: false
+          path: compass_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-android-x64
+          archive: false
+          path: compass_app/build/app/outputs/flutter-apk/app-x86_64-release.apk
 
   ios-unsigned:
     name: iOS IPA（arm64 真机，无签名）
@@ -71,7 +81,7 @@ jobs:
       - run: flutter build ipa --release --no-codesign
       - uses: actions/upload-artifact@v7
         with:
-          name: compass-ios
+          name: kezhou-ios
           archive: false
           path: compass_app/build/ios/ipa/*.ipa
 
@@ -91,11 +101,16 @@ jobs:
           xcodebuild -workspace Runner.xcworkspace -scheme Runner \
             -configuration Release -arch x86_64 ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO build 2>/dev/null || echo "x86_64 交叉失败（见 README 备注）"
+      # .app 是目录——打 zip 后上传单文件
+      - name: 打包 .app 为 zip
+        run: |
+          cd compass_app/build/macos/Build/Products/Release
+          zip -r -y ../KeZhou-macos.zip *.app
       - uses: actions/upload-artifact@v7
         with:
-          name: compass-macos
+          name: kezhou-macos
           archive: false
-          path: compass_app/build/macos/Build/Products/Release/*.app
+          path: compass_app/build/macos/Build/Products/KeZhou-macos.zip
 
   windows-x64:
     name: Windows x64（Setup.exe 安装包）
@@ -110,34 +125,30 @@ jobs:
       - name: Inno Setup
         run: choco install innosetup -y
       - run: flutter build windows --release --no-tree-shake-icons
-      - name: 打包 Setup.exe（Release+VC运行库，交付形态=安装包，不交 zip）
+      - name: 打包 Setup.exe
         shell: pwsh
         run: |
-          # 版本口径统一：从 pubspec.yaml 的 version 取（如 0.10.1+2 → 0.10.1），
-          # 杜绝安装包与 App 内版本长期对不上（0.9.0→课舟 改名后曾脱节）。
           $ver = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
           "AppVersion = $ver"
-          # VC 运行库：CI runner 装 VS Enterprise，本机是 BuildTools——两处都查
-          $vsRoots = @(
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools",
-            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise",
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise"
-          ) | Where-Object { Test-Path $_ }
-          $crt = $null
-          foreach ($root in $vsRoots) {
-            $crt = Get-ChildItem "$root\VC\Redist\MSVC" -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
-              Where-Object FullName -match "x64\\Microsoft\.VC143\.CRT" |
-              Sort-Object FullName -Desc | Select-Object -First 1
-            if ($crt) { break }
+          # VC 运行库：用 vswhere 定位 VS 安装根（runner 是 Enterprise，本机是 BuildTools）
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -property installationPath
+          "VS Path: $vsPath"
+          $crt = Get-ChildItem "$vsPath\VC\Redist\MSVC" -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
+            Where-Object FullName -match "x64\\Microsoft\.VC\d+\.CRT" |
+            Sort-Object FullName -Desc | Select-Object -First 1
+          if (-not $crt) {
+            # 兜底：从系统 System32 拷（runner 已装 VC Runtime）
+            $crt = Get-Item "C:\Windows\System32\vcruntime140.dll"
+            "Fallback: System32 $($crt.FullName)"
           }
-          if (-not $crt) { throw "VC Redist not found in any VS root: $($vsRoots -join ', ')" }
           $rel = "build\windows\x64\runner\Release"
           Copy-Item $crt.FullName $rel -Force
-          Copy-Item (Join-Path $crt.DirectoryName "msvcp140.dll") $rel -Force
+          $msvc = Join-Path $crt.DirectoryName "msvcp140.dll"
+          if (Test-Path $msvc) { Copy-Item $msvc $rel -Force }
           $iss = "kezhou_setup.iss"
           $relFull = (Resolve-Path $rel).Path
           $icon  = (Resolve-Path "windows\runner\resources\app_icon.ico").Path
-          "Output: $relFull"
           @"
           [Setup]
           AppId={{8F4B1D5E-92A6-4C7B-B3E0-KEZHOU00002}
@@ -193,7 +204,7 @@ jobs:
         with:
           name: compass-windows-arm64
           archive: false
-          path: compass_app/build/windows/arm64/runner/Release/
+          path: compass_app/build/windows/arm64/runner/Release/kezhou.exe
 
   linux-x64:
     name: Linux x64
@@ -207,25 +218,16 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build linux --release
+      # bundle 是目录——打 tar.gz 后上传单文件
+      - name: 打包 bundle 为 tar.gz
+        run: |
+          cd compass_app/build/linux/x64/release
+          tar czf ../../../KeZhou-linux-x64.tar.gz bundle
       - uses: actions/upload-artifact@v7
         with:
-          name: compass-linux-x64
+          name: kezhou-linux-x64
           archive: false
-          path: compass_app/build/linux/x64/release/bundle/
+          path: compass_app/build/linux/KeZhou-linux-x64.tar.gz
 
-  linux-arm64:
-    name: Linux arm64
-    runs-on: ubuntu-24.04-arm
-    needs: engine-check
-    defaults: {run: {working-directory: compass_app}}
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libsecret-1-dev
-      - uses: subosito/flutter-action@v2
-        with: {channel: stable}  # 3.47.7 无 linux-arm64 发布档，用最新 stable
-      - run: flutter build linux --release
-      - uses: actions/upload-artifact@v7
-        with:
-          name: compass-linux-arm64
-          archive: false
-          path: compass_app/build/linux/arm64/release/bundle/
+  # Linux arm64：Flutter stable 无 linux-arm64 发布档，暂缺。
+  # 待官方发布后恢复此 job（runs-on: ubuntu-24.04-arm）。
