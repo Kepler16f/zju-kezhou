@@ -117,7 +117,20 @@ jobs:
           # 杜绝安装包与 App 内版本长期对不上（0.9.0→课舟 改名后曾脱节）。
           $ver = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
           "AppVersion = $ver"
-          $crt = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC" -Recurse -Filter vcruntime140.dll | Where-Object FullName -match "x64\\Microsoft.VC143.CRT" | Sort-Object FullName -Desc | Select-Object -First 1
+          # VC 运行库：CI runner 装 VS Enterprise，本机是 BuildTools——两处都查
+          $vsRoots = @(
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools",
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise"
+          ) | Where-Object { Test-Path $_ }
+          $crt = $null
+          foreach ($root in $vsRoots) {
+            $crt = Get-ChildItem "$root\VC\Redist\MSVC" -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
+              Where-Object FullName -match "x64\\Microsoft\.VC143\.CRT" |
+              Sort-Object FullName -Desc | Select-Object -First 1
+            if ($crt) { break }
+          }
+          if (-not $crt) { throw "VC Redist not found in any VS root: $($vsRoots -join ', ')" }
           $rel = "build\windows\x64\runner\Release"
           Copy-Item $crt.FullName $rel -Force
           Copy-Item (Join-Path $crt.DirectoryName "msvcp140.dll") $rel -Force
