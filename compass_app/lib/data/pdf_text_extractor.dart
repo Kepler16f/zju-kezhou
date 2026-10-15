@@ -312,6 +312,7 @@ String? _extractFontAware(Uint8List data) {
   if (objs.isEmpty) return null;
   final fontInfos = _buildFontInfos(objs);
   if (fontInfos.isEmpty) return null;
+  final pageFonts = _pageContentFonts(objs);
 
   final out = StringBuffer();
   var anyStream = false;
@@ -324,7 +325,9 @@ String? _extractFontAware(Uint8List data) {
     final text = _bytesToLatin(content);
     if (!text.contains('BT') || !text.contains('Tj')) continue;
     anyStream = true;
-    final fonts = _fontResources(objs, e.value.header);
+    // 字体资源优先取流自身的（Form XObject），没有则回查引用它的 Page
+    var fonts = _fontResources(objs, e.value.header);
+    if (fonts.isEmpty) fonts = pageFonts[e.key] ?? const {};
     final pageText = _decodeContentStream(text, fonts, fontInfos);
     if (pageText.trim().isNotEmpty) {
       if (out.isNotEmpty) out.write('\n');
@@ -333,6 +336,37 @@ String? _extractFontAware(Uint8List data) {
   }
   if (!anyStream) return null;
   return out.toString();
+}
+
+/// 内容流对象号 → 其所属 Page 的字体资源。
+///
+/// 版式差异：本 PDF 家族把 /Resources/Font 挂在 **Page 对象**上，正文流自己
+/// 没有 /Resources（只带 /Length /Filter）；Form XObject 才自带资源。
+/// 不补这层回查，SimHei（Identity-H）查不到 ToUnicode，字形 ID 会被当
+/// Unicode 输出成乱码（如 "᳔Ԣ↩Ϯᄺߚ" = 最低毕业学分）。
+Map<int, Map<String, int>> _pageContentFonts(Map<int, _PdfObj> objs) {
+  final out = <int, Map<String, int>>{};
+  for (final e in objs.entries) {
+    final h = e.value.header;
+    if (!h.contains('/Type/Page') || h.contains('/Type/Pages')) continue;
+    final fonts = _fontResources(objs, h);
+    if (fonts.isEmpty) continue;
+    for (final m in RegExp(r'(\d+)\s+\d+\s+R').allMatches(_contentsSegment(h))) {
+      out[int.parse(m.group(1)!)] = fonts;
+    }
+  }
+  return out;
+}
+
+/// 提取 Page 头里 /Contents 的引用段：`/Contents 12 0 R` 或 `/Contents[..]`。
+String _contentsSegment(String header) {
+  final i = header.indexOf('/Contents');
+  if (i < 0) return '';
+  final tail = header.substring(i);
+  final arr = RegExp(r'^/Contents\s*\[([^\]]*)\]').firstMatch(tail);
+  if (arr != null) return arr.group(1)!;
+  final single = RegExp(r'^/Contents\s+(\d+\s+\d+\s+R)').firstMatch(tail);
+  return single?.group(1) ?? '';
 }
 
 /// 内容流状态机：跟踪当前字体（Tf）与文本位置（Td/TD/Tm），
@@ -467,12 +501,14 @@ void _appendDecoded(StringBuffer sb, Uint8List raw, _FontInfo? font) {
   final cmap = font.cmap;
   for (var i = 0; i + 1 < raw.length; i += 2) {
     final code = (raw[i] << 8) | raw[i + 1];
-    if (cmap != null && cmap.containsKey(code)) {
-      for (final u in cmap[code]!) {
+    if (cmap != null) {
+      // 有 ToUnicode 映射：命中就写映射结果；未命中的码是字形 ID（GID），
+      // 直接当 Unicode 写会产出乱码（如 τh̃ / 糎 这类私用码位字符），必须丢弃。
+      for (final u in cmap[code] ?? const <int>[]) {
         if (u != 0) sb.writeCharCode(u);
       }
     } else if (code != 0) {
-      // CMap 缺失该码（如 2 字节 Unicode 直写的少数串）：UTF-16BE 兜底
+      // 无 CMap 的 Identity 字体：码字节多为 Unicode 直写，原样兜底。
       if (code < 0xD800 || code > 0xDFFF) sb.writeCharCode(code);
     }
   }

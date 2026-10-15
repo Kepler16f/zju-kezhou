@@ -99,9 +99,10 @@ final _colonRe = RegExp(r'^([^：:]{2,20})[：:]\s*([\d.+\-]+)\s*学分$');
 
 /// 课程行：`MARX1004G 大学生思想文化素养 2.0 2.0-0.0 32 一(秋冬)`。
 /// 学分之后的部分（周学时/总学时/学期）自由解析；无学期行（如耕读课程）也匹配。
-/// 课程号前缀实测 2-6 位字母（CS1006G / ME1001F / MARX1004G）。
+/// 课程号前缀实测 2-6 位字母（CS1006G / ME1001F / MARX1004G），
+/// 尾缀可能两位（荣誉课 H：MARX2004GH / CS1012GH）。
 final _courseRe =
-    RegExp(r'^([A-Z]{2,6}\d{4}[A-Z]?)\s+(.+?)\s+(\d{1,2}(?:\.\d)?)\b\s*(.*)$');
+    RegExp(r'^([A-Z]{2,6}\d{4}[A-Z]{0,2})\s+(.+?)\s+(\d{1,2}(?:\.\d)?)\b\s*(.*)$');
 
 /// 表格头行（进入表格区的标志）。
 final _tableHeadRe = RegExp(r'^课程号\s+课程名称\s+学分');
@@ -133,17 +134,43 @@ PlanPdfSections parsePlanPdfText(String text) {
   final coursesAcc = <int, List<PdfCourseRow>>{};
 
   // 提取一行里的层级信息（若有）。
+  // 层级样式自适应：有的方案顶层用「一、」（2026 版），
+  // 有的直接顶层就是「1.通识课程」（2025 及更早版，无中文序号）。
+  // 没有「一、」时整体上移一级：1.→1 级、(1)→2 级、1)→3 级。
+  final hasHanziTop = lines.any((l) {
+    final m = _lvl1Re.firstMatch(l.trim());
+    if (m == null) return false;
+    final t = _cleanTitle(m.group(1)!);
+    return t.length <= 16 && !RegExp(r'[。；，]').hasMatch(t);
+  });
+  final levelShift = hasHanziTop ? 0 : -1;
+
   ({String title, int level, String credits})? sectionOf(String line) {
     var m = _lvl1Re.firstMatch(line);
-    if (m != null) return (title: _cleanTitle(m.group(1)!), level: 1, credits: (m.group(2) ?? '').trim());
+    if (m != null) {
+      final t = _cleanTitle(m.group(1)!);
+      // 正文段落常以「一、……。……」开头（培养理念等），并非板块标题；
+      // 标题不含句读、且长度有限，超过即拒。
+      if (t.length > 16 || RegExp(r'[。；，]').hasMatch(t)) return null;
+      // 无中文序号体系时，「一、」多是正文误报；真出现也按 2 级处理
+      return (title: t, level: hasHanziTop ? 1 : 2, credits: (m.group(2) ?? '').trim());
+    }
     m = _lvl2Re.firstMatch(line);
-    if (m != null) return (title: _cleanTitle(m.group(1)!), level: 2, credits: m.group(2)!);
+    if (m != null) {
+      return (title: _cleanTitle(m.group(1)!), level: 2 + levelShift, credits: m.group(2)!);
+    }
     m = _colonRe.firstMatch(line);
-    if (m != null) return (title: _cleanTitle(m.group(1)!), level: 2, credits: m.group(2)!);
+    if (m != null) {
+      return (title: _cleanTitle(m.group(1)!), level: 2 + levelShift, credits: m.group(2)!);
+    }
     m = _lvl3Re.firstMatch(line);
-    if (m != null) return (title: _cleanTitle(m.group(2)!), level: 3, credits: (m.group(3) ?? '').trim());
+    if (m != null) {
+      return (title: _cleanTitle(m.group(2)!), level: 3 + levelShift, credits: (m.group(3) ?? '').trim());
+    }
     m = _lvl4Re.firstMatch(line);
-    if (m != null) return (title: _cleanTitle(m.group(2)!), level: 4, credits: m.group(3)!);
+    if (m != null) {
+      return (title: _cleanTitle(m.group(2)!), level: 4 + levelShift, credits: m.group(3)!);
+    }
     return null;
   }
 
@@ -223,31 +250,43 @@ PlanPdfSections parsePlanPdfText(String text) {
     }
 
     if (inTable) {
-      final cm = _courseRe.firstMatch(line);
-      if (cm != null && curIndex >= 0) {
+      // 一行可能含多门课（PDF 紧凑排版把相邻两行粘一起，如
+      // "…二(秋冬)MARX2005GH 中国共产党历史与理论…"）：按课程号切段逐个解析。
+      var matchedPattern = false;
+      var parsedAny = false;
+      for (final segment in _splitCourseSegments(line)) {
+        final cm = _courseRe.firstMatch(segment.trim());
+        if (cm == null) continue;
+        matchedPattern = true;
         final name = cm.group(2)!.trim();
         final credits = double.tryParse(cm.group(3)!) ?? 0;
-        if (name.isNotEmpty && credits > 0 && credits <= 30 && !_isGarbled(name)) {
-          final rest = cm.group(4) ?? '';
-          final rm = RegExp(
-                  r'^([\d.+\-]+)?\s*(?:\d{1,4})?\s*([一二三四]\([^)]*\)(?:/[一二三四]\([^)]*\))?)?')
-              .firstMatch(rest);
-          (coursesAcc[curIndex] ??= []).add(PdfCourseRow(
-            code: cm.group(1)!,
-            name: name,
-            credits: credits,
-            hours: (rm?.group(1) ?? '').trim(),
-            semester: (rm?.group(2) ?? '').trim(),
-          ));
+        if (name.isEmpty || credits <= 0 || credits > 30 || _isGarbled(name)) {
           continue;
         }
-        // 非课程行：像正文章节的（有标点/数字/够长）落回说明区，其余当折行碎片丢弃
+        final rest = cm.group(4) ?? '';
+        final rm = RegExp(
+                r'^([\d.+\-]+)?\s*(?:\d{1,4})?\s*([一二三四]\([^)]*\)(?:/[一二三四]\([^)]*\))?)?')
+            .firstMatch(rest);
+        (coursesAcc[curIndex] ??= []).add(PdfCourseRow(
+          code: cm.group(1)!,
+          name: name,
+          credits: credits,
+          hours: (rm?.group(1) ?? '').trim(),
+          semester: (rm?.group(2) ?? '').trim(),
+        ));
+        parsedAny = true;
+      }
+      if (parsedAny) continue;
+      // 匹配了课程模式但被拒（乱码/学分非法）：像正文章节的落回说明区，
+      // 其余当折行碎片丢弃——都视为「表格内的杂行」，表格状态保留。
+      if (matchedPattern) {
         if (_looksLikeProse(line)) {
           inTable = false;
           pending.add(line);
         }
         continue;
       }
+      // 完全不匹配课程模式：保持表格状态，落到下方统一收进说明区
     }
 
     if (line.length >= 2) pending.add(line);
@@ -274,6 +313,27 @@ PlanPdfSections parsePlanPdfText(String text) {
     q.add('未识别到课程表行');
   }
   return PlanPdfSections(sections: merged, qualityNotes: q);
+}
+
+/// 把一行切成若干"课程段"：以课程号（字母2-6位+4数字+可选字母）为界。
+/// 单课程行原样返回；多课程粘连行被切开，各段再各自解析。
+Iterable<String> _splitCourseSegments(String line) sync* {
+  final codeRe = RegExp(r'[A-Z]{2,6}\d{4}[A-Z]{0,2}(?=\s)');
+  final matches = codeRe.allMatches(line).toList();
+  // 课程号必须从行首或空白/右括号后开始，避免把名称里的字母数字误当分割点
+  final starts = <int>[
+    for (final m in matches)
+      if (m.start == 0 ||
+          RegExp(r'[\s)）]').hasMatch(line[m.start - 1])) m.start
+  ];
+  if (starts.length <= 1) {
+    yield line;
+    return;
+  }
+  for (var i = 0; i < starts.length; i++) {
+    final end = i + 1 < starts.length ? starts[i + 1] : line.length;
+    yield line.substring(starts[i], end);
+  }
 }
 
 /// 表格区内的行是否像正文（修读要求说明），而非课程名折行碎片。
