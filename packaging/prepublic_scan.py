@@ -11,7 +11,7 @@ PATTERNS = {
     '长数字串(8-14位)': re.compile(r'(?<!\d)\d{8,14}(?!\d)'),
     '疑似口令字段': re.compile(r'(password|passwd|pwd|密码|口令)\s*[:=]\s*\S{3,}', re.I),
     '疑似 token/secret': re.compile(r'(token|secret|api[_-]?key|cookie)\s*[:=]\s*\S{6,}', re.I),
-    '本机用户名': re.compile('USER'),
+    '本机用户名': re.compile('\u80e1\u5929\u6cfd'),  # 以转义书写，避免扫描器自身携带明文
     '真实姓名常见字段': re.compile(r'(真实姓名|学生姓名|xm)\s*[:=]\s*[\u4e00-\u9fa5]{2,4}'),
     'QQ 号': re.compile(r'(?<!\d)[1-9]\d{4,10}(?!\d)'),
 }
