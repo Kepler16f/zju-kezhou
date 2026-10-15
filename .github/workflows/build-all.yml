@@ -104,7 +104,7 @@ jobs:
       # .app 是目录——打 zip 后上传单文件
       - name: 打包 .app 为 zip
         run: |
-          cd compass_app/build/macos/Build/Products/Release
+          cd build/macos/Build/Products/Release
           zip -r -y ../KeZhou-macos.zip *.app
       - uses: actions/upload-artifact@v7
         with:
@@ -221,7 +221,7 @@ jobs:
       # bundle 是目录——打 tar.gz 后上传单文件
       - name: 打包 bundle 为 tar.gz
         run: |
-          cd compass_app/build/linux/x64/release
+          cd build/linux/x64/release
           tar czf ../../../KeZhou-linux-x64.tar.gz bundle
       - uses: actions/upload-artifact@v7
         with:
