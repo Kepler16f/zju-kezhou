@@ -88,3 +88,9 @@ golden（build_embed 注入为常量）─────────────�
 | 10/14 | 单测全绿；golden 冻结；`go/no-go` 判定 |
 | 10/15 | 主链路粘贴→报告 30 秒内出；Chatflow 拒答分支演示 |
 | 10/16 | `eval/extract_accuracy.py` 出真实准确率表；固化输入×5 连跑零失误 |
+
+## 贡献者
+
+| [![Kepler16f](https://avatars.githubusercontent.com/Kepler16f?s=64)](https://github.com/Kepler16f) | [![shiroiyoru142857](https://avatars.githubusercontent.com/shiroiyoru142857?s=64)](https://github.com/shiroiyoru142857) |
+|:---:|:---:|
+| **Kepler16f** | **shiroiyoru142857** |
