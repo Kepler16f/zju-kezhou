@@ -1,7 +1,9 @@
 # Windows 构建（单一平台文件，供 buildAll.yml 分发器按需调用）：
-#   x64   —— Setup.exe（Inno Setup，内置 VC 运行库），windows-latest
-#   arm64 —— 需 Windows-on-ARM 自托管 runner（Flutter 官方不支持 x64 交叉编译桌面；
-#            本机 arm64 出包走 packaging/build_windows_installer.sh）
+#   x64   —— windows-latest，Setup.exe（Inno Setup，内置 VC 运行库）
+#   arm64 —— windows-11-arm（GitHub 托管 ARM64 runner，公开仓库免费，无需自托管）
+#            注意：subosito/flutter-action 不发布 Windows ARM64 归档（releases_windows.json
+#            只有 x64），故本 job 直接 clone flutter 仓库，由 Flutter 按
+#            PROCESSOR_ARCHITECTURE=ARM64 自举 arm64 Dart SDK。
 name: Build Windows
 
 on:
@@ -94,20 +96,96 @@ jobs:
   windows-arm64:
     name: Windows arm64
     if: ${{ inputs.arm64 }}
-    runs-on: [self-hosted, Windows, ARM64]
+    runs-on: windows-11-arm
     defaults: {run: {working-directory: compass_app}}
     steps:
       - uses: actions/checkout@v4
+
+      - name: 安装 Flutter（ARM64 原生，手动装）
+        shell: pwsh
+        run: |
+          # subosito/flutter-action 未发布 Windows ARM64 归档（releases_windows.json 只有 x64），
+          # 直接 clone 官方仓库：Flutter 会按 PROCESSOR_ARCHITECTURE（本 runner 为 ARM64）
+          # 自举 arm64 Dart SDK。版本与其它平台 job 保持一致（3.47.7）。
+          git clone --depth 1 --branch 3.47.7 https://github.com/flutter/flutter.git C:\flutter
+          & C:\flutter\bin\flutter --version
+          Add-Content -Path $env:GITHUB_ENV -Value "FLUTTER_ROOT=C:\flutter" -Encoding utf8
+          Add-Content -Path $env:GITHUB_PATH -Value "C:\flutter\bin" -Encoding utf8
+
+      - name: Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --limit-output
+
+      - run: flutter pub get
       - run: flutter build windows --release --no-tree-shake-icons
-      - name: 校验架构（防 x64 冒充）
+
+      - name: 校验产物架构（必须是 ARM64，防 x64 冒充）
         shell: pwsh
         run: |
           $exe = "build\windows\arm64\runner\Release\kezhou.exe"
-          $machine = (Get-Item $exe).VersionInfo.FileVersion
-          "built: $exe  ($machine)"
-          if (-not (Test-Path $exe)) { throw "arm64 产物缺失：$exe" }
+          if (-not (Test-Path $exe)) { throw "产物缺失：$exe" }
+          $fs = [IO.File]::OpenRead($exe)
+          $br = New-Object IO.BinaryReader($fs)
+          $fs.Position = 0x3C; $pe = $br.ReadInt32()
+          $fs.Position = $pe + 4; $machine = $br.ReadUInt16()
+          $fs.Close()
+          if ($machine -ne 0xAA64) { throw ("架构不是 ARM64：0x{0:X}" -f $machine) }
+          "kezhou.exe machine = ARM64"
+
+      - name: 打包 Setup.exe（arm64，含 arm64 VC 运行库）
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path pubspec.yaml -Pattern '^version:\s*([0-9.]+)').Matches[0].Groups[1].Value
+          "AppVersion = $ver"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -property installationPath
+          "VS Path: $vsPath"
+          $crt = Get-ChildItem "$vsPath\VC\Redist\MSVC" -Recurse -Filter vcruntime140.dll -ErrorAction SilentlyContinue |
+            Where-Object FullName -match "arm64\\Microsoft\.VC\d+\.CRT" |
+            Sort-Object FullName -Desc | Select-Object -First 1
+          if (-not $crt) { throw "未找到 arm64 VC 运行库（$vsPath\VC\Redist\MSVC 下无 arm64\Microsoft.VC*.CRT）" }
+          $rel = "build\windows\arm64\runner\Release"
+          foreach ($pat in @("vcruntime140*.dll", "msvcp140*.dll")) {
+            Get-ChildItem $crt.DirectoryName -Filter $pat | ForEach-Object {
+              Copy-Item $_.FullName $rel -Force
+              "copied $($_.Name)"
+            }
+          }
+          $iss = "kezhou_setup_arm64.iss"
+          $relFull = (Resolve-Path $rel).Path
+          $icon  = (Resolve-Path "windows\runner\resources\app_icon.ico").Path
+          @"
+          [Setup]
+          AppId={{8F4B1D5E-92A6-4C7B-B3E0-KEZHOU00002}
+          AppName=课舟
+          AppVersion=$ver
+          AppPublisher=KeZhou Team
+          DefaultDirName={autopf}\KeZhou
+          DefaultGroupName=课舟
+          UninstallDisplayIcon={app}\kezhou.exe
+          OutputDir=..\dist
+          OutputBaseFilename=KeZhouSetup-$ver-win-arm64
+          ArchitecturesAllowed=arm64
+          ArchitecturesInstallIn64BitMode=arm64
+          Compression=lzma2/max
+          SolidCompression=yes
+          SetupIconFile=$icon
+          DisableProgramGroupPage=yes
+          PrivilegesRequired=lowest
+          PrivilegesRequiredOverridesAllowed=dialog
+          [Files]
+          Source: "$relFull\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          [Icons]
+          Name: "{group}\\课舟"; Filename: "{app}\\kezhou.exe"
+          Name: "{autodesktop}\\课舟"; Filename: "{app}\\kezhou.exe"
+          [Run]
+          Filename: "{app}\\kezhou.exe"; Description: "立即运行课舟"; Flags: nowait postinstall skipifsilent
+          "@ | Set-Content $iss -Encoding UTF8
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          & $iscc $iss
       - uses: actions/upload-artifact@v7
         with:
-          name: kezhou-windows-arm64
+          name: kezhou-windows-arm64-setup
           archive: false
-          path: compass_app/build/windows/arm64/runner/Release/kezhou.exe
+          path: dist/KeZhouSetup-*-win-arm64.exe

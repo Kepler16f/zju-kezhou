@@ -1,10 +1,10 @@
 # 构建分发器：勾选平台 + 各平台内部勾选架构，一次触发。
 #  - engine-check（双引擎金标一致性）总是先跑，作为所有平台构建的门
 #  - push main/master：只跑质量门（快速反馈，不自动出包）
-#  - push tag v*：按默认架构全平台自动出包（发布）
+#  - push tag v*：全架构自动出包（发布；Linux arm64 除外——上游无引擎档）
 #  - 手动（Actions 页 Run workflow）：按勾选构建；不勾任何平台则只跑质量门
-# 约定：默认只勾"主架构"（Android arm64 / Windows x64 / macOS arm64 / Linux x64），
-#       其余架构按需勾选。Windows arm64 需自托管 ARM runner，未配置时该 job 会排队挂起。
+# 约定：默认勾"常用架构"（Android arm64 / Windows x64+arm64 / macOS arm64 / Linux x64），
+#       其余架构按需勾选。Windows arm64 走 GitHub 托管 windows-11-arm（公开仓库免费）。
 #       版本号取自 compass_app/pubspec.yaml，构建前先确认版本。
 name: Build all platforms
 
@@ -41,7 +41,7 @@ on:
       windows_arm64:
         description: 'Windows arm64'
         type: boolean
-        default: false
+        default: true
       macos:
         description: 'macOS'
         type: boolean
@@ -87,8 +87,8 @@ jobs:
     uses: ./.github/workflows/build-android.yml
     with:
       arm64: ${{ github.event_name != 'workflow_dispatch' || inputs.android_arm64 }}
-      armv7: ${{ github.event_name == 'workflow_dispatch' && inputs.android_armv7 || false }}
-      x64: ${{ github.event_name == 'workflow_dispatch' && inputs.android_x64 || false }}
+      armv7: ${{ github.event_name != 'workflow_dispatch' || inputs.android_armv7 }}
+      x64: ${{ github.event_name != 'workflow_dispatch' || inputs.android_x64 }}
 
   windows:
     name: Windows
@@ -97,7 +97,7 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
     with:
       x64: ${{ github.event_name != 'workflow_dispatch' || inputs.windows_x64 }}
-      arm64: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_arm64 || false }}
+      arm64: ${{ github.event_name != 'workflow_dispatch' || inputs.windows_arm64 }}
 
   macos:
     name: macOS
@@ -106,7 +106,7 @@ jobs:
     uses: ./.github/workflows/build-macos.yml
     with:
       arm64: ${{ github.event_name != 'workflow_dispatch' || inputs.macos_arm64 }}
-      x64: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_x64 || false }}
+      x64: ${{ github.event_name != 'workflow_dispatch' || inputs.macos_x64 }}
 
   ios:
     name: iOS
