@@ -1,10 +1,11 @@
 # 构建分发器：勾选平台 + 各平台内部勾选架构，一次触发。
 #  - engine-check（双引擎金标一致性）总是先跑，作为所有平台构建的门
 #  - push main/master：只跑质量门（快速反馈，不自动出包）
-#  - push tag v*：全架构自动出包（发布；Linux arm64 除外——上游无引擎档）
+#  - push tag v*：全平台按"默认架构"自动出包（发布；Linux arm64 待验证前仅手动）
 #  - 手动（Actions 页 Run workflow）：按勾选构建；不勾任何平台则只跑质量门
 # 约定：默认勾"常用架构"（Android arm64 / Windows x64+arm64 / macOS arm64 / Linux x64），
-#       其余架构按需勾选。Windows arm64 走 GitHub 托管 windows-11-arm（公开仓库免费）。
+#       其余架构按需勾选。Windows arm64 走托管 windows-11-arm，Linux arm64 走托管
+#       ubuntu-24.04-arm，两者都免费、无需自托管。
 #       版本号取自 compass_app/pubspec.yaml，构建前先确认版本。
 name: Build all platforms
 
@@ -121,6 +122,8 @@ jobs:
     uses: ./.github/workflows/build-linux.yml
     with:
       x64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_x64 }}
+      # 待验证：跑通一次后改成 github.event_name != 'workflow_dispatch' || inputs.linux_arm64，
+      # 让 tag 发布也默认带 Linux arm64（现在只手动勾选，避免未验证路径进发布流程）
       arm64: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_arm64 || false }}
 
   hap:

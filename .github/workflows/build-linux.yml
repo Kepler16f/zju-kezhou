@@ -1,7 +1,10 @@
 # Linux 构建（单一平台文件，供 buildAll.yml 分发器按需调用）：
-#   x64   —— ubuntu-latest，产 bundle 打 tar.gz
-#   arm64 —— ubuntu-24.04-arm（原生 arm runner）。Flutter stable 长期无 linux-arm64 引擎档，
-#            勾选后若上游仍未发布，该 job 会在 flutter 取档阶段失败——这是上游限制，不是本仓库配置问题。
+#   x64   —— ubuntu-latest，subosito/flutter-action，产 bundle 打 tar.gz
+#   arm64 —— ubuntu-24.04-arm（GitHub 托管 ARM64 runner，公开仓库免费；reunion 项目同款）
+#            手动装 Flutter：官方发布清单 releases_linux.json 里**没有任何 arm64 SDK 归档**
+#            （744 条记录全 x64），subosito/flutter-action 在 arm64 上装不上；改为 clone
+#            官方仓库，Flutter 会按 uname -m=aarch64 自举 dart-sdk-linux-arm64 与
+#            linux-arm64 引擎产物（两者在发布存储桶里都存在）。
 name: Build Linux
 
 on:
@@ -45,11 +48,32 @@ jobs:
     defaults: {run: {working-directory: compass_app}}
     steps:
       - uses: actions/checkout@v4
+
       - name: 依赖
         run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libsecret-1-dev
-      - uses: subosito/flutter-action@v2
-        with: {channel: stable, flutter-version: 3.47.7}
+
+      - name: 安装 Flutter（ARM64 原生，手动装）
+        shell: bash
+        run: |
+          # subosito/flutter-action 依赖官方 SDK 归档，而 releases_linux.json 无 arm64 包；
+          # clone 官方仓库后，bin/internal/update_dart_sdk.sh 会按 uname -m 取
+          # dart-sdk-linux-arm64.zip，flutter precache 取 linux-arm64 引擎产物。
+          git clone --depth 1 --branch 3.47.7 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          echo "FLUTTER_ROOT=$RUNNER_TEMP/flutter" >> "$GITHUB_ENV"
+
+      - name: 自举 Dart SDK（首次运行会下载 arm64 SDK）
+        run: flutter --version
+
       - run: flutter build linux --release
+
+      - name: 校验产物架构（必须是 aarch64，防 x64 冒充）
+        run: |
+          BIN=build/linux/arm64/release/bundle/compass_app
+          if [ ! -x "$BIN" ]; then echo "产物缺失：$BIN"; ls -R build/linux | head -30; exit 1; fi
+          file "$BIN"
+          file "$BIN" | grep -q aarch64 || { echo "架构不是 aarch64"; exit 1; }
+
       - name: 打包 bundle 为 tar.gz
         run: |
           cd build/linux/arm64/release
