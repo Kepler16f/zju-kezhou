@@ -1,0 +1,35 @@
+# Android 构建（arm64-v8a / armeabi-v7a / x86_64 三包；x86(32位) 引擎已停止支持）
+# 单一平台构建，供 build.yml 分发器按需调用，也可单独 dispatch 调试。
+# 交付口径见 docs/开发方案.md：本机打包只出 arm64（APK 只出 arm64 约定），CI 保持全 ABI。
+name: Build Android
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}   # 单独跑本平台（不经过分发器的金标门）
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.7}
+      - run: flutter build apk --release --split-per-abi
+      # archive:false 只支持单文件——每个 APK 单独上传
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-android-arm64
+          archive: false
+          path: compass_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-android-armv7
+          archive: false
+          path: compass_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-android-x64
+          archive: false
+          path: compass_app/build/app/outputs/flutter-apk/app-x86_64-release.apk

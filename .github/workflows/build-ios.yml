@@ -1,0 +1,23 @@
+# iOS 构建（单一平台文件，供 build.yml 分发器按需调用）：
+# 真机 arm64 .ipa（无签名导出；上架需挂开发者证书）。
+name: Build iOS
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}   # 单独跑本平台（不经过分发器的金标门）
+
+jobs:
+  ios-unsigned:
+    name: iOS IPA（arm64 真机，无签名）
+    runs-on: macos-14
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.7}
+      - run: flutter build ipa --release --no-codesign
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-ios
+          archive: false
+          path: compass_app/build/ios/ipa/*.ipa

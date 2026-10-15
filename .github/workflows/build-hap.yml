@@ -6,6 +6,7 @@ name: Build HarmonyOS HAP
 on:
   push:
     branches: [main, master]
+  workflow_call: {}   # 供 build.yml 分发器按需调用
   workflow_dispatch:
 
 jobs:

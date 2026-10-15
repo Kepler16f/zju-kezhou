@@ -28,6 +28,8 @@ flutter build apk --release --split-per-abi --no-tree-shake-icons
 cd .. && python eval/cross_engine_parity.py               # Python↔Dart 逐字段一致
 ```
 
+**CI**：GitHub Actions 按平台拆分（`.github/workflows/build-{android,windows,macos,ios,linux,hap}.yml`，由 `build.yml` 分发器调用；push 到 main 只跑金标门，push `v*` tag 全平台出包）。手动构建：Actions → **构建分发（勾选平台）** → Run workflow → 勾选需要的平台。
+
 **交付形态约定**：只交安装包，不交 zip/裸目录——Windows 用 `CompassSetup-*.exe`（用户级安装，免管理员，双击即用、带卸载项）；Android APK、iOS IPA、鸿蒙 HAP 本身即安装包；产物统一落 `dist/`。
 
 **内置字体**：`compass_app/assets/fonts/NotoSansSC-{Regular,Bold}.ttf`（OFL-1.1，按 GB2312+应用文案裁剪，两个文件共约 4.5MB），保证干净 Linux/精简 Windows/无中文环境的设备上中文一致渲染。

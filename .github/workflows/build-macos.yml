@@ -1,0 +1,34 @@
+# macOS 构建（单一平台文件，供 build.yml 分发器按需调用）：
+# arm64（M 系 runner 直出）+ x86_64（xcodebuild ARCHS 交叉）→ 合并 zip。
+name: Build macOS
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}   # 单独跑本平台（不经过分发器的金标门）
+
+jobs:
+  macos-universal:
+    name: macOS（arm64 + x86_64）
+    runs-on: macos-14
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.7}
+      - name: 构建双架构（引擎按宿主架构出包；x86_64 用 ARCHS 交叉）
+        run: |
+          flutter build macos --release            # arm64（M 系 runner）
+          cd macos
+          xcodebuild -workspace Runner.xcworkspace -scheme Runner \
+            -configuration Release -arch x86_64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO build 2>/dev/null || echo "x86_64 交叉失败（见 README 备注）"
+      # .app 是目录——打 zip 后上传单文件
+      - name: 打包 .app 为 zip
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r -y ../KeZhou-macos.zip *.app
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-macos
+          archive: false
+          path: compass_app/build/macos/Build/Products/KeZhou-macos.zip

@@ -1,0 +1,37 @@
+# 共享质量门（可复用 workflow，被各平台 workflow 以 needs 串联调用）。
+# 不随 push 自动触发（on: workflow_dispatch 仅供手动单独运行调试）；
+# 实际执行入口在 build-android/windows/macos/linux/ios.yml 的 engine-check job。
+# 修改本文件会同时影响所有平台 workflow——改动前想清楚。
+name: Engine check (reusable)
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}   # 单独调试用
+
+jobs:
+  check:
+    name: 双引擎金标一致性（Python↔Dart）
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.7}
+      - name: Dart 引擎单测
+        run: |
+          flutter pub get
+          dart test test/engine_test.dart test/analytics_test.dart test/exam_test.dart test/request_throttle_test.dart test/course_marks_test.dart test/zju_parse_test.dart test/zju_parse_ext_test.dart
+      - name: golden/samples 双侧同步校验
+        run: |
+          cd ..
+          python data/sync_assets.py --check
+      - name: Python 引擎单测
+        run: |
+          cd ..
+          python -m unittest discover -s engine/tests
+      - name: 双引擎逐字段比对
+        run: |
+          cd ..
+          python eval/cross_engine_parity.py
