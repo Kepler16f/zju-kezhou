@@ -1,34 +1,74 @@
-# macOS 构建（单一平台文件，供 build.yml 分发器按需调用）：
-# arm64（M 系 runner 直出）+ x86_64（xcodebuild ARCHS 交叉）→ 合并 zip。
+# macOS 构建（单一平台文件，供 buildAll.yml 分发器按需调用）：
+#   arm64 —— macos-14（M 系 runner）flutter build macos 直出
+#   x64   —— 同一 runner 上 xcodebuild -arch x86_64 交叉编译（Flutter 不产 x64 桌面档）
+# 两个架构各出独立 zip，避免互相覆盖；打包前用 lipo 校验实际架构，防止错包。
 name: Build macOS
 
 on:
-  workflow_call: {}
-  workflow_dispatch: {}   # 单独跑本平台（不经过分发器的金标门）
+  workflow_call:
+    inputs:
+      arm64: {type: boolean, default: true}
+      x64: {type: boolean, default: false}
+  workflow_dispatch:
+    inputs:
+      arm64: {description: 'macOS arm64', type: boolean, default: true}
+      x64: {description: 'macOS x64', type: boolean, default: false}
 
 jobs:
-  macos-universal:
-    name: macOS（arm64 + x86_64）
+  macos-arm64:
+    name: macOS arm64
+    if: ${{ inputs.arm64 }}
     runs-on: macos-14
     defaults: {run: {working-directory: compass_app}}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
-      - name: 构建双架构（引擎按宿主架构出包；x86_64 用 ARCHS 交叉）
+      - run: flutter build macos --release
+      - name: 校验架构
         run: |
-          flutter build macos --release            # arm64（M 系 runner）
-          cd macos
-          xcodebuild -workspace Runner.xcworkspace -scheme Runner \
-            -configuration Release -arch x86_64 ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO build 2>/dev/null || echo "x86_64 交叉失败（见 README 备注）"
+          APP=$(ls -d build/macos/Build/Products/Release/*.app | head -1)
+          BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          echo "checking $BIN"; lipo -archs "$BIN"
       # .app 是目录——打 zip 后上传单文件
       - name: 打包 .app 为 zip
         run: |
           cd build/macos/Build/Products/Release
-          zip -r -y ../KeZhou-macos.zip *.app
+          zip -r -y ../KeZhou-macos-arm64.zip *.app
       - uses: actions/upload-artifact@v7
         with:
-          name: kezhou-macos
+          name: kezhou-macos-arm64
           archive: false
-          path: compass_app/build/macos/Build/Products/KeZhou-macos.zip
+          path: compass_app/build/macos/Build/Products/KeZhou-macos-arm64.zip
+
+  macos-x64:
+    name: macOS x64
+    if: ${{ inputs.x64 }}
+    runs-on: macos-14
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.7}
+      - name: 仅生成工程配置（不构建）
+        run: flutter build macos --release --config-only
+      - name: xcodebuild 交叉编译 x86_64
+        run: |
+          cd macos
+          xcodebuild -workspace Runner.xcworkspace -scheme Runner \
+            -configuration Release -arch x86_64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: 校验架构（必须是 x86_64，失败即中止避免错包）
+        run: |
+          APP=$(ls -d build/macos/Build/Products/Release/*.app | head -1)
+          BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          echo "checking $BIN"; lipo -archs "$BIN" | tee /dev/stderr | grep -q x86_64
+      - name: 打包 .app 为 zip
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r -y ../KeZhou-macos-x64.zip *.app
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-macos-x64
+          archive: false
+          path: compass_app/build/macos/Build/Products/KeZhou-macos-x64.zip

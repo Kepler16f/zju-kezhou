@@ -1,16 +1,23 @@
-# Windows 构建（单一平台文件，供 build.yml 分发器按需调用）：
-#  - windows-x64：Setup.exe（Inno Setup，内置 VC 运行库）
-#  - windows-arm64：Flutter 官方不支持 x64 交叉编译桌面，需 Windows-on-ARM 自托管 runner
-#    （默认不勾选）；本机（arm64）出包走 packaging/build_windows_installer.sh。
+# Windows 构建（单一平台文件，供 buildAll.yml 分发器按需调用）：
+#   x64   —— Setup.exe（Inno Setup，内置 VC 运行库），windows-latest
+#   arm64 —— 需 Windows-on-ARM 自托管 runner（Flutter 官方不支持 x64 交叉编译桌面；
+#            本机 arm64 出包走 packaging/build_windows_installer.sh）
 name: Build Windows
 
 on:
-  workflow_call: {}
-  workflow_dispatch: {}   # 单独跑本平台（不经过分发器的金标门）
+  workflow_call:
+    inputs:
+      x64: {type: boolean, default: true}
+      arm64: {type: boolean, default: false}
+  workflow_dispatch:
+    inputs:
+      x64: {description: 'Windows x64', type: boolean, default: true}
+      arm64: {description: 'Windows arm64', type: boolean, default: false}
 
 jobs:
   windows-x64:
-    name: Windows x64（Setup.exe 安装包）
+    name: Windows x64
+    if: ${{ inputs.x64 }}
     runs-on: windows-latest
     defaults: {run: {working-directory: compass_app}}
     steps:
@@ -80,10 +87,27 @@ jobs:
           & $iscc $iss
       - uses: actions/upload-artifact@v7
         with:
-          name: kezhou-windows-x64-installer
+          name: kezhou-windows-x64-setup
           archive: false
           path: dist/KeZhouSetup-*-win-x64.exe
 
-  # Windows arm64 已移出本文件：Flutter 官方不支持从 x64 交叉编译桌面，需
-  # Windows-on-ARM 自托管 runner。手动勾选入口在 build.yml 分发器（默认不勾）；
-  # 本机出包走 packaging/build_windows_installer.sh arm64。
+  windows-arm64:
+    name: Windows arm64
+    if: ${{ inputs.arm64 }}
+    runs-on: [self-hosted, Windows, ARM64]
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - run: flutter build windows --release --no-tree-shake-icons
+      - name: 校验架构（防 x64 冒充）
+        shell: pwsh
+        run: |
+          $exe = "build\windows\arm64\runner\Release\kezhou.exe"
+          $machine = (Get-Item $exe).VersionInfo.FileVersion
+          "built: $exe  ($machine)"
+          if (-not (Test-Path $exe)) { throw "arm64 产物缺失：$exe" }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-windows-arm64
+          archive: false
+          path: compass_app/build/windows/arm64/runner/Release/kezhou.exe

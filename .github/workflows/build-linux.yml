@@ -1,15 +1,23 @@
-# Linux 构建（单一平台文件，供 build.yml 分发器按需调用）：
-# x64 bundle（打 tar.gz）。arm64 暂缺——Flutter stable 无 linux-arm64 发布档，
-# 待官方发布后加 job（runs-on: ubuntu-24.04-arm）。
+# Linux 构建（单一平台文件，供 buildAll.yml 分发器按需调用）：
+#   x64   —— ubuntu-latest，产 bundle 打 tar.gz
+#   arm64 —— ubuntu-24.04-arm（原生 arm runner）。Flutter stable 长期无 linux-arm64 引擎档，
+#            勾选后若上游仍未发布，该 job 会在 flutter 取档阶段失败——这是上游限制，不是本仓库配置问题。
 name: Build Linux
 
 on:
-  workflow_call: {}
-  workflow_dispatch: {}   # 单独跑本平台（不经过分发器的金标门）
+  workflow_call:
+    inputs:
+      x64: {type: boolean, default: true}
+      arm64: {type: boolean, default: false}
+  workflow_dispatch:
+    inputs:
+      x64: {description: 'Linux x64', type: boolean, default: true}
+      arm64: {description: 'Linux arm64', type: boolean, default: false}
 
 jobs:
   linux-x64:
     name: Linux x64
+    if: ${{ inputs.x64 }}
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: compass_app}}
     steps:
@@ -29,3 +37,25 @@ jobs:
           name: kezhou-linux-x64
           archive: false
           path: compass_app/build/linux/KeZhou-linux-x64.tar.gz
+
+  linux-arm64:
+    name: Linux arm64
+    if: ${{ inputs.arm64 }}
+    runs-on: ubuntu-24.04-arm
+    defaults: {run: {working-directory: compass_app}}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 依赖
+        run: sudo apt-get update && sudo apt-get install -y ninja-build pkg-config libgtk-3-dev libsecret-1-dev
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, flutter-version: 3.47.7}
+      - run: flutter build linux --release
+      - name: 打包 bundle 为 tar.gz
+        run: |
+          cd build/linux/arm64/release
+          tar czf ../../../KeZhou-linux-arm64.tar.gz bundle
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kezhou-linux-arm64
+          archive: false
+          path: compass_app/build/linux/KeZhou-linux-arm64.tar.gz

@@ -1,10 +1,11 @@
-# 手动构建分发器：勾选需要的平台，一次触发。
+# 构建分发器：勾选平台 + 各平台内部勾选架构，一次触发。
 #  - engine-check（双引擎金标一致性）总是先跑，作为所有平台构建的门
 #  - push main/master：只跑质量门（快速反馈，不自动出包）
-#  - push tag v*：全平台自动构建（发布）
-#  - 手动（Actions 页 Run workflow）：按勾选构建
-# Windows arm64 需要 Windows-on-ARM 自托管 runner（仓库未配置时该 job 会排队挂起，
-# 默认不勾选）；本机 arm64 出包走 packaging/build_windows_installer.sh。
+#  - push tag v*：按默认架构全平台自动出包（发布）
+#  - 手动（Actions 页 Run workflow）：按勾选构建；不勾任何平台则只跑质量门
+# 约定：默认只勾"主架构"（Android arm64 / Windows x64 / macOS arm64 / Linux x64），
+#       其余架构按需勾选。Windows arm64 需自托管 ARM runner，未配置时该 job 会排队挂起。
+#       版本号取自 compass_app/pubspec.yaml，构建前先确认版本。
 name: Build all platforms
 
 on:
@@ -17,12 +18,40 @@ on:
         description: 'Android'
         type: boolean
         default: true
+      android_arm64:
+        description: 'Android arm64'
+        type: boolean
+        default: true
+      android_armv7:
+        description: 'Android armv7'
+        type: boolean
+        default: false
+      android_x64:
+        description: 'Android x64'
+        type: boolean
+        default: false
       windows:
         description: 'Windows'
         type: boolean
         default: true
+      windows_x64:
+        description: 'Windows x64'
+        type: boolean
+        default: true
+      windows_arm64:
+        description: 'Windows arm64'
+        type: boolean
+        default: false
       macos:
         description: 'macOS'
+        type: boolean
+        default: false
+      macos_arm64:
+        description: 'macOS arm64'
+        type: boolean
+        default: true
+      macos_x64:
+        description: 'macOS x64'
         type: boolean
         default: false
       ios:
@@ -33,12 +62,16 @@ on:
         description: 'Linux'
         type: boolean
         default: false
-      hap:
-        description: 'HarmonyOS'
+      linux_x64:
+        description: 'Linux x64'
+        type: boolean
+        default: true
+      linux_arm64:
+        description: 'Linux arm64'
         type: boolean
         default: false
-      windows_arm64:
-        description: 'Windows arm64'
+      hap:
+        description: 'HarmonyOS'
         type: boolean
         default: false
 
@@ -52,18 +85,28 @@ jobs:
     needs: engine-check
     if: ${{ inputs.android == true || startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/build-android.yml
+    with:
+      arm64: ${{ github.event_name != 'workflow_dispatch' || inputs.android_arm64 }}
+      armv7: ${{ github.event_name == 'workflow_dispatch' && inputs.android_armv7 || false }}
+      x64: ${{ github.event_name == 'workflow_dispatch' && inputs.android_x64 || false }}
 
   windows:
     name: Windows
     needs: engine-check
     if: ${{ inputs.windows == true || startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/build-windows.yml
+    with:
+      x64: ${{ github.event_name != 'workflow_dispatch' || inputs.windows_x64 }}
+      arm64: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_arm64 || false }}
 
   macos:
     name: macOS
     needs: engine-check
     if: ${{ inputs.macos == true || startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/build-macos.yml
+    with:
+      arm64: ${{ github.event_name != 'workflow_dispatch' || inputs.macos_arm64 }}
+      x64: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_x64 || false }}
 
   ios:
     name: iOS
@@ -76,25 +119,12 @@ jobs:
     needs: engine-check
     if: ${{ inputs.linux == true || startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/build-linux.yml
+    with:
+      x64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_x64 }}
+      arm64: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_arm64 || false }}
 
   hap:
     name: HarmonyOS
     needs: engine-check
     if: ${{ inputs.hap == true || startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/build-hap.yml
-
-  # Windows arm64（需自托管 ARM runner）：不做成可复用平台文件，直接挂在这里。
-  windows-arm64:
-    name: Windows arm64
-    runs-on: [self-hosted, Windows, ARM64]
-    needs: engine-check
-    if: ${{ inputs.windows_arm64 == true }}
-    defaults: {run: {working-directory: compass_app}}
-    steps:
-      - uses: actions/checkout@v4
-      - run: flutter build windows --release
-      - uses: actions/upload-artifact@v7
-        with:
-          name: compass-windows-arm64
-          archive: false
-          path: compass_app/build/windows/arm64/runner/Release/kezhou.exe
