@@ -107,4 +107,21 @@ void main() {
       expect(termCodeLabel('unknown'), 'unknown');
     });
   });
+
+  group('prettySemester', () {
+    test('教务学年学期串 → 日历标签', () {
+      expect(prettySemester('20232024-1'), '2023秋冬');
+      expect(prettySemester('20262027-2'), '2027春夏');
+      expect(prettySemester('2025-2026（1）'), '2025秋冬');
+    });
+    test('已是日历标签 / 非连续学年 / 空串 → 原样', () {
+      expect(prettySemester('2026秋冬'), '2026秋冬');
+      expect(prettySemester('20232025-1'), '20232025-1');
+      expect(prettySemester(''), '');
+    });
+    test('PDF 年级式学期串传年级才换算', () {
+      expect(prettySemester('一(秋冬)', gradeYear: 2026), '2026秋冬');
+      expect(prettySemester('一(秋冬)'), '一(秋冬)');
+    });
+  });
 }

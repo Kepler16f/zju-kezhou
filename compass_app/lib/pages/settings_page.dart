@@ -9,6 +9,7 @@ import '../data/ai_config.dart';
 import '../data/ai_prompts.dart';
 import '../data/app_version.dart';
 import '../data/diagnostic_log.dart';
+import '../data/semester.dart';
 
 enum DataMode { sample, paste, zju }
 
@@ -195,7 +196,10 @@ class _SettingsPageState extends State<SettingsPage> {
                       child: _selector(
                           '当前学期',
                           current,
-                          {for (final s in _semesters) s: s},
+                          {
+                            // 值保持引擎编码 'YYYY-A/B'，显示用日历标签（诉求 #8）
+                            for (final s in _semesters) s: termCodeLabel(s)
+                          },
                           onCurrentChange),
                     ),
                   ],

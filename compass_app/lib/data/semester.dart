@@ -187,3 +187,21 @@ String termCodeLabel(String code) {
   final y = int.parse(m.group(1)!);
   return m.group(2) == 'A' ? '$y秋冬' : '${y + 1}春夏';
 }
+
+/// 教务学期串 → 日历标签。兼容多口径（zdbk 接口 kkxq/xnxq 常见形态）：
+///  '20232024-1' / '2023-2024(1)' → '2023秋冬'；'2026秋冬' 原样；
+///  '一(秋冬)' 风格（PDF 口径）需年级，未传年级时保留原文。
+String prettySemester(String raw, {int gradeYear = 0}) {
+  if (raw.isEmpty) return raw;
+  // '20232024-1' / '2023-2024(1)' / '2025-2026（1）' 等学年+学期号形态
+  final m = RegExp(r'(\d{4})\D{0,5}(\d{4})\D{0,3}([12])\D{0,3}$').firstMatch(raw);
+  if (m != null && int.parse(m.group(2)!) == int.parse(m.group(1)!) + 1) {
+    final y = int.parse(m.group(1)!);
+    return m.group(3) == '1' ? '$y秋冬' : '${y + 1}春夏';
+  }
+  if (RegExp(r'^\d{4}-(秋冬|春夏|短)$').hasMatch(raw)) return raw;
+  if (gradeYear > 0 && RegExp(r'^[一二三四]').hasMatch(raw)) {
+    return prettyPlanTerm(raw, gradeYear: gradeYear);
+  }
+  return raw;
+}

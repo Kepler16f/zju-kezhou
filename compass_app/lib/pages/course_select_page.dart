@@ -18,6 +18,7 @@ import '../data/ai_client.dart';
 import '../data/ai_config.dart';
 import '../data/ai_prompts.dart';
 import '../data/credential_store.dart';
+import '../data/semester.dart';
 import '../data/xk_models.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
@@ -520,8 +521,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
               if (_index != null) ...[
                 const SizedBox(height: 4),
                 Text(
-                  '按当前学期 ${widget.currentSemester} 匹配'
-                  '${_index!.xkxnm != null && _index!.xkxqm != null ? '｜教务学期 ${_index!.xkxnm}-${_index!.xkxqm}' : '｜教务学期未标注'}'
+                  '按当前学期 ${termCodeLabel(widget.currentSemester)} 匹配'
+                  '${_index!.xkxnm != null && _index!.xkxqm != null ? '｜教务学期 ${_prettyXkTerm(_index!.xkxnm!, _index!.xkxqm!)}' : '｜教务学期未标注'}'
                   '${_index!.fromCache ? '｜入口读取自缓存（可能过期）' : ''}',
                   style: const TextStyle(fontSize: 11, color: Colors.grey),
                 ),
@@ -957,6 +958,24 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         ),
         child: Text(text, style: TextStyle(fontSize: 11, color: color)),
       );
+
+  /// 教务学期号（xkxnm='2026-2027' × xkxqm=1 秋冬/2 春夏/3 短）→ 日历标签。
+  /// 无法解析原样返回「学年-学期」。
+  static String _prettyXkTerm(String xkxnm, String xkxqm) {
+    final y = RegExp(r'^(\d{4})').firstMatch(xkxnm)?.group(1);
+    if (y == null) return '$xkxnm-$xkxqm';
+    final n = int.parse(y);
+    switch (xkxqm) {
+      case '1':
+        return '$n秋冬';
+      case '2':
+        return '${n + 1}春夏';
+      case '3':
+        return '${n + 1}短';
+      default:
+        return '$xkxnm-$xkxqm';
+    }
+  }
 
   // ── AI 解读面板（默认关闭；合规文案来自 ai_prompts.dart，勿在此另写）──
 

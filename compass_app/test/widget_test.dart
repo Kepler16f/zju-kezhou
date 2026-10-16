@@ -93,7 +93,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pump();
     expect(find.text('成绩明细'), findsOneWidget);
-    expect(find.textContaining('秋季'), findsWidgets);
+    // 诉求 #8：学期标签日历化（2023-A → 2023秋冬）
+    expect(find.textContaining('秋冬'), findsWidgets);
+    expect(find.textContaining('春季'), findsNothing);
   });
 
   testWidgets('选课页：未登录引导 → 去设置 → AI 组渲染', (tester) async {

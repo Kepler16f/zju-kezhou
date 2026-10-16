@@ -16,6 +16,7 @@ import '../data/credential_store.dart';
 import '../data/pdf_text_extractor.dart';
 import '../data/plan_models.dart';
 import '../data/plan_pdf_parse.dart';
+import '../data/semester.dart';
 import '../data/zju_client.dart';
 
 class CurriculumPlanPage extends StatefulWidget {
@@ -547,7 +548,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
               child: Text(r.name, style: const TextStyle(fontSize: 12.5)),
             ),
             if (r.semester.isNotEmpty)
-              Text(' ${r.semester} ',
+              Text(' ${prettySemester(r.semester, gradeYear: _selected?.gradeYear ?? 0)} ',
                   style: const TextStyle(fontSize: 11, color: Colors.grey)),
             if (r.nature.isNotEmpty)
               Text(' ${r.nature} ',
@@ -800,7 +801,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
               ),
               child: Text(
                   '${c.name} ${_num(c.credits)}分'
-                  '${c.semester.isNotEmpty ? ' ${c.semester}' : ''}',
+                  '${c.semester.isNotEmpty ? ' ${prettySemester(c.semester, gradeYear: _selected?.gradeYear ?? 0)}' : ''}',
                   style: const TextStyle(fontSize: 11)),
             ),
         ],

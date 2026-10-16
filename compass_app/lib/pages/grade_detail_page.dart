@@ -6,6 +6,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../data/semester.dart';
 import '../engine/analytics.dart';
 import '../engine/course_marks.dart';
 
@@ -207,9 +208,7 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
   }
 
   String _semLabel(String sem) {
-    // "2023-A" → "2023 秋季"
-    final m = RegExp(r'(\d{4})-([AB])').firstMatch(sem);
-    if (m == null) return sem;
-    return '${m.group(1)} ${m.group(2) == 'A' ? '秋季' : '春季'}';
+    // "2023-A" → "2023秋冬"；"2023-B" → "2024春夏"（诉求 #8：日历标签）
+    return termCodeLabel(sem);
   }
 }
