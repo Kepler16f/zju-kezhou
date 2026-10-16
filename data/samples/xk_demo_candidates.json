@@ -1,5 +1,5 @@
 {
-  "note": "合成演示数据：选课页离线演示（场景 6）固化输入。教师名/容量/时间均为虚构，不含任何真实身份信息；字段名对齐 zdbk 选课列表接口的候选键（kch/kch_id/kcmc/xf/jxb_id/jxbmc/jsxx/sksj/cdmc/jxbrl/yxzrs）。版本：2026-10-15 v1。",
+  "note": "合成演示数据：选课页离线演示（场景 6）固化输入。教师名/容量/时间均为虚构，不含任何真实身份信息；字段名对齐 zdbk 选课列表接口的候选键（kch/kch_id/kcmc/xf/jxb_id/jxbmc/jsxx/sksj/cdmc/jxbrl/yxzrs/kcxzmc）。版本：2026-10-16 v2。",
   "xkxnm": "2026-2027",
   "xkxqm": "3",
   "timetable": {
@@ -14,19 +14,19 @@
       "xkkz_id": "DEMO_XKKZ_1",
       "label": "第一轮（演示）",
       "rows": [
-        {"kch": "CS2001", "kch_id": "K2001", "kcmc": "数据结构与算法", "xf": 4.0, "jxb_id": "J2001A", "jxbmc": "01班", "jsxx": "示例教师甲", "sksj": "星期一第3-4节{1-16周}", "cdmc": "示例楼A101", "xqjmc": "示例校区", "jxbrl": 60, "yxzrs": 45},
-        {"kch": "CS2001", "kch_id": "K2001", "kcmc": "数据结构与算法", "xf": 4.0, "jxb_id": "J2001B", "jxbmc": "02班", "jsxx": "示例教师丁", "sksj": "星期二第3-4节{1-16周}", "cdmc": "示例楼A102", "xqjmc": "示例校区", "jxbrl": 60, "yxzrs": 30},
-        {"kch": "GS1004", "kch_id": "K1004", "kcmc": "体育（基础）", "xf": 1.0, "jxb_id": "J1004C", "jxbmc": "03班", "jsxx": "示例教师乙", "sksj": "星期三第5-6节{1-16周}", "cdmc": "示例体育馆", "xqjmc": "示例校区", "jxbrl": 40, "yxzrs": 38},
-        {"kch": "CS3101", "kch_id": "K3101", "kcmc": "人工智能导论", "xf": 3.0, "jxb_id": "J3101B", "jxbmc": "02班", "jsxx": "示例教师丙", "sksj": "星期五第1-2节{1-16周}", "cdmc": "示例楼B201", "xqjmc": "示例校区", "jxbrl": 50, "yxzrs": 12}
+        {"kch": "CS2001", "kch_id": "K2001", "kcxzmc": "专业核心课程", "kcmc": "数据结构与算法", "xf": 4.0, "jxb_id": "J2001A", "jxbmc": "01班", "jsxx": "示例教师甲", "sksj": "星期一第3-4节{1-16周}", "cdmc": "示例楼A101", "xqjmc": "示例校区", "jxbrl": 60, "yxzrs": 45},
+        {"kch": "CS2001", "kch_id": "K2001", "kcxzmc": "专业核心课程", "kcmc": "数据结构与算法", "xf": 4.0, "jxb_id": "J2001B", "jxbmc": "02班", "jsxx": "示例教师丁", "sksj": "星期二第3-4节{1-16周}", "cdmc": "示例楼A102", "xqjmc": "示例校区", "jxbrl": 60, "yxzrs": 30},
+        {"kch": "GS1004", "kch_id": "K1004", "kcxzmc": "体育", "kcmc": "体育（基础）", "xf": 1.0, "jxb_id": "J1004C", "jxbmc": "03班", "jsxx": "示例教师乙", "sksj": "星期三第5-6节{1-16周}", "cdmc": "示例体育馆", "xqjmc": "示例校区", "jxbrl": 40, "yxzrs": 38},
+        {"kch": "CS3101", "kch_id": "K3101", "kcxzmc": "专业选修课程", "kcmc": "人工智能导论", "xf": 3.0, "jxb_id": "J3101B", "jxbmc": "02班", "jsxx": "示例教师丙", "sksj": "星期五第1-2节{1-16周}", "cdmc": "示例楼B201", "xqjmc": "示例校区", "jxbrl": 50, "yxzrs": 12}
       ]
     },
     {
       "xkkz_id": "DEMO_XKKZ_2",
       "label": "第二轮（演示）",
       "rows": [
-        {"kch": "CS2001", "kch_id": "K2001", "kcmc": "数据结构与算法", "xf": 4.0, "jxb_id": "J2001A", "jxbmc": "01班", "jsxx": "示例教师甲", "sksj": "星期一第3-4节{1-16周}", "cdmc": "示例楼A101", "xqjmc": "示例校区", "jxbrl": 60, "yxzrs": 52},
-        {"kch": "CS3101", "kch_id": "K3101", "kcmc": "人工智能导论", "xf": 3.0, "jxb_id": "J3101B", "jxbmc": "02班", "jsxx": "示例教师丙", "sksj": "星期五第1-2节{1-16周}", "cdmc": "示例楼B201", "xqjmc": "示例校区", "jxbrl": 50, "yxzrs": 20},
-        {"kch": "PHY101", "kch_id": "K0101", "kcmc": "大学物理（甲）", "xf": 4.0, "jxb_id": "J0101A", "jxbmc": "01班", "jsxx": "示例教师戊", "sksj": "星期四第7-8节{1-16周}", "cdmc": "示例楼C301", "xqjmc": "示例校区", "jxbrl": 80, "yxzrs": 79}
+        {"kch": "CS2001", "kch_id": "K2001", "kcxzmc": "专业核心课程", "kcmc": "数据结构与算法", "xf": 4.0, "jxb_id": "J2001A", "jxbmc": "01班", "jsxx": "示例教师甲", "sksj": "星期一第3-4节{1-16周}", "cdmc": "示例楼A101", "xqjmc": "示例校区", "jxbrl": 60, "yxzrs": 52},
+        {"kch": "CS3101", "kch_id": "K3101", "kcxzmc": "专业选修课程", "kcmc": "人工智能导论", "xf": 3.0, "jxb_id": "J3101B", "jxbmc": "02班", "jsxx": "示例教师丙", "sksj": "星期五第1-2节{1-16周}", "cdmc": "示例楼B201", "xqjmc": "示例校区", "jxbrl": 50, "yxzrs": 20},
+        {"kch": "PHY101", "kch_id": "K0101", "kcxzmc": "通识核心课程", "kcmc": "大学物理（甲）", "xf": 4.0, "jxb_id": "J0101A", "jxbmc": "01班", "jsxx": "示例教师戊", "sksj": "星期四第7-8节{1-16周}", "cdmc": "示例楼C301", "xqjmc": "示例校区", "jxbrl": 80, "yxzrs": 79}
       ]
     }
   ]

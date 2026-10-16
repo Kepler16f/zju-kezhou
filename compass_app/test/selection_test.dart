@@ -6,7 +6,7 @@ import 'package:compass_app/data/xk_models.dart';
 import 'package:compass_app/engine/selection.dart';
 
 Map<String, dynamic> pc(String id, String name, double credits,
-        {List<String>? offered, List<String> prereq = const [], int page = 10}) =>
+        {List<String>? offered, List<String> prereq = const [], int page = 10, String? moduleId}) =>
     {
       'course_id': id,
       'name': name,
@@ -14,6 +14,7 @@ Map<String, dynamic> pc(String id, String name, double credits,
       if (offered != null) 'offered': offered,
       if (offered == null) 'offered': null,
       'prereq': prereq,
+      if (moduleId != null) 'module_id': moduleId,
       'source': {'page': page},
     };
 
@@ -25,6 +26,7 @@ XkCourse xc(String kcmc,
         double? xf,
         int? cap,
         int? selected,
+        List<String> tags = const [],
         List<Map<String, dynamic>> slots = const []}) =>
     XkCourse(
       kcmc: kcmc,
@@ -35,6 +37,7 @@ XkCourse xc(String kcmc,
       xf: xf,
       cap: cap,
       selected: selected,
+      tags: tags,
       slots: slots,
       xkkzId: 'R1',
     );
@@ -206,5 +209,65 @@ void main() {
     expect(text.contains('程序设计基础'), isFalse); // 已修明细不进 payload
     expect((j['candidates'] as List).single['capacity'], 60);
     expect(j['disclaimer'], r.disclaimer);
+  });
+
+  group('类别归属（诉求 #5/#6：以培养方案为准，标签辅助）', () {
+    final modules = [
+      {'module_id': 'major_core', 'module_path': '专业教育/专业核心'},
+      {'module_id': 'general_required', 'module_path': '通识教育/通识必修'},
+    ];
+    final planM = [
+      pc('CS2001', '数据结构与算法', 4.0, offered: ['秋'], moduleId: 'major_core'),
+    ];
+
+    test('命中方案课程：类别=方案模块路径，basis=plan', () {
+      final r = buildSelectionAdvice(SelectionRequest(
+        candidates: [
+          mc(xc('数据结构与算法', kch: 'CS2001', jxbId: 'B1', tags: ['思政']))
+        ],
+        planCourses: planM,
+        planModules: modules,
+        currentSemester: '2026-A',
+      ));
+      final a = r.candidates.single;
+      expect(a.planCategory, '专业教育/专业核心');
+      expect(a.categoryBasis, 'plan');
+    });
+
+    test('方案外课程：标签命中类别且与方案模块名相近 → basis=tag', () {
+      final r = buildSelectionAdvice(SelectionRequest(
+        candidates: [mc(xc('形体课', kch: 'TY9001', tags: ['体育']))],
+        planCourses: planM,
+        planModules: modules,
+        currentSemester: '2026-A',
+      ));
+      final a = r.candidates.single;
+      expect(a.role, 'extra');
+      // 「体育」hint 归入类别「体育」，与两个 module_path 都不相近 → 保守不归类
+      expect(a.planCategory, isNull);
+      expect(a.categoryBasis, 'unknown');
+    });
+
+    test('方案外课程：标签可归入相近方案模块（通识核心→通识教育/通识必修）', () {
+      final r = buildSelectionAdvice(SelectionRequest(
+        candidates: [mc(xc('艺术鉴赏', kch: 'GS9001', tags: ['通识核心']))],
+        planCourses: planM,
+        planModules: modules,
+        currentSemester: '2026-A',
+      ));
+      final a = r.candidates.single;
+      expect(a.planCategory, '通识教育/通识必修');
+      expect(a.categoryBasis, 'tag');
+      expect(a.notes.any((n) => n.contains('按选课标签')), isTrue);
+    });
+
+    test('无方案 / 无标签：类别 unknown，绝不硬归类', () {
+      final r = buildSelectionAdvice(SelectionRequest(
+        candidates: [mc(xc('神秘课', kch: 'X1'))],
+        currentSemester: '2026-A',
+      ));
+      expect(r.candidates.single.planCategory, isNull);
+      expect(r.candidates.single.categoryBasis, 'unknown');
+    });
   });
 }

@@ -28,7 +28,6 @@ import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
-import 'widgets/gpa_tools_view.dart';
 
 void main(List<String> args) async {
   // 崩溃自动恢复标记（RegisterApplicationRestart 重启时带 --crashed）
@@ -147,11 +146,11 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // 页签索引常量（评审B：插入/调序只改这里，禁止散落裸数字）。
-  // 顺序：0 学业 / 1 方案 / 2 审计 / 3 工具 / 4 选课 / 5 设置（1/3 无跳转需求，故不设常量）
+  // 顺序：0 学业 / 1 方案 / 2 审计 / 3 选课 / 4 设置（原「工具」页签并入学业页）
   static const int tabScholar = 0;
   static const int tabAudit = 2;
-  static const int tabSelect = 4;
-  static const int tabSettings = 5;
+  static const int tabSelect = 3;
+  static const int tabSettings = 4;
 
   final _store = CredentialStore();
   late final ZjuClient _client = ZjuClient(_store);
@@ -546,7 +545,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
+      // 无 AppBar：手机上不包 SafeArea 会把首屏内容画进状态栏（遮挡修复 #3）。
+      // bottom=false，底部由 NavigationBar 自行占位。
+      body: SafeArea(
+        top: true,
+        bottom: false,
+        child: IndexedStack(
         index: _tabIndex,
         children: [
           ScholarPage(
@@ -571,7 +575,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onGoSettings: () => setState(() => _tabIndex = tabSettings),
           ),
           AuditPage(report: _report, planQuality: _planQuality),
-          GpaToolsView(courses: _coursesViewed),
           CourseSelectPage(
             client: _client,
             store: _store,
@@ -611,6 +614,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onTestAi: _testAi,
           ),
         ],
+        ),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
@@ -628,10 +632,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               icon: Icon(Icons.fact_check_outlined),
               selectedIcon: Icon(Icons.fact_check),
               label: '审计'),
-          NavigationDestination(
-              icon: Icon(Icons.trending_up_outlined),
-              selectedIcon: Icon(Icons.trending_up),
-              label: '工具'),
           NavigationDestination(
               icon: Icon(CourseSelectPage.tabIcon),
               selectedIcon: Icon(CourseSelectPage.tabIconSelected),

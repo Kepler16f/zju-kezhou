@@ -41,6 +41,7 @@ class XkCourse {
   final int? cap; // 容量（多键尝试后仍未知 → null）
   final int? selected; // 已选人数（未知 → null）
   final List<Map<String, dynamic>> slots; // 解析后时隙（对齐 Timeline.slotsConflict 消费 schema）
+  final List<String> tags; // 课程标签/性质（如 通识核心课/专业选修/思政…；来自教务课程性质字段）
   final String xkkzId; // 来源入口
   final String? xklc;
   final Map<String, dynamic> raw; // 原始行（诊断/展开详情用；不含任何凭证）
@@ -59,6 +60,7 @@ class XkCourse {
     this.cap,
     this.selected,
     this.slots = const [],
+    this.tags = const [],
     this.xkkzId = '',
     this.xklc,
     this.raw = const {},

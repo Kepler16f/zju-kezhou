@@ -209,6 +209,25 @@ void main() {
       expect(c.raw['kch'], 'CS101');
     });
 
+    test('课程标签收集（kcxzmc/kclb 多键、逗号拆分、过滤纯数字与长文本）', () {
+      final row = fullRow()
+        ..['kcxzmc'] = '通识核心课程，思政类'
+        ..['kclb'] = ['专业选修', '03']
+        ..['kcbq'] = '说明文字超过十六个字符应当被丢弃不是标签';
+      final c = parseXkCourseList('{"tmpList":[${_json(row)}]}', xkkzId: 'R')
+          .courses
+          .single;
+      expect(c.tags, ['通识核心课程', '思政类', '专业选修']);
+    });
+
+    test('无标签字段 → 空列表，不硬造标签', () {
+      final c =
+          parseXkCourseList('{"tmpList":[${_json(fullRow())}]}', xkkzId: 'R')
+              .courses
+              .single;
+      expect(c.tags, isEmpty);
+    });
+
     test('信封兼容 items / 裸数组 / capacity 多键', () {
       expect(parseXkCourseList('{"items":[${_json(fullRow())}]}', xkkzId: 'R').state, 'data');
       expect(parseXkCourseList('[${_json(fullRow())}]', xkkzId: 'R').state, 'data');

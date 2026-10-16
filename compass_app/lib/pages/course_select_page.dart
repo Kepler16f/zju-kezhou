@@ -809,12 +809,17 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         .whereType<Map>()
         .map((m) => m.cast<String, dynamic>())
         .toList();
+    final planModules = (widget.plan?['modules'] as List? ?? const [])
+        .whereType<Map>()
+        .map((m) => m.cast<String, dynamic>())
+        .toList();
     // 方案未加载（重启后未跑审计的常态）时如实标注：绝不把分类缺失渲染成"全部方案外"
     final planMissing = planCourses.isEmpty;
     final advice = buildSelectionAdvice(SelectionRequest(
       candidates: merged,
       transcript: widget.transcript,
       planCourses: planCourses,
+      planModules: planModules,
       currentSemester: widget.currentSemester,
       currentTimetableSlots: _timetable?.slots ?? const [],
       currentTimetableKnown: _timetable != null && _timetable!.slots.isNotEmpty,
@@ -907,6 +912,25 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
               ].join('｜'),
               style: const TextStyle(fontSize: 12),
             ),
+            if (a.planCategory != null || b.tags.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    if (a.planCategory != null)
+                      _tag(
+                        '类别：${a.planCategory}'
+                        '${a.categoryBasis == 'tag' ? '（按标签推断）' : ''}',
+                        a.categoryBasis == 'tag'
+                            ? Colors.orange.shade800
+                            : Theme.of(context).colorScheme.primary,
+                      ),
+                    for (final t in b.tags) _tag(t, Colors.teal),
+                  ],
+                ),
+              ),
             for (final c in a.conflictTexts)
               Padding(
                 padding: const EdgeInsets.only(top: 2),

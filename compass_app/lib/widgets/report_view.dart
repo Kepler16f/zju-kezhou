@@ -39,7 +39,7 @@ class ReportView extends StatelessWidget {
         const SizedBox(height: 8),
         const Text('三色学分达成度', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         const SizedBox(height: 4),
-        for (final m in summary) _moduleTile(m),
+        for (final m in summary) _moduleTile(context, m),
         if (extra.isNotEmpty) ...[
           const SizedBox(height: 10),
           // 需求：不匹配方案的课也要如实展示，不能只字里行间省略。
@@ -71,9 +71,26 @@ class ReportView extends StatelessWidget {
         ],
       );
 
-  Widget _moduleTile(Map<String, dynamic> m) {
+  /// 模块统计小项：灰标签 + 加粗数值（紧凑、可换行）。
+  Widget _stat(String label, String value, Color valueColor) => Text.rich(
+        TextSpan(
+          text: '$label ',
+          style: const TextStyle(fontSize: 11, color: Colors.grey),
+          children: [
+            TextSpan(
+                text: value,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: valueColor)),
+          ],
+        ),
+      );
+
+  Widget _moduleTile(BuildContext context, Map<String, dynamic> m) {
     final color = _colors[m['color']] ?? Colors.grey;
     final missing = (m['missing_courses'] as List? ?? []).cast<Map<String, dynamic>>();
+    final onSurface = Theme.of(context).colorScheme.onSurface;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       child: ExpansionTile(
@@ -83,7 +100,21 @@ class ReportView extends StatelessWidget {
           decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         title: Text(m['module_path'], style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text('应修 ${m['required']} ｜ 已修 ${m['earned']} ｜ 缺口 ${m['gap']} ｜ 未来可选 ${m['remaining_future']}'),
+        // 窄屏上一行塞不下四项统计会和 trailing 挤在一起，改为 Wrap 逐项换行。
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 3),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 2,
+            children: [
+              _stat('应修', '${m['required']}', onSurface),
+              _stat('已修', '${m['earned']}', onSurface),
+              _stat('缺口', '${m['gap']}',
+                  (m['gap'] as num) > 0 ? _colors['red']! : onSurface),
+              _stat('未来可选', '${m['remaining_future']}', onSurface),
+            ],
+          ),
+        ),
         trailing: Text('${m['gap']} 分', style: TextStyle(color: color, fontWeight: FontWeight.bold)),
         children: [
           if (missing.isEmpty)

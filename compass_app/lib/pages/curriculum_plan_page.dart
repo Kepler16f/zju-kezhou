@@ -59,6 +59,9 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   bool _loadingCourses = false;
   bool _loadingPdf = false;
   PlanPdfSections? _pdfSections; // PDF 解析出的各板块修读要求
+  // 板块卡片的收起/展开状态（键 = 解析结果里的文档序下标；换方案时清空）。
+  final Set<int> _collapsedSecs = {};
+  final Set<int> _notesOpen = {}; // 展开了完整修读说明的板块
 
   @override
   void initState() {
@@ -81,6 +84,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _searchHits = const [];
         _pdfPath = null;
         _pdfSections = null;
+        _collapsedSecs.clear();
+        _notesOpen.clear();
         _error = null;
         _courseHint = null;
       });
@@ -123,6 +128,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _courseTable = const [];
         _pdfPath = null;
         _pdfSections = null;
+        _collapsedSecs.clear();
+        _notesOpen.clear();
       });
       if (best != null) {
         await _loadCourses(best);
@@ -184,21 +191,25 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       if (!mounted || _selected?.id != wanted) return;
       setState(() {
         _pdfSections = parsed;
+        _collapsedSecs.clear();
+        _notesOpen.clear();
         if (path != null) _pdfPath ??= path;
       });
     } catch (_) {/* 静默：不阻塞主流程 */}
   }
 
   Future<void> _pick(PlanSummary plan) async {
-    setState(() {
-      _selected = plan;
-      _courseTable = const [];
-      _courseHint = null;
-      _pdfPath = null;
-      _pdfSections = null;
-      _searchHits = const [];
-      _searchCtl.text = '';
-    });
+      setState(() {
+        _selected = plan;
+        _courseTable = const [];
+        _courseHint = null;
+        _pdfPath = null;
+        _pdfSections = null;
+        _collapsedSecs.clear();
+        _notesOpen.clear();
+        _searchHits = const [];
+        _searchCtl.text = '';
+      });
     await widget.client.selectPlan(plan);
     await _loadCourses(plan);
     unawaited(_ensurePdfSections(plan));
@@ -243,6 +254,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       setState(() {
         _pdfPath = path;
         _pdfSections = sections;
+        _collapsedSecs.clear();
+        _notesOpen.clear();
       });
       _snack('方案 PDF 已保存（${(bytes.length / 1024).round()} KB）'
           '${sections.isEmpty ? '' : '，解析出 ${sections.topCount} 个一级板块、'
@@ -495,12 +508,6 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       if (_pdfSections != null && _pdfSections!.sections.isNotEmpty)
         _pdfSectionsCard(),
       if (p.bz.isNotEmpty) _expandCard('辅修/微辅修说明', p.bz),
-      if (p.dektbz.isNotEmpty || p.d3ktbz.isNotEmpty || p.dsktbz.isNotEmpty)
-        _card('二/三/四课堂修读要求', [
-          if (p.dektbz.isNotEmpty) _expandCard('第二课堂', p.dektbz),
-          if (p.d3ktbz.isNotEmpty) _expandCard('第三课堂', p.d3ktbz),
-          if (p.dsktbz.isNotEmpty) _expandCard('第四课堂', p.dsktbz),
-        ]),
       _pdfCard(p),
     ];
   }
@@ -551,106 +558,175 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         ),
       );
 
-  /// 各板块修读要求（从 PDF 解析，用户 #1 诉求）。
-  /// 层级缩进展示每个模块的学分要求、修读说明与课程列表。
+  /// 各板块修读要求（PDF 解析）：每个一级板块一张独立卡片。
+  /// 大标题在卡片外（去掉括号内容）、点大标题整卡收起/展开；
+  /// 卡片内课程 chips 优先展示，修读说明默认收起、点「展开完整修读说明」再看；
+  /// 子板块同样可收起展开。
   Widget _pdfSectionsCard() {
     final ps = _pdfSections!;
     final passed = widget.transcript
         .map((c) => (c['name'] ?? '').toString().trim())
         .where((n) => n.isNotEmpty)
         .toSet();
-    return _card(
-        '各板块修读要求（PDF 解析：${ps.topCount} 个一级板块 / '
-        '${ps.sections.length} 个层级条目 / ${ps.courseCount} 门课程）', [
-      if (ps.qualityNotes.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: Text('⚠️ ${ps.qualityNotes.join('；')}',
-              style: TextStyle(
-                  fontSize: 11, color: Theme.of(context).colorScheme.error)),
+    final roots = _buildSectionTree(ps.sections);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(4, 4, 4, 0),
+          child: Text('各板块修读要求',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
         ),
-      for (final s in ps.sections) _moduleSectionTile(s, passed),
-      const SizedBox(height: 4),
-      const Text('数据来源：官方培养方案 PDF（纯 Dart 解析，全平台含鸿蒙）；'
-          '高亮=你的成绩单里已出现同名课程。',
-          style: TextStyle(fontSize: 10, color: Colors.grey)),
-    ]);
+        const Padding(
+          padding: EdgeInsets.fromLTRB(4, 2, 4, 0),
+          child: Text('来自官方培养方案 PDF · 高亮=成绩单已出现同名课程',
+              style: TextStyle(fontSize: 11, color: Colors.grey)),
+        ),
+        if (ps.qualityNotes.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+            child: Text('⚠️ ${ps.qualityNotes.join('；')}',
+                style: TextStyle(
+                    fontSize: 11, color: Theme.of(context).colorScheme.error)),
+          ),
+        for (final node in roots) _moduleBlock(node, passed),
+      ],
+    );
   }
 
-  Widget _moduleSectionTile(PdfModuleSection section, Set<String> passed) {
-    final indent = (section.level - 1) * 10.0;
-    final titleSize = section.level <= 1
-        ? 13.5
-        : (section.level == 2 ? 13.0 : 12.5);
+  /// 一级板块：大标题（卡片外）+ 可收起卡片（课程 chips 在前）。
+  Widget _moduleBlock(_SecNode node, Set<String> passed) {
+    final s = node.section;
+    final open = !_collapsedSecs.contains(node.index);
+    final courses = _countCourses(node);
+    final primary = Theme.of(context).colorScheme.primary;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => _toggleCollapsed(node.index),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(2, 12, 2, 4),
+            child: Row(
+              children: [
+                AnimatedRotation(
+                  turns: open ? 0 : -0.25,
+                  duration: const Duration(milliseconds: 150),
+                  child: Icon(Icons.expand_more, size: 22, color: primary),
+                ),
+                const SizedBox(width: 2),
+                Expanded(
+                  child: Text(_stripParens(s.title),
+                      style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          height: 1.25)),
+                ),
+                if (s.creditsRaw.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text('${s.creditsRaw} 学分',
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: primary)),
+                  ),
+                if (courses > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text('$courses 门',
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.grey)),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        if (open)
+          Card(
+            margin: const EdgeInsets.symmetric(vertical: 2),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (s.courses.isNotEmpty) ...[
+                    _courseChips(s.courses, passed),
+                    const SizedBox(height: 6),
+                  ],
+                  for (final k in node.children) _subBlock(k, passed),
+                  ..._notesBlock(s, node.index),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 二级及更深板块：卡片内的可收起小节。
+  Widget _subBlock(_SecNode node, Set<String> passed) {
+    final s = node.section;
+    final open = !_collapsedSecs.contains(node.index);
+    final courses = _countCourses(node);
+    final primary = Theme.of(context).colorScheme.primary;
     return Padding(
-      padding: EdgeInsets.only(left: indent, top: 5, bottom: 3),
+      padding: const EdgeInsets.only(bottom: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Text(
-                  section.title,
-                  style: TextStyle(
-                      fontSize: titleSize,
-                      fontWeight: section.level <= 2
-                          ? FontWeight.w700
-                          : FontWeight.w600),
-                ),
-              ),
-              if (section.creditsRaw.isNotEmpty)
-                Text('${section.creditsRaw} 学分',
-                    style: TextStyle(
-                        fontSize: titleSize - 0.5,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.primary)),
-              if (section.courses.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8),
-                  child: Text('${section.courses.length} 门',
-                      style:
-                          const TextStyle(fontSize: 11, color: Colors.grey)),
-                ),
-            ],
-          ),
-          for (final n in section.notes)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text('· $n',
-                  style: TextStyle(
-                      fontSize: 11,
-                      height: 1.45,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: 0.72))),
-            ),
-          if (section.courses.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(left: 8, top: 3),
-              child: Wrap(
-                spacing: 4,
-                runSpacing: 2,
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => _toggleCollapsed(node.index),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
                 children: [
-                  for (final c in section.courses)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(4),
-                        color: passed.contains(c.name)
-                            ? Theme.of(context).colorScheme.primaryContainer
-                            : Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerHighest,
-                      ),
-                      child: Text(
-                          '${c.name} ${_num(c.credits)}分'
-                          '${c.semester.isNotEmpty ? ' ${c.semester}' : ''}',
-                          style: const TextStyle(fontSize: 10)),
+                  AnimatedRotation(
+                    turns: open ? 0 : -0.25,
+                    duration: const Duration(milliseconds: 150),
+                    child: const Icon(Icons.expand_more,
+                        size: 18, color: Colors.grey),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(_stripParens(s.title),
+                        style: const TextStyle(
+                            fontSize: 13.5, fontWeight: FontWeight.w700)),
+                  ),
+                  if (s.creditsRaw.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text('${s.creditsRaw} 学分',
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: primary)),
                     ),
+                  if (courses > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text('$courses 门',
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.grey)),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (open)
+            Padding(
+              padding: const EdgeInsets.only(left: 16, bottom: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (s.courses.isNotEmpty) ...[
+                    _courseChips(s.courses, passed),
+                    const SizedBox(height: 6),
+                  ],
+                  for (final k in node.children) _subBlock(k, passed),
+                  ..._notesBlock(s, node.index),
                 ],
               ),
             ),
@@ -658,6 +734,100 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       ),
     );
   }
+
+  /// 修读说明：默认收起，点「展开完整修读说明」再看（文字不大段平铺）。
+  List<Widget> _notesBlock(PdfModuleSection s, int idx) {
+    if (s.notes.isEmpty) return const [];
+    final open = _notesOpen.contains(idx);
+    final primary = Theme.of(context).colorScheme.primary;
+    return [
+      InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: () => _toggleNotes(idx),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(open ? Icons.expand_less : Icons.expand_more,
+                  size: 16, color: primary),
+              const SizedBox(width: 2),
+              Text(open ? '收起修读说明' : '展开完整修读说明（${s.notes.length} 条）',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: primary)),
+            ],
+          ),
+        ),
+      ),
+      if (open)
+        Padding(
+          padding: const EdgeInsets.only(left: 6, bottom: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final n in s.notes)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text('· $n',
+                      style: TextStyle(
+                          fontSize: 11.5,
+                          height: 1.45,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.72))),
+                ),
+            ],
+          ),
+        ),
+    ];
+  }
+
+  Widget _courseChips(List<PdfCourseRow> courses, Set<String> passed) => Wrap(
+        spacing: 5,
+        runSpacing: 4,
+        children: [
+          for (final c in courses)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                color: passed.contains(c.name)
+                    ? Theme.of(context).colorScheme.primaryContainer
+                    : Theme.of(context).colorScheme.surfaceContainerHighest,
+              ),
+              child: Text(
+                  '${c.name} ${_num(c.credits)}分'
+                  '${c.semester.isNotEmpty ? ' ${c.semester}' : ''}',
+                  style: const TextStyle(fontSize: 11)),
+            ),
+        ],
+      );
+
+  void _toggleCollapsed(int idx) {
+    setState(() {
+      if (!_collapsedSecs.remove(idx)) _collapsedSecs.add(idx);
+    });
+  }
+
+  void _toggleNotes(int idx) {
+    setState(() {
+      if (!_notesOpen.remove(idx)) _notesOpen.add(idx);
+    });
+  }
+
+  /// 「其他必修环节（认定型学分）」→「其他必修环节」。
+  static final RegExp _parenRe = RegExp(r'[（(][^（（）)]*[）)]');
+  String _stripParens(String title) {
+    final t = title.replaceAll(_parenRe, '').trim();
+    return t.isEmpty ? title : t;
+  }
+
+  int _countCourses(_SecNode node) =>
+      node.section.courses.length +
+      node.children.fold(0, (n, k) => n + _countCourses(k));
 
   Widget _pdfCard(PlanSummary p) => _card('官方培养方案 PDF', [
         const Text('教务"预览"按钮同款文件，含完整课程表与学期安排。',
@@ -902,4 +1072,27 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   static String _num(double v) => (v - v.roundToDouble()).abs() < 1e-9
       ? v.roundToDouble().toString()
       : v.toString();
+}
+
+/// PDF 板块树节点（_pdfSectionsCard 按层级组树后渲染）。
+class _SecNode {
+  final PdfModuleSection section;
+  final int index; // 文档序，作收起/展开状态键
+  final List<_SecNode> children = [];
+  _SecNode(this.section, this.index);
+}
+
+/// 按 level 把文档序的板块列表组为树；同级/更高级弹出栈，浅一级成为其子节点。
+List<_SecNode> _buildSectionTree(List<PdfModuleSection> secs) {
+  final roots = <_SecNode>[];
+  final stack = <_SecNode>[];
+  for (var i = 0; i < secs.length; i++) {
+    final node = _SecNode(secs[i], i);
+    while (stack.isNotEmpty && stack.last.section.level >= secs[i].level) {
+      stack.removeLast();
+    }
+    (stack.isEmpty ? roots : stack.last.children).add(node);
+    stack.add(node);
+  }
+  return roots;
 }

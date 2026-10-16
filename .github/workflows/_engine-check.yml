@@ -28,6 +28,7 @@ jobs:
             test/zju_parse_test.dart test/zju_parse_ext_test.dart \
             test/plan_models_test.dart test/plan_pdf_parse_test.dart \
             test/pdf_text_extractor_test.dart test/app_version_test.dart \
+            test/semester_test.dart \
             test/xk_parse_test.dart test/xk_models_test.dart \
             test/selection_test.dart test/ai_client_test.dart \
             test/ai_compliance_test.dart

@@ -491,6 +491,7 @@ XkListParseResult parseXkCourseList(String body,
       sksj: sksj,
       cdmc: _pick(m, const ['cdmc', 'place']).trim(),
       xqjmc: _pick(m, const ['xqjmc', 'campus']).trim(),
+      tags: _collectTags(m),
       cap: _int(_pick(m, const ['jxbrl', 'capacity'])),
       selected: _int(_pick(m, const ['yxzrs', 'selected_number', 'yxrs'])),
       slots: slots,
@@ -593,6 +594,32 @@ double? _num(String s) {
   if (s.isEmpty) return null;
   final d = double.tryParse(s);
   return d;
+}
+
+/// 教务列表行的「课程标签/性质」多键收集（诉求 #5：标签→培养方案课程类别）。
+/// 候选键为 zdbk 各接口实测/文档中出现过的类别字段（kcxz 课程性质 / kclb 课程类别 /
+/// kcbq 课程标签 / kkxs 开课形式…）；值按常见分隔符拆成多个标签，去重去空。
+/// 纯数字（如代码 03）与超长串（>16 字符，多为说明文本）不作为标签。
+List<String> _collectTags(Map<String, dynamic> m) {
+  const tagKeys = [
+    'kcxzmc', 'kcxz', 'kclbmc', 'kclb', 'kcbq', 'bq', 'courseType', 'category',
+  ];
+  final out = <String>[];
+  for (final k in tagKeys) {
+    final v = m[k];
+    if (v == null || v is bool || v is Map) continue;
+    final parts = v is List
+        ? v.map((e) => e?.toString() ?? '')
+        : v.toString().split(RegExp(r'[,，、;；/|]'));
+    for (final p in parts) {
+      final s = p.trim();
+      if (s.isEmpty || s == 'null') continue;
+      if (s.length > 16) continue;
+      if (RegExp(r'^[\d.\-]+$').hasMatch(s)) continue;
+      if (!out.contains(s)) out.add(s);
+    }
+  }
+  return out;
 }
 
 int? _int(String s) {

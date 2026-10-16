@@ -27,7 +27,7 @@ void _mockPlatformChannels() {
 void main() {
   _mockPlatformChannels();
 
-  testWidgets('六页导航渲染（课舟）', (tester) async {
+  testWidgets('五页导航渲染（课舟）', (tester) async {
     // 真实时钟下完成资产加载，避免 pending 缓存毒化后续用例。
     await tester.runAsync(() async {
       await tester.pumpWidget(const KeZhouApp());
@@ -40,11 +40,13 @@ void main() {
     // 底部导航 tab + 学业页空态即为渲染正确性的证据。
     expect(find.text('学业'), findsOneWidget);
     expect(find.text('审计'), findsOneWidget);
-    expect(find.text('工具'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
     expect(find.text('选课'), findsOneWidget);
-    // 学业页空态引导
+    // 「工具」页签已并入学业页（GPA 模拟器），不再作为独立 tab 存在。
+    expect(find.text('工具'), findsNothing);
+    // 学业页空态引导 + 顶部日期学期栏（诉求 #8）
     expect(find.text('暂无学业数据'), findsOneWidget);
+    expect(find.textContaining('今天是'), findsOneWidget);
   });
 
   testWidgets('样例审计全流程：设置页运行 → 自动切审计页', (tester) async {
