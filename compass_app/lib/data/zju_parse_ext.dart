@@ -380,11 +380,15 @@ List<Map<String, dynamic>> parsePlanCourseRows(String html) {
 }
 
 /// 实践分 HTML → 第二/三/四课堂分数（对齐 Helechron 主+兜底模式）。
+/// 一个课堂值都没解析到（登录页/404/改版/仅有标题无数据/未开通）→ 返回**空 Map**，
+/// 上游如实显示"未获取"，绝不把没数据渲染成 0 分（用户反馈 #12：二三四课堂分数要接
+/// 真实素拓看板，宁缺勿假）。解析到真实 0.0 时保留 0.0（那是成绩，不是缺数据）。
 Map<String, double> parsePracticeScores(String html) {
-  final scores = {'第二课堂': 0.0, '第三课堂': 0.0, '第四课堂': 0.0};
+  final scores = <String, double>{};
   final trRe = RegExp(r'<tr[^>]*>(.*?)</tr>', dotAll: true, caseSensitive: false);
   final cellRe = RegExp(r'<t[hd][^>]*>(.*?)</t[hd]>', dotAll: true, caseSensitive: false);
   final tagRe = RegExp(r'<[^>]+>');
+  const keys = ['第二课堂', '第三课堂', '第四课堂'];
   for (final tr in trRe.allMatches(html)) {
     final cells = cellRe
         .allMatches(tr.group(1) ?? '')
@@ -394,19 +398,27 @@ Map<String, double> parsePracticeScores(String html) {
     for (var i = 0; i + 1 < cells.length; i++) {
       final val = double.tryParse(cells[i + 1]);
       if (val == null) continue;
-      for (final k in scores.keys) {
+      for (final k in keys) {
         if (cells[i].contains(k)) scores[k] = val;
       }
     }
   }
-  if (scores.values.every((v) => v == 0.0)) {
-    for (final k in scores.keys) {
-      final alt = RegExp('<td[^>]*>$k</td>.*?<td[^>]*>([0-9.]+)</td>', dotAll: true)
-          .firstMatch(html);
-      if (alt != null) scores[k] = double.tryParse(alt.group(1)!) ?? 0.0;
-    }
+  // 兜底：值缺失（未在某行配对）的课堂，再按「<td>课堂</td>…<td>数字</td>」相邻补一次。
+  for (final k in keys) {
+    if (scores.containsKey(k)) continue;
+    final alt = RegExp('<td[^>]*>$k</td>.*?<td[^>]*>([0-9.]+)</td>', dotAll: true)
+        .firstMatch(html);
+    final v = alt == null ? null : double.tryParse(alt.group(1)!);
+    if (v != null) scores[k] = v;
   }
-  return scores;
+  // 一个都没解析到 → 无数据（不是 0 分）；补齐三键为 0 反而误导，直接返回空 Map。
+  if (scores.isEmpty) return const {};
+  // 部分缺失（如只拿到二课堂）：其余键如实 0（对齐"三键都在"的 UI 消费），但补一句留痕。
+  return {
+    '第二课堂': scores['第二课堂'] ?? 0.0,
+    '第三课堂': scores['第三课堂'] ?? 0.0,
+    '第四课堂': scores['第四课堂'] ?? 0.0,
+  };
 }
 
 /// 结构化课程行（培养方案课程明细接口解析结果）→ PlanFile。
