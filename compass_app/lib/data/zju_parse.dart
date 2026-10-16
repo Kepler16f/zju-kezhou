@@ -1,16 +1,29 @@
 /// data/zju_parse.dart — 教务响应解析纯函数（无 IO，供 zju_client 与单测共用）。
-/// 字段依据正方教务系统公开接口行为：学期藏于选课课号 xkkh（"T20232024-1…" 中段），
-/// 成绩原始值可能是百分数/等级/中文；学号前缀含入学年份。
+/// 字段依据正方教务系统公开接口行为：学期藏在选课课号 xkkh 里，真实形态为
+/// "(2026-2027-1)-ADMN1004G-…"（成绩单接口实测）；学号前缀含入学年份。
 library;
 
-/// xkkh（选课课号）→ 学期 "2023-A"。取其中 "YYYYYYYY-S" 模式（如 20232024-1）。
+/// xkkh（选课课号）→ 学期 "2026-A"。
+/// 形态兼容（按优先级）：
+///  - 真实形态带括号：`(2026-2027-1)-…`
+///  - 无括号带连字符：`2026-2027-1` / `2026-2027（1）`
+///  - 旧测试形态连续 8 位：`20232024-1`
+/// 学期号 1=秋冬(A) / 2=春夏(B) / 3=夏(短)。
 String? semesterFromXkkh(String xkkh) {
-  final m = RegExp(r'(\d{4})(\d{4})-([12])').firstMatch(xkkh);
+  final m = RegExp(r'\((\d{4})-(\d{4})-([123])\)').firstMatch(xkkh) ??
+      RegExp(r'(\d{4})-(\d{4})\D{0,3}([123])').firstMatch(xkkh) ??
+      RegExp(r'(\d{4})(\d{4})-([123])').firstMatch(xkkh);
   if (m == null) return null;
   final start = int.parse(m.group(1)!);
   final end = int.parse(m.group(2)!);
   if (end != start + 1) return null; // 非连续学年，防误匹配
-  return '$start-${m.group(3) == '1' ? 'A' : 'B'}';
+  final t = m.group(3)!;
+  return start.toString() +
+      (t == '1'
+          ? '-A'
+          : t == '2'
+              ? '-B'
+              : '-C');
 }
 
 /// 学号 → 入学年级。浙大学号 "32xxxx…" 第 2-3 位为入学年后两位（3260009999 → 2026）。

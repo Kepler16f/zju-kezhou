@@ -38,12 +38,112 @@ class CredentialStore {
   final Map<String, String> _memory = {}; // Cookie 专用，永不落盘
   Directory? _dir;
 
+  /// Windows 上 path_provider 的目录取自 exe 版本资源（公司名\产品名）——
+  /// 应用改名（06de9cf「课舟」）曾导致数据目录漂移、升级后凭证"丢失"（用户反馈 #3）。
+  /// 生产环境把数据收敛到固定目录 %APPDATA%\edu.zju.compass\compass（永不漂移），
+  /// 并把历史目录（当前产品名 / compass_app / kezhou）里 cred.dat 最新的一份整目录
+  /// 归位进来（同名不覆盖、跳过 diag.log、原目录保留可回退）。
+  /// 其它平台 bundle id / applicationId 从未变过，path_provider 目录天然稳定。
+  /// 测试环境（FLUTTER_TEST=true，flutter test 自动注入）不扫描、不迁移、不建真实目录：
+  /// 直接走 path_provider（由测试 mock → 抛异常 → 上层静默回落"未登录"），
+  /// widget 测试绝不读写真实用户目录。
   Future<Directory> _dirGet() async {
     if (_dir != null) return _dir!;
-    final base = await getApplicationSupportDirectory();
-    _dir = Directory(p.join(base.path, 'compass'));
-    if (!await _dir!.exists()) await _dir!.create(recursive: true);
+    if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      final b = await getApplicationSupportDirectory();
+      _dir = Directory(p.join(b.path, 'compass'));
+      return _dir!;
+    }
+    final appData = Platform.isWindows ? Platform.environment['APPDATA'] : null;
+    if (appData == null || appData.isEmpty) {
+      final b = await getApplicationSupportDirectory();
+      _dir = Directory(p.join(b.path, 'compass'));
+      if (!await _dir!.exists()) await _dir!.create(recursive: true);
+      return _dir!;
+    }
+    final fixed = Directory(p.join(appData, 'edu.zju.compass', 'compass'));
+    // 候选：固定目录 + 当前产品名目录（path_provider）+ 更早的两个产品名遗留目录。
+    final candidates = <Directory>[
+      fixed,
+      ...await _productNamedDirs(appData),
+    ];
+    Directory? best;
+    DateTime? bestMtime;
+    for (final d in candidates) {
+      final c = File(p.join(d.path, 'cred.dat'));
+      if (!await c.exists()) continue;
+      final m = await c.lastModified();
+      if (bestMtime == null || m.isAfter(bestMtime)) {
+        best = d;
+        bestMtime = m;
+      }
+    }
+    _dir = fixed;
+    if (!await fixed.exists()) await fixed.create(recursive: true);
+    if (best != null && best.path != fixed.path) {
+      await _copyInto(target: fixed, source: best); // 历史凭证 → 固定目录
+    }
     return _dir!;
+  }
+
+  /// 当前产品名目录（走 path_provider）+ 历史产品名（compass_app / kezhou）的 compass 子目录。
+  Future<List<Directory>> _productNamedDirs(String appData) async {
+    final out = <Directory>[];
+    try {
+      final b = await getApplicationSupportDirectory();
+      out.add(Directory(p.join(b.path, 'compass')));
+    } catch (_) {/* 探测失败：跳过该候选 */}
+    for (final name in const ['compass_app', 'kezhou']) {
+      out.add(Directory(p.join(appData, 'edu.zju.compass', name, 'compass')));
+    }
+    return out;
+  }
+
+  /// 整目录搬入：同名不覆盖、跳过 diag.log；单文件失败不阻断。
+  static Future<void> _copyInto(
+      {required Directory target, required Directory source}) async {
+    try {
+      await for (final e in source.list()) {
+        if (e is! File) continue;
+        final name = p.basename(e.path);
+        if (name == 'diag.log') continue;
+        final dst = File(p.join(target.path, name));
+        if (await dst.exists()) continue;
+        try {
+          await e.copy(dst.path);
+        } catch (_) {/* 单文件失败不阻断迁移 */}
+      }
+    } catch (_) {/* 迁移尽力而为 */}
+  }
+
+  /// 一次性自愈（公开以便单测直接驱动旧布局迁移）：
+  /// 旧数据目录（compass_app / 课舟 / kezhou）里若有凭证，取 cred.dat 最新的一份
+  /// 整目录搬入 target（同名不覆盖、跳过诊断日志；旧目录保留可回退）。
+  /// 仅在目标目录尚无凭证时触发。_dirGet 的候选扫描已覆盖同样逻辑，
+  /// 这里作为可独立测试的纯函数保留。
+  static Future<void> migrateLegacyDirs({
+    required Directory target,
+    required Directory appDataRoot,
+  }) async {
+    try {
+      if (await File(p.join(target.path, 'cred.dat')).exists()) return;
+      Directory? best;
+      DateTime? bestMtime;
+      for (final name in const ['compass_app', '课舟', 'kezhou']) {
+        final d = Directory(
+            p.join(appDataRoot.path, 'edu.zju.compass', name, 'compass'));
+        if (!await d.exists()) continue;
+        final c = File(p.join(d.path, 'cred.dat'));
+        if (!await c.exists()) continue;
+        final m = await c.lastModified();
+        if (bestMtime == null || m.isAfter(bestMtime)) {
+          best = d;
+          bestMtime = m;
+        }
+      }
+      if (best == null) return;
+      await _copyInto(target: target, source: best);
+    } catch (_) {/* 迁移是尽力而为：失败不阻塞登录主流程 */}
   }
 
   Future<File> _credFile() async => File(p.join((await _dirGet()).path, 'cred.dat'));

@@ -45,7 +45,7 @@ void main() {
 
     test('6 月下旬起为小学期（短）', () {
       final t = termForDate(DateTime(2026, 7, 1));
-      expect(t.code, '2025-SS');
+      expect(t.code, '2025-C');
       expect(t.tag, '2026短');
       expect(t.vacation, isFalse);
     });
@@ -69,13 +69,44 @@ void main() {
     test('一行包含日期、学期周次与周内第几天', () {
       final line = todayLine(DateTime(2026, 10, 16, 21, 30)); // 周五
       expect(line, contains('2026年10月16日'));
-      expect(line, contains('秋冬学期第5周第5天'));
+      // 诉求 #4：秋冬内部分秋/冬，第 5 周属秋学期
+      expect(line, contains('秋学期第5周第5天'));
+      expect(line, contains('2026秋冬第5周'));
       expect(line.contains('\n'), isFalse);
+    });
+
+    test('冬学期：秋冬第 12 周 = 冬学期第 4 周', () {
+      final line = todayLine(DateTime(2026, 12, 3, 10)); // 秋冬第 12 周（9/14 起算）
+      expect(line, contains('冬学期第4周'));
+      expect(line, contains('2026秋冬第12周'));
+    });
+
+    test('考试周（第 17 周起）无子学期，回到学期口径', () {
+      final t = termForDate(DateTime(2027, 1, 14)); // 秋冬第 18 周
+      expect(t.week, 18);
+      expect(t.subName, isNull); // 17 周起无秋/冬归属
+      final line = todayLine(DateTime(2027, 1, 14, 10));
+      expect(line, contains('秋冬学期第18周'));
     });
 
     test('假期显示寒/暑假', () {
       expect(todayLine(DateTime(2026, 8, 10)), contains('暑假'));
       expect(todayLine(DateTime(2026, 2, 10)), contains('寒假'));
+    });
+  });
+
+  group('subTermOf', () {
+    test('秋冬 1-8 秋，9-16 冬；17+ 无子学期', () {
+      expect(subTermOf('2026-A', 3).name, '秋学期');
+      expect(subTermOf('2026-A', 3).week, 3);
+      expect(subTermOf('2026-A', 12).name, '冬学期');
+      expect(subTermOf('2026-A', 12).week, 4);
+      expect(subTermOf('2026-A', 18).name, isNull);
+    });
+    test('春夏 1-8 春，9-16 夏', () {
+      expect(subTermOf('2026-B', 2).name, '春学期');
+      expect(subTermOf('2026-B', 10).name, '夏学期');
+      expect(subTermOf('2026-B', 10).week, 2);
     });
   });
 
@@ -101,9 +132,10 @@ void main() {
   });
 
   group('termCodeLabel', () {
-    test('A/B 编码 → 中文标签', () {
+    test('A/B/C 编码 → 中文标签', () {
       expect(termCodeLabel('2026-A'), '2026秋冬');
       expect(termCodeLabel('2026-B'), '2027春夏');
+      expect(termCodeLabel('2026-C'), '2027短');
       expect(termCodeLabel('unknown'), 'unknown');
     });
   });

@@ -6,9 +6,21 @@ import 'package:compass_app/data/zju_parse.dart';
 void main() {
   group('semesterFromXkkh', () {
     test('标准选课课号取学年学期', () {
-      // xkkh 形如 "T202320241-000101" / 含 "2023-2024-1" 段
+      // 旧口径连续 8 位（历史样例）
       expect(semesterFromXkkh('220232024-100001'), '2023-A');
       expect(semesterFromXkkh('2320252026-200045'), '2025-B');
+    });
+    test('真实形态（成绩单实测）：(2026-2027-1)-课程号-班号', () {
+      expect(semesterFromXkkh('(2026-2027-1)-ADMN1004G-0011337-1'), '2026-A');
+      expect(semesterFromXkkh('(2025-2026-2)-MARX1004G-0011337-1'), '2025-B');
+    });
+    test('短学期（学期号 3）→ -C', () {
+      expect(semesterFromXkkh('(2026-2027-3)-ADMN0704G-0000001-1'), '2026-C');
+      expect(semesterFromXkkh('20262027-3-001'), '2026-C');
+    });
+    test('带分隔符形态', () {
+      expect(semesterFromXkkh('2026-2027-1'), '2026-A');
+      expect(semesterFromXkkh('2025-2026（2）'), '2025-B');
     });
     test('学年不连续不误匹配', () {
       expect(semesterFromXkkh('20202099-1xx'), isNull);

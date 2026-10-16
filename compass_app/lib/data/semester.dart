@@ -8,18 +8,33 @@ library;
 
 /// 一个日期所处学期的信息（首页日期栏用）。
 class TermInfo {
-  final String code; // '2026-A' / '2026-B' / '2026-SS'
+  final String code; // '2026-A' / '2026-B' / '2026-C'（A 秋冬 / B 春夏 / C 短）
   final String name; // '秋冬学期' / '春夏学期' / '小学期'
   final String tag; // '2026秋冬' / '2027春夏' / '2027短'
   final int week; // 第几周（1 起）；假期为 0
   final bool vacation; // 是否处于假期（寒/暑，介于两个学期之间）
+  final String? subName; // 子学期：'秋学期' / '冬学期' / '春学期' / '夏学期'（无分划为 null）
+  final int subWeek; // 子学期内周次（1 起）；无子学期为 0
 
   const TermInfo(
       {required this.code,
       required this.name,
       required this.tag,
       required this.week,
-      required this.vacation});
+      required this.vacation,
+      this.subName,
+      this.subWeek = 0});
+}
+
+/// 秋冬/春夏学期按 8 周切子学期：秋 1-8、冬 9-16（春夏同理：春 1-8、夏 9-16）。
+/// 第 17 周起为考试周/机动，无子学期归属。
+({String? name, int week}) subTermOf(String termCode, int week) {
+  if (week < 1 || week > 16) return (name: null, week: 0);
+  final isFall = termCode.endsWith('-A');
+  if (week <= 8) {
+    return (name: isFall ? '秋学期' : '春学期', week: week);
+  }
+  return (name: isFall ? '冬学期' : '夏学期', week: week - 8);
 }
 
 /// 各学年秋冬学期开课日（周一，校历；key = 学年首年）。
@@ -59,85 +74,58 @@ TermInfo termForDate(DateTime d) {
   final ss = _springStart(y);
   final xs = _shortStart(y);
 
+  TermInfo mk(String code, String name, String tag, int week, bool vacation) {
+    final sub = vacation ? (name: null, week: 0) : subTermOf(code, week);
+    return TermInfo(
+        code: code,
+        name: name,
+        tag: tag,
+        week: week,
+        vacation: vacation,
+        subName: sub.name,
+        subWeek: sub.week);
+  }
+
   if (!day.isBefore(fs)) {
     if (day.isBefore(ss)) {
       final week = (day.difference(fs).inDays ~/ 7) + 1;
       if (week > 20) {
-        return TermInfo(
-            code: '$y-B',
-            name: '春夏学期',
-            tag: '${y + 1}春夏',
-            week: 0,
-            vacation: true); // 寒假
+        return mk('$y-B', '春夏学期', '${y + 1}春夏', 0, true); // 寒假
       }
-      return TermInfo(
-          code: '$y-A',
-          name: '秋冬学期',
-          tag: '$y秋冬',
-          week: week < 1 ? 1 : week,
-          vacation: false);
+      return mk('$y-A', '秋冬学期', '$y秋冬', week < 1 ? 1 : week, false);
     }
     if (day.isBefore(xs)) {
-      return TermInfo(
-          code: '$y-B',
-          name: '春夏学期',
-          tag: '${y + 1}春夏',
-          week: (day.difference(ss).inDays ~/ 7) + 1,
-          vacation: false);
+      return mk('$y-B', '春夏学期', '${y + 1}春夏',
+          (day.difference(ss).inDays ~/ 7) + 1, false);
     }
     if (day.isBefore(xs.add(const Duration(days: 5 * 7)))) {
-      return TermInfo(
-          code: '$y-SS',
-          name: '小学期',
-          tag: '${y + 1}短',
-          week: (day.difference(xs).inDays ~/ 7) + 1,
-          vacation: false);
+      return mk('$y-C', '小学期', '${y + 1}短',
+          (day.difference(xs).inDays ~/ 7) + 1, false);
     }
     // 暑假 → 下学年秋冬
-    return TermInfo(
-        code: '${y + 1}-A',
-        name: '秋冬学期',
-        tag: '${y + 1}秋冬',
-        week: 0,
-        vacation: true);
+    return mk('${y + 1}-A', '秋冬学期', '${y + 1}秋冬', 0, true);
   }
   // 8 月及以前：处于上学年日程内（春夏/短/暑假），或寒假。
   if (!day.isBefore(_shortStart(y - 1).add(const Duration(days: 5 * 7))) &&
       day.isBefore(fs)) {
     // 暑假
-    return TermInfo(
-        code: '$y-A',
-        name: '秋冬学期',
-        tag: '$y秋冬',
-        week: 0,
-        vacation: true);
+    return mk('$y-A', '秋冬学期', '$y秋冬', 0, true);
   }
   if (!day.isBefore(xs)) {
-    return TermInfo(
-        code: '${y - 1}-SS',
-        name: '小学期',
-        tag: '$y短',
-        week: (day.difference(xs).inDays ~/ 7) + 1,
-        vacation: false);
+    return mk('${y - 1}-C', '小学期', '$y短',
+        (day.difference(xs).inDays ~/ 7) + 1, false);
   }
   if (!day.isBefore(ss)) {
-    return TermInfo(
-        code: '${y - 1}-B',
-        name: '春夏学期',
-        tag: '$y春夏',
-        week: (day.difference(ss).inDays ~/ 7) + 1,
-        vacation: false);
+    return mk('${y - 1}-B', '春夏学期', '$y春夏',
+        (day.difference(ss).inDays ~/ 7) + 1, false);
   }
   // 寒假（秋冬结束 ~ 春夏开始之间）。
-  return TermInfo(
-      code: '${y - 1}-B',
-      name: '春夏学期',
-      tag: '$y春夏',
-      week: 0,
-      vacation: true);
+  return mk('${y - 1}-B', '春夏学期', '$y春夏', 0, true);
 }
 
-/// 首页日期栏一行文案：今天是 2026年10月16日 秋冬学期第5周第5天。
+/// 首页日期栏一行文案：
+///  行课期 → 今天是 2026年10月16日 秋学期第5周第5天（秋冬内分秋/冬，诉求 #4）
+///  第 17 周起/假期 → 今天是 2026年1月12日 寒假 / 秋冬学期第17周（考试周）
 String todayLine(DateTime now) {
   final t = termForDate(now);
   final date = '${now.year}年${now.month}月${now.day}日';
@@ -145,6 +133,10 @@ String todayLine(DateTime now) {
   if (t.vacation) {
     final vac = t.code.endsWith('-B') ? '寒假' : '暑假';
     return '今天是$date $vac';
+  }
+  if (t.subName != null) {
+    return '今天是$date ${t.subName}第${t.subWeek}周第$dayInWeek天'
+        '（${t.tag}第${t.week}周）';
   }
   return '今天是$date ${t.name}第${t.week}周第$dayInWeek天';
 }
@@ -180,12 +172,17 @@ String prettyPlanTerm(String raw, {required int gradeYear}) {
   return out;
 }
 
-/// 学期编码（'2026-A'）→ 展示标签（'2026秋冬'）。
+/// 学期编码（'2026-A' / '2026-C'）→ 展示标签（'2026秋冬' / '2027短'）。
+/// 编码约定：A=秋冬（当年秋起）、B=春夏（次年春起）、C=短（次年夏）。
 String termCodeLabel(String code) {
-  final m = RegExp(r'^(\d{4})-([AB])$').firstMatch(code);
+  final m = RegExp(r'^(\d{4})-([ABC])$').firstMatch(code);
   if (m == null) return code;
   final y = int.parse(m.group(1)!);
-  return m.group(2) == 'A' ? '$y秋冬' : '${y + 1}春夏';
+  return switch (m.group(2)) {
+    'A' => '$y秋冬',
+    'B' => '${y + 1}春夏',
+    _ => '${y + 1}短',
+  };
 }
 
 /// 教务学期串 → 日历标签。兼容多口径（zdbk 接口 kkxq/xnxq 常见形态）：
