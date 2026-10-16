@@ -14,6 +14,7 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import 'data/ai_client.dart';
 import 'data/ai_config.dart';
+import 'data/ai_prompts.dart';
 import 'data/credential_store.dart';
 import 'data/diagnostic_log.dart';
 import 'data/zju_client.dart';
@@ -28,6 +29,7 @@ import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
+import 'widgets/ai_chat.dart';
 
 void main(List<String> args) async {
   // 崩溃自动恢复标记（RegisterApplicationRestart 重启时带 --crashed）
@@ -154,6 +156,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   final _store = CredentialStore();
   late final ZjuClient _client = ZjuClient(_store);
+  // 全局 AI 对话（诉求 #9）：悬浮入口唤起抽屉；history 跨页签常驻。
+  final _aiCtrl = AiChatController();
   AuditEngine? _engine;
   late final Future<void> _assetsReady; // 启动资产加载完成信号（运行审计前等待）
   int _tabIndex = tabScholar;
@@ -517,6 +521,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  /// 给 AI 对话抽屉的上下文摘要：审计报告的脱敏子集（auditSubsetOf 白名单，
+  /// 不含姓名/学号/成绩明细）；无报告时返回 null（抽屉显示无附加上下文）。
+  String? _aiAuditSummary() {
+    final sub = auditSubsetOf(_report);
+    if (sub == null) return null;
+    return const JsonEncoder.withIndent('  ').convert(sub);
+  }
+
   Future<void> _clearData() async {
     await _store.deleteCredentials();
     await _store.deleteAiConfig(); // AI 密钥属"全部本地数据"，必须一并删除（合规承诺）
@@ -615,6 +627,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
         ],
         ),
+      ),
+      // 全局 AI 对话悬浮入口（诉求 #9）。上下文摘要走 auditSubsetOf 脱敏子集
+      //（不含姓名/学号/成绩明细），符合"仅发送最小字段"的对外口径。
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => showAiChat(
+          context,
+          controller: _aiCtrl,
+          config: _aiConfig,
+          onGoSettings: () => setState(() => _tabIndex = tabSettings),
+          contextSummary: _aiAuditSummary(),
+        ),
+        tooltip: 'AI 助手',
+        child: const Icon(Icons.smart_toy_outlined),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,

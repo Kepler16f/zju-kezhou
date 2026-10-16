@@ -1743,6 +1743,87 @@ class ZjuClient {
   /// 上次课表时隙是否来自缓存。
   bool lastTimetableFromCache = false;
 
+  /// 已选课程（zzxkGhb Choosed，只读；LIVE 取证：POST xn/xq → 裸数组 JSON，
+  /// 行含 kcdm/kcmc/xf/jsxm/xxq/sksj/xkkh 等）。诉求 #8：审计要区分
+  /// 「已获得学分（成绩单）」与「本学期已选（在修未出成绩）」，此接口即后者数据源。
+  /// 缓存原始行回读重解析（与课表同款纪律）；失败不缓存、如实 unavailable。
+  Future<XkListParseResult> fetchXkChoosedCourses({
+    required String xn,
+    required String xq,
+    bool refresh = false,
+  }) async {
+    final cacheKey = 'xk_choosed_${_cacheToken('$xn-$xq')}';
+    Future<XkListParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached);
+        if (obj is! Map) return null;
+        final state = '${obj['state'] ?? ''}';
+        if (state == 'empty') {
+          return XkListParseResult(
+            courses: const [],
+            state: 'empty',
+            issues: const ['读取自本地缓存（可能过期，请刷新）'],
+            fromCache: true,
+            fetchedAtMillis: ((obj['fetched_at'] as num?)?.toInt() ?? 0),
+          );
+        }
+        final rows = obj['rows'] as List? ?? const [];
+        final parsed = parseXkCourseList(json.encode(rows), xkkzId: 'choosed');
+        if (parsed.state != 'data') return null;
+        return XkListParseResult(
+          courses: parsed.courses,
+          state: parsed.state,
+          issues: [...(obj['issues'] as List? ?? const []).map((e) => '$e'),
+              '读取自本地缓存（可能过期，请刷新）'],
+          fromCache: true,
+          fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) return cached;
+    }
+    try {
+      await ensureZdbkSession();
+      final text = await _postQuery(
+          Uri.parse('$_zdbk/jwglxt/xsxk/zzxkghb_cxZzxkGhbChoosed.html'
+              '?gnmkdm=$_xkGhbMenu$_suParam'),
+              {'xn': xn, 'xq': xq});
+      final parsed = parseXkCourseList(text, xkkzId: 'choosed');
+      if (parsed.state == 'data' || parsed.state == 'empty') {
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': DateTime.now().millisecondsSinceEpoch,
+              'state': parsed.state,
+              'issues': parsed.issues,
+              'rows': [for (final c in parsed.courses) c.raw],
+            }));
+      }
+      _log('已选课程',
+          detail: '${parsed.state}｜${parsed.courses.length} 门'
+              '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      return parsed;
+    } on RateLimitedException {
+      final cached = await fromCache();
+      return cached ??
+          const XkListParseResult(
+              courses: [], state: 'unavailable', issues: ['限频退避且无缓存，请稍后再试']);
+    } catch (e) {
+      final cached = await fromCache();
+      _log('已选课程', level: 'warn', detail: '$e${cached == null ? '' : '（降级缓存）'}');
+      return cached ??
+          XkListParseResult(
+              courses: const [], state: 'unavailable', issues: ['已选课程获取失败：$e']);
+    }
+  }
+
   /// 当前课表时隙（xskbcx kbList 解析；选课冲突检测的数据源，只读）。
   /// 学期候选与 fetchStudentProfile 同款（同端点同参数，仅取 kbList）。
   /// 学期一致性（评审L2）：响应回显学期与请求不符的候选一律不接受；缓存按学期归属校验，
@@ -1769,14 +1850,15 @@ class ZjuClient {
         final cxnm = obj['xnm']?.toString() ?? '';
         final cxqm = obj['xqm']?.toString() ?? '';
         if (cxnm != candidates[0][0] || cxqm != candidates[0][1]) return null;
-        final slots = (obj['slots'] as List? ?? const [])
-            .whereType<Map>()
-            .map((m) => m.cast<String, dynamic>())
-            .toList();
-        if (slots.isEmpty) return null;
+        // 缓存原始 kbList 行、回读重解析：保证 rows/slots 与在线路径同一口径
+        //（旧版只存展开后的 slots，单双周信息丢失、课表视图无法还原）。
+        final rows = obj['kb_rows'] as List? ?? const [];
+        final parsed = parseXskbListToSlots(rows);
+        if (parsed.slots.isEmpty) return null;
         return TimetableParseResult(
-          slots: slots,
-          courses: ((obj['courses'] as List? ?? const [])).map((e) => '$e').toList(),
+          slots: parsed.slots,
+          courses: parsed.courses,
+          rows: parsed.rows,
           issues: const ['读取自本地缓存（可能过期，请刷新）'],
           fromCache: true,
           fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
@@ -1827,8 +1909,7 @@ class ZjuClient {
               'fetched_at': DateTime.now().millisecondsSinceEpoch,
               'xnm': c[0],
               'xqm': c[1],
-              'slots': parsed.slots,
-              'courses': parsed.courses,
+              'kb_rows': decoded['kbList'], // 原始行缓存，回读重解析保 rows 完整
             }));
         _log('当前课表',
             detail: '学期 ${c[0]}-${c[1]}｜${parsed.courses.length} 门｜'
