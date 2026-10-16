@@ -1,11 +1,21 @@
 /// widgets/report_view.dart — AuditReport JSON → 三色达成度 UI（数据全部来自引擎，UI 零计算）。
+///
+/// 审计功能并入「方案」页（诉求 #13）后，报告改为可嵌入形态：
+/// [ReportSection] 是无滚动 Column（无外层 padding、不自带 ListView），
+/// 由宿主页的 ListView 负责滚动；旧 AuditPage 独立页已随页签合并删除。
 library;
 
 import 'package:flutter/material.dart';
 
-class ReportView extends StatelessWidget {
+/// 审计报告的可嵌入展示：
+/// 顶部应修/已修/缺口 totals 卡 + 三色模块瓦片 + 未匹配课程 + 风险提示 + 免责声明。
+class ReportSection extends StatelessWidget {
   final Map<String, dynamic> report;
-  const ReportView({super.key, required this.report});
+
+  /// 渲染在 totals 卡正下方的附加行（方案页：本学期已选/在修学分，诉求 #8）。
+  final Widget? belowTotals;
+
+  const ReportSection({super.key, required this.report, this.belowTotals});
 
   static const _colors = {
     'green': Color(0xFF16A34A),
@@ -20,8 +30,9 @@ class ReportView extends StatelessWidget {
     final warnings = (report['warnings'] as List).cast<Map<String, dynamic>>();
     final extra = (report['extra_courses'] as List? ?? const [])
         .cast<Map<String, dynamic>>();
-    return ListView(
-      padding: const EdgeInsets.all(12),
+    // stretch：宿主 ListView 原本给子项的是通栏宽度，这里保持同样的通栏排版。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Card(
           child: Padding(
@@ -36,6 +47,7 @@ class ReportView extends StatelessWidget {
             ),
           ),
         ),
+        if (belowTotals != null) belowTotals!,
         const SizedBox(height: 8),
         const Text('三色学分达成度', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         const SizedBox(height: 4),

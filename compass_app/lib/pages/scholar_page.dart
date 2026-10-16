@@ -25,10 +25,17 @@ class ScholarPage extends StatefulWidget {
   final String? sourceLabel;
   final VoidCallback? onGoSettings;
   final Future<void> Function()? onRefresh;
+
+  /// 日期栏下方快捷卡（诉求 #16）：培养方案 / 我的课表。
+  /// 课表周视图当前内嵌在方案页底部，两卡暂都跳方案页签。
+  final VoidCallback? onGoPlan;
+  final VoidCallback? onGoTimetable;
+
   const ScholarPage(
       {super.key, required this.courses, required this.practice,
       this.exams = const [], this.marks = const {}, this.onMark,
-      this.sourceLabel, this.onGoSettings, this.onRefresh});
+      this.sourceLabel, this.onGoSettings, this.onRefresh,
+      this.onGoPlan, this.onGoTimetable});
 
   @override
   State<ScholarPage> createState() => _ScholarPageState();
@@ -66,6 +73,7 @@ class _ScholarPageState extends State<ScholarPage> {
       return Column(
         children: [
           _dateBanner(context),
+          _quickLinks(context),
           Expanded(
             child: Center(
               child: Padding(
@@ -107,6 +115,7 @@ class _ScholarPageState extends State<ScholarPage> {
     return Column(
       children: [
         _dateBanner(context),
+        _quickLinks(context),
         Expanded(
           child: RefreshIndicator(
             onRefresh: () async => await onRefresh?.call(),
@@ -286,6 +295,47 @@ class _ScholarPageState extends State<ScholarPage> {
       ],
     );
   }
+
+  /// 日期栏下方的快捷入口（诉求 #16）：培养方案 / 我的课表（空态与有数据都展示）。
+  Widget _quickLinks(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      child: Row(
+        children: [
+          Expanded(
+              child: _quickCard(
+                  Icons.menu_book, '培养方案', widget.onGoPlan)),
+          const SizedBox(width: 8),
+          Expanded(
+              child: _quickCard(
+                  Icons.calendar_month, '我的课表', widget.onGoTimetable)),
+        ],
+      ),
+    );
+  }
+
+  Widget _quickCard(IconData icon, String label, VoidCallback? onTap) => Card(
+        margin: EdgeInsets.zero,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(label,
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
+                const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
+              ],
+            ),
+          ),
+        ),
+      );
 
   /// 顶部一行：今天是x年x月x日 xx学期第x周第x天（诉求 #8）。
   Widget _dateBanner(BuildContext context) {

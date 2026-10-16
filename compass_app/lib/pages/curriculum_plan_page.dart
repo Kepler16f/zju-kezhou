@@ -5,6 +5,8 @@
 ///  → 客户端匹配（专业全称 × 年级；命中多条一律交给用户点选，绝不替用户猜）
 ///  → 结构化展示（培养目标/要求、专业核心课、学分与课堂要求）
 ///  → 课程明细（多端点 best-effort）+ 官方培养方案 PDF（下载/系统阅读器打开）。
+/// 另内嵌：学业达成审计区（原「审计」页签并入，诉求 #13/#14/#2/#11）、
+/// 本学期已选计数（诉求 #8）、本学期课表周视图（诉求 #16）。
 library;
 
 import 'dart:async';
@@ -17,7 +19,13 @@ import '../data/pdf_text_extractor.dart';
 import '../data/plan_models.dart';
 import '../data/plan_pdf_parse.dart';
 import '../data/semester.dart';
+import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
+import '../engine/plan_audit_adapter.dart';
+import '../widgets/report_view.dart';
+import '../widgets/scholar_cards.dart' show SectionHeader;
+import '../widgets/timetable_view.dart';
+import 'minor_plan_page.dart';
 
 class CurriculumPlanPage extends StatefulWidget {
   /// 底部导航用（main.dart 只引用这里，不散落中文标签）。
@@ -33,6 +41,15 @@ class CurriculumPlanPage extends StatefulWidget {
   final List<Map<String, dynamic>> transcript;
   final VoidCallback onGoSettings;
 
+  /// 审计报告（main 持有）：非空时页面顶部内嵌「学业达成审计」区（诉求 #13）。
+  final Map<String, dynamic>? report;
+
+  /// 本学期已选课程（在修未出成绩，诉求 #8）：state=='data' 时展示计数行。
+  final XkListParseResult? choosed;
+
+  /// 本学期课表（诉求 #16）：非空时页面底部内嵌周视图。
+  final TimetableParseResult? timetable;
+
   const CurriculumPlanPage({
     super.key,
     required this.client,
@@ -40,6 +57,9 @@ class CurriculumPlanPage extends StatefulWidget {
     required this.loggedIn,
     required this.onGoSettings,
     this.transcript = const [],
+    this.report,
+    this.choosed,
+    this.timetable,
   });
 
   @override
@@ -291,21 +311,30 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   // ── 视图 ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    if (!widget.loggedIn) return _notLoggedIn();
+    final report = widget.report;
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
-        _header(),
-        if (_error != null) _errorCard(_error!),
-        if (_loading)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 28),
-            child: Center(child: CircularProgressIndicator()),
-          ),
-        if (!_loading && _selected == null) _noMatchCard(),
-        if (!_loading && _selected != null) ..._planSections(_selected!),
-        if (!_loading) _pickerSection(),
-        if (!_loading) _searchSection(),
+        // 学业达成审计区（诉求 #13）：并入方案页顶部（方案卡区之前）。
+        // 样例/粘贴模式未登录也能出报告，故审计区不受 loggedIn 门控。
+        if (report != null)
+          ..._auditSection(report)
+        else if (widget.loggedIn) _auditEmptyHint(),
+        if (!widget.loggedIn) _notLoggedInCard(),
+        if (widget.loggedIn) ...[
+          _header(),
+          if (_error != null) _errorCard(_error!),
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 28),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          if (!_loading && _selected == null) _noMatchCard(),
+          if (!_loading && _selected != null) ..._planSections(_selected!),
+          if (!_loading) _pickerSection(),
+          if (!_loading) _searchSection(),
+        ],
+        if (widget.timetable != null) _timetableSection(widget.timetable!),
         const SizedBox(height: 8),
         const Text('培养方案为教务网只读查询结果，仅用于本人学业规划参考；'
             '以教务系统展示为准。',
@@ -314,9 +343,68 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     );
   }
 
-  Widget _notLoggedIn() => Center(
+  /// 学业达成审计区：SectionHeader + 报告本体（totals 卡下带本学期已选计数行）。
+  List<Widget> _auditSection(Map<String, dynamic> report) => [
+        const SectionHeader('学业达成审计'),
+        ReportSection(report: report, belowTotals: _choosedLine()),
+      ];
+
+  /// 审计报告未生成的空态（诉求 #13）：灰字提示 + 去设置按钮。
+  Widget _auditEmptyHint() => Card(
         child: Padding(
-          padding: const EdgeInsets.all(28),
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('审计报告未生成：到「设置」页运行审计（登录教务或样例均可）',
+                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: widget.onGoSettings,
+                icon: const Icon(Icons.settings_outlined, size: 18),
+                label: const Text('去设置'),
+              ),
+            ],
+          ),
+        ),
+      );
+
+  /// 本学期已选（在修未出成绩）计数行（诉求 #8）：仅教务模式拉到已选列表时展示。
+  Widget? _choosedLine() {
+    final c = widget.choosed;
+    if (c == null || c.state != 'data') return null;
+    final xf = c.courses.fold<double>(0, (n, x) => n + (x.xf ?? 0));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text.rich(
+            TextSpan(
+              text: '本学期已选（在修，未出成绩）',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+              children: [
+                TextSpan(
+                  text: '${c.courses.length} 门 / ${xf.toStringAsFixed(1)} 学分',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context).colorScheme.onSurface),
+                ),
+              ],
+            ),
+          ),
+          const Text('已获得学分开自成绩单，两者分开计。',
+              style: TextStyle(fontSize: 11, color: Colors.grey)),
+        ],
+      ),
+    );
+  }
+
+  /// 未登录教务网的引导卡（审计区仍可在上方展示，见 build）。
+  Widget _notLoggedInCard() => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(18),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -339,6 +427,32 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             ],
           ),
         ),
+      );
+
+  /// 本学期课表（诉求 #16）：教务模式拉到的周视图，内嵌方案页底部。
+  /// rows 为空时显示 issues 首条或「本学期暂无课表」灰字（如实降级，不猜）。
+  Widget _timetableSection(TimetableParseResult tt) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionHeader('本学期课表'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+              child: tt.rows.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      child: Center(
+                        child: Text(
+                            tt.issues.isEmpty ? '本学期暂无课表' : tt.issues.first,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey)),
+                      ),
+                    )
+                  : TimetableView(rows: tt.rows),
+            ),
+          ),
+        ],
       );
 
   Widget _header() {
@@ -509,6 +623,25 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       if (_pdfSections != null && _pdfSections!.sections.isNotEmpty)
         _pdfSectionsCard(),
       if (p.bz.isNotEmpty) _expandCard('辅修/微辅修说明', p.bz),
+      // 微辅修面向其他专业（诉求 #10）：独立窗口，选专业后拉该专业方案的微辅修部分。
+      _card('其他专业微辅修', [
+        const Text('微辅修是面向其他专业的迷你辅修项目。本方案只列本专业的微辅修要求；'
+            '想修其他专业的微辅修，可在此搜索该专业方案并查看其微辅修课程清单。',
+            style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 8),
+        FilledButton.tonalIcon(
+          onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => MinorPlanPage(
+                    client: widget.client,
+                    store: widget.store,
+                    loggedIn: widget.loggedIn,
+                    onGoSettings: widget.onGoSettings,
+                    transcript: widget.transcript,
+                  ))),
+          icon: const Icon(Icons.school_outlined),
+          label: const Text('浏览其他专业的微辅修方案'),
+        ),
+      ]),
       _pdfCard(p),
     ];
   }
@@ -559,10 +692,11 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         ),
       );
 
-  /// 各板块修读要求（PDF 解析）：每个一级板块一张独立卡片。
-  /// 大标题在卡片外（去掉括号内容）、点大标题整卡收起/展开；
-  /// 卡片内课程 chips 优先展示，修读说明默认收起、点「展开完整修读说明」再看；
-  /// 子板块同样可收起展开。
+  /// 各板块修读要求（PDF 解析，诉求 #14）：整块一张 Card，去掉原先
+  /// 「卡外套大标题、卡内再套卡」的嵌套。卡内首行大标题；每个一级板块是
+  /// 独立可折叠块（点标题收起/展开），板块之间用 Divider 分隔；
+  /// 课程 chips 优先展示，修读说明默认收起、点「展开完整修读说明」再看；
+  /// 子层级保持 _subBlock 样式。
   Widget _pdfSectionsCard() {
     final ps = _pdfSections!;
     final passed = widget.transcript
@@ -570,37 +704,46 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         .where((n) => n.isNotEmpty)
         .toSet();
     final roots = _buildSectionTree(ps.sections);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(4, 4, 4, 0),
-          child: Text('各板块修读要求',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('各板块修读要求',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+            const Text('来自官方培养方案 PDF · 高亮=成绩单已出现同名课程',
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
+            if (ps.qualityNotes.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('⚠️ ${ps.qualityNotes.join('；')}',
+                    style: TextStyle(
+                        fontSize: 11, color: Theme.of(context).colorScheme.error)),
+              ),
+            for (var i = 0; i < roots.length; i++) ...[
+              if (i > 0) const Divider(height: 16), // 一级板块之间的分隔
+              _moduleBlock(roots[i], passed),
+            ],
+          ],
         ),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(4, 2, 4, 0),
-          child: Text('来自官方培养方案 PDF · 高亮=成绩单已出现同名课程',
-              style: TextStyle(fontSize: 11, color: Colors.grey)),
-        ),
-        if (ps.qualityNotes.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
-            child: Text('⚠️ ${ps.qualityNotes.join('；')}',
-                style: TextStyle(
-                    fontSize: 11, color: Theme.of(context).colorScheme.error)),
-          ),
-        for (final node in roots) _moduleBlock(node, passed),
-      ],
+      ),
     );
   }
 
-  /// 一级板块：大标题（卡片外）+ 可收起卡片（课程 chips 在前）。
+  /// 一级板块：标题行（带 ▾ 整块收起/展开、橙色「N选M」规则徽章）+ 内容；
+  /// 不再各套 Card（诉求 #14），说明命中「以下 N 种模块中的一种」时在
+  /// 标题下加灰字并行选项提示（诉求 #11）。
   Widget _moduleBlock(_SecNode node, Set<String> passed) {
     final s = node.section;
     final open = !_collapsedSecs.contains(node.index);
     final courses = _countCourses(node);
     final primary = Theme.of(context).colorScheme.primary;
+    final badge = choiceBadgeText(s);
+    final alt = node.children.isEmpty
+        ? null
+        : detectAlternativeModules(
+            [for (final k in node.children) k.section], s.notes.join('\n'));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -608,7 +751,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
           borderRadius: BorderRadius.circular(8),
           onTap: () => _toggleCollapsed(node.index),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(2, 12, 2, 4),
+            padding: const EdgeInsets.fromLTRB(2, 8, 2, 4),
             child: Row(
               children: [
                 AnimatedRotation(
@@ -618,11 +761,20 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                 ),
                 const SizedBox(width: 2),
                 Expanded(
-                  child: Text(_stripParens(s.title),
-                      style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800,
-                          height: 1.25)),
+                  child: Wrap(
+                    // 标题与徽章同行放不下时自动换行（窄屏不溢出）。
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 6,
+                    runSpacing: 2,
+                    children: [
+                      Text(_stripParens(s.title),
+                          style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              height: 1.25)),
+                      if (badge != null) _choiceBadge(badge),
+                    ],
+                  ),
                 ),
                 if (s.creditsRaw.isNotEmpty)
                   Padding(
@@ -644,34 +796,38 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             ),
           ),
         ),
+        if (alt != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 2, 4),
+            child: Text('以下 ${alt.optionCount} 类为并行选项，满足其一即可',
+                style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+          ),
         if (open)
-          Card(
-            margin: const EdgeInsets.symmetric(vertical: 2),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (s.courses.isNotEmpty) ...[
-                    _courseChips(s.courses, passed),
-                    const SizedBox(height: 6),
-                  ],
-                  for (final k in node.children) _subBlock(k, passed),
-                  ..._notesBlock(s, node.index),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 2, 2, 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (s.courses.isNotEmpty) ...[
+                  _courseChips(s.courses, passed),
+                  const SizedBox(height: 6),
                 ],
-              ),
+                for (final k in node.children) _subBlock(k, passed),
+                ..._notesBlock(s, node.index),
+              ],
             ),
           ),
       ],
     );
   }
 
-  /// 二级及更深板块：卡片内的可收起小节。
+  /// 二级及更深板块：卡内的可收起小节（同样带「N选M」规则徽章）。
   Widget _subBlock(_SecNode node, Set<String> passed) {
     final s = node.section;
     final open = !_collapsedSecs.contains(node.index);
     final courses = _countCourses(node);
     final primary = Theme.of(context).colorScheme.primary;
+    final badge = choiceBadgeText(s);
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: Column(
@@ -692,9 +848,17 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                   ),
                   const SizedBox(width: 4),
                   Expanded(
-                    child: Text(_stripParens(s.title),
-                        style: const TextStyle(
-                            fontSize: 13.5, fontWeight: FontWeight.w700)),
+                    child: Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 6,
+                      runSpacing: 2,
+                      children: [
+                        Text(_stripParens(s.title),
+                            style: const TextStyle(
+                                fontSize: 13.5, fontWeight: FontWeight.w700)),
+                        if (badge != null) _choiceBadge(badge),
+                      ],
+                    ),
                   ),
                   if (s.creditsRaw.isNotEmpty)
                     Padding(
@@ -805,6 +969,21 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                   style: const TextStyle(fontSize: 11)),
             ),
         ],
+      );
+
+  /// 「N选M」等修读约束的小徽章（诉求 #2/#11）：纯展示，规则识别在
+  /// choiceBadgeText（引擎适配器的 detectChoiceRule），这里只负责样式。
+  Widget _choiceBadge(String text) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(6),
+          color: Colors.orange.withValues(alpha: 0.14),
+        ),
+        child: Text(text,
+            style: const TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
+                color: Colors.orange)),
       );
 
   void _toggleCollapsed(int idx) {
@@ -1073,6 +1252,15 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   static String _num(double v) => (v - v.roundToDouble()).abs() < 1e-9
       ? v.roundToDouble().toString()
       : v.toString();
+}
+
+/// 板块标题行的「N选M」徽章文案（诉求 #2/#11）：说明命中修读选择约束
+/// （二选一 / N 选 M / 至少 X 门 / 至少 Y 学分）时返回「规则：…」，
+/// 未命中返回 null（宁缺勿猜）。顶层纯函数，供 UI 与单测共用
+/// （test/plan_page_badges_test.dart）。
+String? choiceBadgeText(PdfModuleSection s) {
+  final rule = detectChoiceRule(s.notes.join(' '));
+  return rule == null ? null : '规则：${rule.text}';
 }
 
 /// PDF 板块树节点（_pdfSectionsCard 按层级组树后渲染）。

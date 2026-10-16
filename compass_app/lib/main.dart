@@ -1,5 +1,5 @@
-/// 课舟 App 主入口：底部导航六页（学业/方案/审计/工具/选课/设置）。
-/// 数据流：设置页选源运行 → 状态持有 courses/report/practice → 各页消费。
+/// 课舟 App 主入口：底部导航四页签（学业/方案/选课/设置；审计并入方案页，原「工具」页签并入学业页）。
+/// 数据流：设置页选源运行 → 状态持有 courses/report/practice/choosed/timetable → 各页消费。
 /// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（默认关闭）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
 library;
@@ -17,6 +17,7 @@ import 'data/ai_config.dart';
 import 'data/ai_prompts.dart';
 import 'data/credential_store.dart';
 import 'data/diagnostic_log.dart';
+import 'data/xk_parse.dart' show TimetableParseResult, XkListParseResult;
 import 'data/zju_client.dart';
 import 'data/zju_parse.dart';
 import 'data/zju_parse_ext.dart';
@@ -24,7 +25,6 @@ import 'engine/adapters.dart';
 import 'engine/audit.dart';
 import 'engine/course_marks.dart';
 import 'engine/exam.dart';
-import 'pages/audit_page.dart';
 import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
@@ -148,11 +148,11 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // 页签索引常量（评审B：插入/调序只改这里，禁止散落裸数字）。
-  // 顺序：0 学业 / 1 方案 / 2 审计 / 3 选课 / 4 设置（原「工具」页签并入学业页）
+  // 顺序：0 学业 / 1 方案 / 2 选课 / 3 设置（审计并入方案页，原「工具」页签并入学业页）
   static const int tabScholar = 0;
-  static const int tabAudit = 2;
-  static const int tabSelect = 3;
-  static const int tabSettings = 4;
+  static const int tabPlan = 1;
+  static const int tabSelect = 2;
+  static const int tabSettings = 3;
 
   final _store = CredentialStore();
   late final ZjuClient _client = ZjuClient(_store);
@@ -178,6 +178,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Map<String, Map<String, bool>> _marks = {}; // 本地排除标记（仅学业视图）
   String? _planQuality;
   String? _recordSourceLabel;
+  XkListParseResult? _choosed; // 本学期已选（在修未出成绩，诉求 #8；仅教务模式有值）
+  TimetableParseResult? _timetable; // 本学期课表（诉求 #16；方案页底部周视图数据源）
   bool _busy = false;
   String? _notice;
   Map<String, dynamic>? _auditPlan; // 当前审计所用方案（选课页做缺口/先修/开课季匹配用）
@@ -343,7 +345,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _auditPlan = auditPlan;
       _notice = null;
       _lastDataAt = DateTime.now();
-      _tabIndex = tabAudit; // 审计完成后自动切到审计页
+      _tabIndex = tabPlan; // 审计完成后自动切到方案页（审计区已并入方案页，诉求 #13）
     });
     unawaited(_saveSession());
   }
@@ -356,13 +358,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _busy = true;
       _recordSourceLabel = '内置样例（$name）';
       _planQuality = null;
+      _choosed = null; // 样例无已选/课表数据，切源即清（方案页对应区块不展示）
+      _timetable = null;
     });
     await _runAudit(rec);
     if (mounted) setState(() => _busy = false);
   }
 
   Future<void> _fromPaste() async {
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _choosed = null; // 粘贴模式无已选/课表数据
+      _timetable = null;
+    });
     final res = RecordAdapter.run(
         recordText: _pasteCtl.text,
         studentJson: json.encode({
@@ -423,6 +431,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _exams = exams;
       });
 
+      // 本学期已选（在修未出成绩，诉求 #8）：best-effort，失败静默；
+      // 仅 SSO 会话可用时调用（样例/粘贴模式不联网拉此数据）。
+      try {
+        final xnXq = _xnXqOf(_current);
+        if (_client.ssoTicket != null && xnXq != null) {
+          final choosed =
+              await _client.fetchXkChoosedCourses(xn: xnXq.$1, xq: xnXq.$2);
+          if (mounted) setState(() => _choosed = choosed);
+        }
+      } catch (_) {/* 静默：已选计数只是辅助信息，失败不阻断审计 */}
+
       // 专业识别 → 培养方案（方案列表接口 + 客户端匹配；歧义留给「方案」页点选）
       var auditMajor = _major;
       var quality = '';
@@ -482,6 +501,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             '${majorName != null ? '｜$majorName' : ''}';
       });
       await _runAudit(rec);
+      // 本学期课表（诉求 #16）：审计成功后异步拉取（失败静默），方案页底部展示周视图。
+      unawaited(_loadTimetable());
     } on AuthException catch (e) {
       if (!auto) setState(() => _notice = e.message);
     } catch (e) {
@@ -490,6 +511,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     }
     if (mounted) setState(() => _busy = false);
+  }
+
+  /// 学期选择器值 → 已选课程接口的 xn/xq（诉求 #8）：
+  /// '2026-A'→('2026-2027','1')、'-B'→'2'、'-C'→'3'（短学期）。
+  /// 非标准格式返回 null（宁缺勿猜）。
+  static (String, String)? _xnXqOf(String current) {
+    final m = RegExp(r'^(\d{4})-([ABC])$').firstMatch(current.trim());
+    if (m == null) return null;
+    final xn = '${m.group(1)}-${int.parse(m.group(1)!) + 1}';
+    final xq = switch (m.group(2)) { 'A' => '1', 'B' => '2', _ => '3' };
+    return (xn, xq);
+  }
+
+  /// 本学期课表（诉求 #16）：best-effort，未登录/失败静默跳过（方案页有数据才展示）。
+  Future<void> _loadTimetable() async {
+    if (_client.ssoTicket == null) return;
+    try {
+      final tt = await _client.fetchTimetableSlots();
+      if (mounted) setState(() => _timetable = tt);
+    } catch (_) {/* 静默：课表是辅助视图，失败不打扰 */}
   }
 
   /// AI 配置保存（沙箱落盘 + 内存态刷新）。
@@ -549,6 +590,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _lastDataAt = null;
       _notice = null;
       _auditPlan = null;
+      _choosed = null;
+      _timetable = null;
       _aiConfig = const AiConfig();
       _aiSessionReset++; // 让选课页清掉 AI 问答历史（含上一账号的课程名/解读文本）
     });
@@ -573,6 +616,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onMark: _setMark,
             sourceLabel: _recordSourceLabel,
             onGoSettings: () => setState(() => _tabIndex = tabSettings),
+            // 快捷卡两入口（诉求 #16）：培养方案 / 我的课表（课表周视图在方案页底部，
+            // 两卡暂都跳方案页签，不新增页签）。
+            onGoPlan: () => setState(() => _tabIndex = tabPlan),
+            onGoTimetable: () => setState(() => _tabIndex = tabPlan),
             onRefresh: () async => switch (_mode) {
               DataMode.sample => _fromSample(),
               DataMode.paste => _fromPaste(),
@@ -585,8 +632,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             loggedIn: _loggedInAs != null,
             transcript: _courses,
             onGoSettings: () => setState(() => _tabIndex = tabSettings),
+            report: _report,
+            choosed: _choosed,
+            timetable: _timetable,
           ),
-          AuditPage(report: _report, planQuality: _planQuality),
           CourseSelectPage(
             client: _client,
             store: _store,
@@ -653,10 +702,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               icon: Icon(CurriculumPlanPage.tabIcon),
               selectedIcon: Icon(CurriculumPlanPage.tabIconSelected),
               label: CurriculumPlanPage.tabLabel),
-          NavigationDestination(
-              icon: Icon(Icons.fact_check_outlined),
-              selectedIcon: Icon(Icons.fact_check),
-              label: '审计'),
           NavigationDestination(
               icon: Icon(CourseSelectPage.tabIcon),
               selectedIcon: Icon(CourseSelectPage.tabIconSelected),

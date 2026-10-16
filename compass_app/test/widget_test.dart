@@ -1,5 +1,5 @@
-// 冒烟测试：底部导航六页渲染 + 样例审计全流程（设置页运行 → 自动切审计页出报告）
-// + 选课页未登录引导与去设置跳转。
+// 冒烟测试：底部导航四页签渲染 + 样例审计全流程（设置页运行 → 自动切方案页，
+// 内嵌「学业达成审计」区出报告，诉求 #13）+ 选课页未登录引导与去设置跳转。
 // 引擎逻辑的完整覆盖见 engine_test/analytics/exam/course_marks/request_throttle 等
 // （纯 Dart 单测，dart test 可跑）。
 //
@@ -14,7 +14,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:compass_app/main.dart';
-import 'package:compass_app/pages/audit_page.dart';
+import 'package:compass_app/pages/curriculum_plan_page.dart';
 
 /// 测试环境无原生插件，mock 路径通道避免 MissingPluginException。
 void _mockPlatformChannels() {
@@ -27,7 +27,7 @@ void _mockPlatformChannels() {
 void main() {
   _mockPlatformChannels();
 
-  testWidgets('五页导航渲染（课舟）', (tester) async {
+  testWidgets('四页导航渲染（课舟）', (tester) async {
     // 真实时钟下完成资产加载，避免 pending 缓存毒化后续用例。
     await tester.runAsync(() async {
       await tester.pumpWidget(const KeZhouApp());
@@ -39,20 +39,22 @@ void main() {
     // 应用名"课舟"只在窗口 titlebar 与设置页版本号中出现，不作为渲染断言；
     // 底部导航 tab + 学业页空态即为渲染正确性的证据。
     expect(find.text('学业'), findsOneWidget);
-    expect(find.text('审计'), findsOneWidget);
+    expect(find.text('方案'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
     expect(find.text('选课'), findsOneWidget);
-    // 「工具」页签已并入学业页（GPA 模拟器），不再作为独立 tab 存在。
+    // 审计页签已并入方案页（诉求 #13）；「工具」页签已并入学业页（GPA 模拟器），
+    // 均不再作为独立 tab 存在。
+    expect(find.text('审计'), findsNothing);
     expect(find.text('工具'), findsNothing);
     // 学业页空态引导 + 顶部日期学期栏（诉求 #8）
     expect(find.text('暂无学业数据'), findsOneWidget);
     expect(find.textContaining('今天是'), findsOneWidget);
   });
 
-  testWidgets('样例审计全流程：设置页运行 → 自动切审计页', (tester) async {
+  testWidgets('样例审计全流程：设置页运行 → 自动切方案页内嵌审计区', (tester) async {
     // 全程真实时钟：rootBundle IO 走真 HttpClient，真实 delay 驱动加载与状态更新。
-    // 报告是 ListView 懒加载，默认 600 高视口只构建折叠线以上的模块瓦片，
-    // "风险提示"/免责声明在下方未构建——撑高 surface 让整份报告一次渲染。
+    // 报告区内嵌在方案页的 ListView（诉求 #13），默认 600 高视口只构建视口内的
+    // 板块，"风险提示"/免责声明在下方未构建——撑高 surface 让整页一次渲染。
     await tester.binding.setSurfaceSize(const Size(1200, 4000));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.runAsync(() async {
@@ -65,7 +67,7 @@ void main() {
       await tester.pump();
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
-      // 点"运行样例审计"，轮询直到审计页报告出现（上限 5s）。
+      // 点"运行样例审计"，轮询直到方案页内嵌审计区报告出现（上限 5s）。
       await tester.tap(find.text('运行样例审计'));
       for (var i = 0; i < 50; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -73,12 +75,13 @@ void main() {
         if (find.textContaining('三色学分达成度').evaluate().isNotEmpty) break;
       }
 
-      // 自动切到审计页：报告主体出现（限定在本页内断言：选课页也含免责声明同款文案）
-      Finder inAudit(Finder f) =>
-          find.descendant(of: find.byType(AuditPage), matching: f);
-      expect(inAudit(find.textContaining('三色学分达成度')), findsOneWidget);
-      expect(inAudit(find.textContaining('风险提示')), findsOneWidget);
-      expect(inAudit(find.textContaining('仅供与导师沟通参考')), findsOneWidget);
+      // 自动切到方案页：内嵌「学业达成审计」区出现（限定在本页内断言：
+      // 选课页也含免责声明同款文案）
+      Finder inPlan(Finder f) =>
+          find.descendant(of: find.byType(CurriculumPlanPage), matching: f);
+      expect(inPlan(find.textContaining('三色学分达成度')), findsOneWidget);
+      expect(inPlan(find.textContaining('风险提示')), findsOneWidget);
+      expect(inPlan(find.textContaining('仅供与导师沟通参考')), findsOneWidget);
     });
 
     // 学业页有数据：切过去看 GPA 卡 + 成绩详情入口
