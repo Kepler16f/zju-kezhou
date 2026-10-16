@@ -82,11 +82,15 @@ void main() {
     });
 
     // 学业页有数据：切过去看 GPA 卡 + 成绩详情入口
+    // 学业页有数据：切过去看 GPA 卡 + 成绩详情入口
     await tester.tap(find.text('学业'));
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('成绩'), findsOneWidget);
     expect(find.text('五分制'), findsOneWidget);
     expect(find.text('点击查看各学期成绩明细'), findsOneWidget);
+    // 回归：样例记录缺 passed/gpa_included 时 GPA 曾整卡归零、已修门数曾显示 null
+    expect(find.text('0.00'), findsNothing);
+    expect(find.text('null'), findsNothing);
 
     // 点成绩卡进详情页（按学期分组）
     await tester.tap(find.text('成绩'));

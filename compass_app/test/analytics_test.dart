@@ -48,6 +48,19 @@ void main() {
       expect(o['five']!, 4.8);
       expect(o['earned_credits'], 4.0); // 挂科未获学分
     });
+    test('缺 passed/gpa_included/five_point 字段（样例/手写记录）仍计入 GPA', () {
+      // 回归：曾因 passed 缺省 false 把整份成绩单排除在 GPA 之外（学业页显示 0.00）
+      final o = Analytics.overall([
+        {'name': '思想道德与法治', 'credits': 3.0, 'grade': 85, 'semester': '2023-A'},
+        {'name': '大学物理', 'credits': 4.0, 'grade': 55, 'semester': '2023-A'}, // 不及格
+      ]);
+      expect(o['gpa_credits'], 3.0); // 只有及格课计入
+      expect(o['five']!, closeTo(4.5, 1e-9)); // 85 分 → 4.5（参考换算兜底）
+      expect(o['earned_credits'], 3.0);
+      expect(Analytics.isPassed({'grade': 85}), isTrue);
+      expect(Analytics.isPassed({'grade': 55}), isFalse);
+      expect(Analytics.isPassed({'passed': true, 'grade': 10}), isTrue); // 显式字段优先
+    });
   });
 
   group('semesterTrend', () {

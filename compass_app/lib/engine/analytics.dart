@@ -23,15 +23,27 @@ class Analytics {
     return sems;
   }
 
+  /// 通过判定：passed 字段优先，缺省按 grade>=60 推断
+  /// （与 engine/matching.dart 的 isPassed 同口径；样例/手写记录常缺 passed 字段，
+  ///  若按缺省 false 处理会把整份成绩单排除在 GPA 之外——历史 bug）。
+  static bool isPassed(Map<String, dynamic> c) {
+    final p = c['passed'];
+    if (p is bool) return p;
+    final g = (c['grade'] as num?)?.toDouble();
+    return g != null && g >= 60;
+  }
+
   static bool _gpaIncluded(Map<String, dynamic> c) =>
-      (c['gpa_included'] as bool? ?? true) && (c['passed'] as bool? ?? false);
+      (c['gpa_included'] as bool? ?? true) && isPassed(c);
 
   /// 五分绩点：教务 jd 权威值优先；缺失（粘贴/样例模式）用百分制参考换算兜底。
-  static double _five(Map<String, dynamic> c) {
+  static double fiveOf(Map<String, dynamic> c) {
     final jd = (c['five_point'] as num?)?.toDouble() ?? 0.0;
     if (jd > 0) return jd;
     return fiveFromScore((c['grade'] as num?)?.toInt() ?? 0);
   }
+
+  static double _five(Map<String, dynamic> c) => fiveOf(c);
 
   static double _credit(Map<String, dynamic> c) =>
       (c['credits'] as num?)?.toDouble() ?? 0.0;
@@ -94,7 +106,7 @@ class Analytics {
   static List<Map<String, dynamic>> creditByCategory(List<Map<String, dynamic>> courses) {
     final byCat = <String, double>{};
     for (final c in courses) {
-      if (!_gpaIncluded(c) && !(c['passed'] as bool? ?? false)) continue;
+      if (!_gpaIncluded(c) && !isPassed(c)) continue;
       if (!(c['credit_included'] as bool? ?? true)) continue;
       final cat = (c['category'] as String? ?? '').trim();
       final key = cat.isEmpty ? '未分类' : cat;

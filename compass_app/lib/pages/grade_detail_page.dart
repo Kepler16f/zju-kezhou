@@ -148,7 +148,7 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
 
   Widget _gradeRow(BuildContext context, Map<String, dynamic> c,
       {required bool isLast}) {
-    final passed = (c['passed'] as bool?) ?? false;
+    final passed = Analytics.isPassed(c); // 缺 passed 字段的记录按 grade>=60 推断
     final five = (c['five_point'] as num?)?.toDouble() ?? 0.0;
     final grade = (c['grade'] as num?)?.toInt() ?? 0;
     final original = (c['original'] as String?) ?? '';

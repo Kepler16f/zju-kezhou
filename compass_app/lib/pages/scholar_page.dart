@@ -169,7 +169,8 @@ class _ScholarPageState extends State<ScholarPage> {
                           Expanded(
                               child: TwoLineCard(
                                   title: '已修门数',
-                                  content: '${o['count']}',
+                                  content:
+                                      '${courses.where(Analytics.isPassed).length}',
                                   color: ScholarPalette.sand)),
                         ],
                       ),
@@ -347,7 +348,7 @@ class _ScholarPageState extends State<ScholarPage> {
     var sum = 0.0, credits = 0.0;
     for (final c in courses) {
       if (!((c['gpa_included'] as bool?) ?? true)) continue;
-      final five = (c['five_point'] as num?)?.toDouble() ?? 0.0;
+      final five = Analytics.fiveOf(c); // jd 缺失时按百分制换算（与总计同口径）
       final credit = (c['credits'] as num?)?.toDouble() ?? 0.0;
       sum += (five > 4.0 ? 4.0 : five) * credit;
       credits += credit;
