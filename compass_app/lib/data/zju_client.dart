@@ -19,9 +19,12 @@ import 'dart:io';
 import 'dart:isolate';
 
 import '../engine/exam.dart';
+import '../engine/plan_audit_adapter.dart';
 import 'credential_store.dart';
 import 'diagnostic_log.dart';
+import 'pdf_text_extractor.dart';
 import 'plan_models.dart';
+import 'plan_pdf_parse.dart';
 import 'request_throttle.dart';
 import 'xk_models.dart';
 import 'xk_parse.dart';
@@ -1347,10 +1350,19 @@ class ZjuClient {
       );
       notes.add('课程明细来自教务接口，共 ${table.length} 门');
     } else {
-      planFile =
-          planFileFromSummary(plan, grade: plan.synj, transcript: transcript);
-      notes.add('教务未开放逐门课程表（学生端只有 PDF 预览），'
-          '已按方案摘要（专业核心课/核心实践课/前沿与荣誉课程）构建');
+      // 学生端课程明细接口不开放（实测 HTTP 910）——改走官方培养方案 PDF 全文解析：
+      // 板块/课程完整（实测 30 板块 / 88 门），审计不再把大量已修课误报"未匹配到方案"
+      //（用户反馈 #7/#6：方案页标亮的课审计却说没匹配）。失败才退回摘要口径。
+      final pdf = await _auditPlanFileFromPdf(plan);
+      if (pdf != null) {
+        planFile = pdf;
+        notes.add('课程清单来自官方培养方案 PDF 解析（完整板块与课程表）');
+      } else {
+        planFile =
+            planFileFromSummary(plan, grade: plan.synj, transcript: transcript);
+        notes.add('教务未开放逐门课程表且 PDF 解析未成功，'
+            '已按方案摘要（专业核心课/核心实践课/前沿与荣誉课程）构建');
+      }
     }
     await selectPlan(plan);
     _log('培养方案', detail: '${plan.zymc} ${plan.synj} 级'
@@ -1363,6 +1375,36 @@ class ZjuClient {
       matched: true,
     );
   }
+  /// 学生端无课程明细接口时，用官方培养方案 PDF 全文解析构建审计 PlanFile。
+  /// 缓存优先（与课程规划页 [readBinaryCache] 同名 `planpdf_<id>.pdf` 复用同一份），
+  /// 命中不重复下载；无缓存再拉并落盘。PDF 缺失 / 解析出 0 板块 → 返回 null，
+  /// 调用方回落 planFileFromSummary。任何异常吞掉返回 null（宁缺勿崩，红线只读）。
+  Future<Map<String, dynamic>?> _auditPlanFileFromPdf(PlanSummary plan) async {
+    try {
+      final id = plan.jxjhh.isNotEmpty ? plan.jxjhh : plan.id;
+      final name = 'planpdf_${id.replaceAll(RegExp(r'[^0-9A-Za-z_-]'), '')}.pdf';
+      var bytes = await store.readBinaryCache(name);
+      if (bytes == null) {
+        bytes = await fetchPlanPdf(plan);
+        if (bytes != null) await store.saveBinaryCache(name, bytes);
+      }
+      if (bytes == null || bytes.isEmpty) return null;
+      final parsed = parsePlanPdfText(extractPdfText(bytes));
+      if (parsed.isEmpty) return null;
+      return planFileFromPdf(
+        parsed,
+        major: plan.zymc.isEmpty ? plan.id : plan.zymc,
+        grade: plan.synj,
+        totalCredits: plan.zdbyxf,
+        sourceDoc: '教务网培养方案 ${plan.zymc} ${plan.synj} 级'
+            '（教学计划号 ${plan.jxjhh}｜官方 PDF 解析）',
+      );
+    } catch (e) {
+      _log('审计方案(PDF)', level: 'warn', detail: '$e');
+      return null;
+    }
+  }
+
   /// 实践分/课堂分（第二三四课堂，N108001 + su=）。
   Future<Map<String, double>> fetchPracticeScores() async {
     await ensureZdbkSession();
