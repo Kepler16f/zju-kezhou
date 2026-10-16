@@ -309,6 +309,26 @@ void main() {
       expect(r.issues.any((i) => i.contains('登录')), isTrue);
     });
 
+    test('blocked 标志：风控/HTML 登录页=软封禁信号；结构陌生/usable:false 不算', () {
+      // 用户反馈"网页正常、App 突然看不到"的判据：只有反爬类响应才置 blocked，
+      // 上层据此进入冷却窗停止轰炸（普通结构差异不触发冷却，避免误伤）。
+      expect(parseXkCourseList('{"captcha_error":"x"}', xkkzId: 'R').blocked, isTrue);
+      expect(
+          parseXkCourseList(
+                  '<html>location.href="login_slogin.html"</html>', xkkzId: 'R')
+              .blocked,
+          isTrue);
+      expect(parseXkCourseList('', xkkzId: 'R').blocked, isTrue); // 空响应也当软封禁
+      // 非 JSON 且无登录/风控特征 → 结构未知，不置 blocked
+      expect(parseXkCourseList('not json at all', xkkzId: 'R').blocked, isFalse);
+      // usable:false（权限语义，非反爬）不置 blocked
+      expect(parseXkCourseList('{"usable":false}', xkkzId: 'R').blocked, isFalse);
+      // 正常数据更不该 blocked
+      expect(
+          parseXkCourseList('{"tmpList":[${_json(fullRow())}]}', xkkzId: 'R').blocked,
+          isFalse);
+    });
+
     test('三态：无已知信封 / 全行缺课程名 = unavailable', () {
       final noEnv = parseXkCourseList('{"foo":1}', xkkzId: 'R');
       expect(noEnv.state, 'unavailable');

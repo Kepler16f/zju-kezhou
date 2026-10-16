@@ -81,6 +81,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   final Map<String, String> _roundErrors = {}; // xkkzId -> 失败原因（不写 _lists，可重试）
   int _listGeneration = 0; // 入口刷新/登出换代：旧世代在飞结果一律作废（防陈旧写回）
   int _listsVersion = 0; // _lists 每次变更自增（合并结果按版本缓存，避免每帧重算）
+  bool _softBlocked = false; // 本轮遇到软封禁（风控/HTML 登录页）：停止继续轰炸，提示稍后重试
   List<XkMergedCourse>? _mergedCache;
   List<String>? _mergedNotesCache;
   int _mergedCacheVersion = -1;
@@ -315,6 +316,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       if (!mounted || !widget.loggedIn) return;
       if (gen != _listGeneration) return; // 入口已换代：旧结果不写回（防陈旧入口复活）
       setState(() {
+        _softBlocked = r.blocked && r.state == 'unavailable';
         if (r.state == 'data' || r.state == 'empty') {
           _lists[round.xkkzId] = r;
           _roundErrors.remove(round.xkkzId);
@@ -356,14 +358,17 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       _aggregating = true;
       _cancelAggregate = false;
       _aggregateDone = 0;
+      _softBlocked = false;
     });
     for (final r in rounds) {
       if (_cancelAggregate || !mounted) break;
       if (gen != _listGeneration) break; // 刷新换代：中止本轮（避免旧轮配新参数写回）
+      if (_softBlocked) break; // 已触发软封禁：继续逐入口拉取只会延长封锁（网页正常、App 看不到），停手等冷却
       if (!_lists.containsKey(r.xkkzId)) {
         final res = await widget.client.fetchXkCourses(
             round: r, hiddenFields: hf, xkxnm: xnm, xkxqm: xqm, zjuGhb: zhb);
         if (!mounted) break;
+        if (res.blocked && res.state == 'unavailable') _softBlocked = true;
         if (gen == _listGeneration) {
           setState(() {
             if (res.state == 'data' || res.state == 'empty') {
@@ -377,6 +382,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             _listsVersion++;
           });
         }
+        if (_softBlocked) break; // 立刻停，不等下一轮间隔
         // 请求间隔 ≥1s：跨轮拉取属于"批量"，比日常查询更克制（评审A8）；分片等待以便取消
         for (var i = 0; i < 11 && !_cancelAggregate; i++) {
           await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -572,6 +578,22 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (_softBlocked)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+            ),
+            child: const Text(
+                '已触发教务访问频率保护（网页端不受影响）。为避免延长封锁，'
+                '选课列表已自动冷却，约 1~2 分钟后自动恢复；'
+                '也可稍后点「刷新入口」重试。',
+                style: TextStyle(fontSize: 12, color: Colors.orange, height: 1.4)),
+          ),
         Wrap(
           spacing: 8,
           runSpacing: 4,

@@ -1627,6 +1627,22 @@ class ZjuClient {
   /// 上次课程列表是否来自缓存（UI 据此提示"离线/可能过期"）。
   bool lastXkListFromCache = false;
 
+  /// 软封禁冷却窗（用户反馈：网页正常、App 突然全部看不到）。机制：正方 WAF 对
+  /// 高频列表请求回 200+HTML 登录页（_postQuery 的会话重试兜不住时），此时继续
+  /// 打请求只会延长封锁。检测到 blocked 信号后 90 秒内不再发列表网络请求，
+  /// 有缓存回缓存；窗口过后首个请求自然试探恢复。仅作用于列表链路（选课页），
+  /// 成绩/课表等主链路有自己的 throttle/重试纪律，不受影响。
+  static const _xkSoftBlockWindow = Duration(seconds: 90);
+  DateTime? _xkSoftBlockedUntil;
+  bool get xkListCoolingDown =>
+      _xkSoftBlockedUntil != null && DateTime.now().isBefore(_xkSoftBlockedUntil!);
+  int get xkListCooldownRemainingSeconds {
+    final u = _xkSoftBlockedUntil;
+    if (u == null) return 0;
+    final left = u.difference(DateTime.now()).inSeconds;
+    return left > 0 ? left : 0;
+  }
+
   /// 某入口（xkkz_id）的课程列表（只读）。
   /// 参数策略（评审A2）：以首页采集的 hiddenFields 为底 + 本次 xkkz_id/kklxdm + 防缓存
   /// nd/time；正方对缺参数回空数据而不报错（更难发现），所以参数宁全勿缺。
@@ -1689,6 +1705,22 @@ class ZjuClient {
         return cached;
       }
     }
+    // 软封禁冷却窗：命中风控/HTML 登录页后，自动/批量请求在窗口内短路
+    //（有缓存回缓存，否则如实提示稍候恢复）——继续轰炸只会延长封锁（用户反馈：
+    // 网页正常、App 突然看不到）。显式刷新放行，作为窗口到期后的单次探测。
+    if (!refresh && xkListCoolingDown) {
+      final cached = await fromCache();
+      return cached ??
+          XkListParseResult(
+              courses: const [],
+              state: 'unavailable',
+              blocked: true,
+              issues: [
+                '触发教务访问频率保护（网页端不受影响）：已自动冷却，'
+                '约 ${xkListCooldownRemainingSeconds} 秒后恢复自动拉取；'
+                '也可稍后点「刷新入口」重试。'
+              ]);
+    }
     lastXkListFromCache = false;
     try {
       await ensureZdbkSession();
@@ -1747,6 +1779,7 @@ class ZjuClient {
       final parsed = parseXkCourseList(text,
           xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
       if (parsed.state == 'data' || parsed.state == 'empty') {
+        _xkSoftBlockedUntil = null; // 正常 JSON：复位冷却窗
         await store.saveCache(
             cacheKey,
             json.encode({
@@ -1757,21 +1790,33 @@ class ZjuClient {
               'dropped': parsed.dropped,
               'rows': [for (final c in parsed.courses) c.raw],
             }));
+      } else if (parsed.blocked) {
+        // 风控/HTML 登录页：进入冷却窗，窗口内短路后续列表请求（含已选/课表同源信号），
+        // 让服务端反爬窗口自然平息。刷新按钮可越过窗口做单次探测。
+        _xkSoftBlockedUntil = DateTime.now().add(_xkSoftBlockWindow);
+        _log('选课列表', level: 'warn',
+            detail: '${round.label}｜软封禁，冷却 ${_xkSoftBlockWindow.inSeconds}s');
       }
       // 日志只记 入口/状态/条数/首条 issue —— 绝不记完整 URL（含 su）与响应正文（评审A11）
-      _log('选课列表',
-          detail: '${round.label.isEmpty ? round.xkkzId : round.label}｜${parsed.state}'
-              '｜${parsed.courses.length} 条'
-              '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      if (parsed.state != 'unavailable' || !parsed.blocked) {
+        _log('选课列表',
+            detail: '${round.label.isEmpty ? round.xkkzId : round.label}｜${parsed.state}'
+                '｜${parsed.courses.length} 条'
+                '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      }
       return parsed;
     } on RateLimitedException {
       final cached = await fromCache();
       lastXkListFromCache = cached != null;
+      _xkSoftBlockedUntil = DateTime.now().add(_xkSoftBlockWindow); // 限频同属软封禁
       _log('选课列表', level: 'warn',
           detail: '限频退避，${cached == null ? '无缓存' : '降级缓存'}');
       return cached ??
-          const XkListParseResult(
-              courses: [], state: 'unavailable', issues: ['限频退避且无缓存，请稍后再试']);
+          XkListParseResult(
+              courses: const [],
+              state: 'unavailable',
+              blocked: true,
+              issues: ['限频退避且无缓存，请稍后再试']);
     } catch (e) {
       final cached = await fromCache();
       lastXkListFromCache = cached != null;

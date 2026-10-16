@@ -423,6 +423,8 @@ class XkListParseResult {
   final String state; // 'data' | 'empty' | 'unavailable'（评审A6 三态）
   final List<String> issues;
   final int dropped; // 因缺课程名等被丢弃的行数
+  final bool blocked; // 软封禁信号（风控/HTML 登录页/空响应）：服务端反爬在起作用，
+                      // 上层应冷却退避而非立刻重试轰炸（用户反馈：网页正常 App 看不到）
   final bool fromCache; // 本次结果是否来自本地缓存（由客户端置位）
   final int fetchedAtMillis; // 拉取时刻（缓存回读时保留原值；0=未知）
   const XkListParseResult({
@@ -430,6 +432,7 @@ class XkListParseResult {
     required this.state,
     this.issues = const [],
     this.dropped = 0,
+    this.blocked = false,
     this.fromCache = false,
     this.fetchedAtMillis = 0,
   });
@@ -441,12 +444,16 @@ XkListParseResult parseXkCourseList(String body,
     {required String xkkzId, String? xklc, String label = ''}) {
   final text = body.trim();
   if (text.isEmpty) {
-    return const XkListParseResult(courses: [], state: 'unavailable', issues: ['响应为空']);
+    return const XkListParseResult(
+        courses: [], state: 'unavailable', issues: ['响应为空'], blocked: true);
   }
   // 风控判定只认特征字段；"验证码"三个字出现在课程名/备注里绝不误杀（评审L2）
   if (text.contains('captcha_error')) {
     return const XkListParseResult(
-        courses: [], state: 'unavailable', issues: ['响应含风控提示（captcha_error），请稍后再试']);
+        courses: [],
+        state: 'unavailable',
+        issues: ['响应含风控提示（captcha_error），请稍后再试'],
+        blocked: true);
   }
   Object? decoded;
   try {
@@ -460,6 +467,8 @@ XkListParseResult parseXkCourseList(String body,
     return XkListParseResult(
       courses: const [],
       state: 'unavailable',
+      // 风控/登录页都属软封禁信号（反爬在起作用）；结构完全陌生的非 JSON 不算。
+      blocked: isCaptcha || isLogin,
       issues: [
         isCaptcha
             ? '返回风控页（可能需要验证码），请稍后再试'
