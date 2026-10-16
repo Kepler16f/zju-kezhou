@@ -8,10 +8,13 @@
 ///   不参与任何判定；跨轮一致性异常一律留痕，绝不静默合并。
 library;
 
-/// 选课入口（首页菜单项：类别 × 轮次；按评审 A5：观测主键=xkkz_id，xklc 可空仅展示）。
+/// 选课入口（首页菜单项）。两种形态（LIVE 取证 2026-10-16）：
+///  - 通用正方（xsxk/zzxkyzb）：轮次 xkkz_id × 类别 kklxdm；
+///  - 浙大自主选课（xsxk/zzxkghb N253530）：入口=课程类别（dl 代码，如 EA=思政类、
+///    53=心理健康类），xkkzId 存 dl、kklxdm 存 lx（bl=本类）。label=类别名。
 class XkRound {
-  final String xkkzId; // 选课设置ID（观测键；每进一次页面重取）
-  final String kklxdm; // onclick 第一参数（类别代码；可能为空）
+  final String xkkzId; // 选课设置ID / 浙大 dl 类别码（观测键）
+  final String kklxdm; // onclick 第一参数 / 浙大 lx（可能为空）
   final String? xklc; // 轮次编号：公开资料不能证实其参数位，拿不到就 null
   final String label; // 菜单可见文本（真实入口名，供 UI）
 
@@ -38,6 +41,7 @@ class XkCourse {
   final String sksj; // 上课时间原文（可能空）
   final String cdmc; // 场地（可能空）
   final String xqjmc; // 校区（可能空）
+  final String subTerm; // 子学期归属（秋/冬/秋冬/短/春/夏；LIVE 取证：真实行带 xxq，诉求 #4）
   final int? cap; // 容量（多键尝试后仍未知 → null）
   final int? selected; // 已选人数（未知 → null）
   final List<Map<String, dynamic>> slots; // 解析后时隙（对齐 Timeline.slotsConflict 消费 schema）
@@ -57,6 +61,7 @@ class XkCourse {
     this.sksj = '',
     this.cdmc = '',
     this.xqjmc = '',
+    this.subTerm = '',
     this.cap,
     this.selected,
     this.slots = const [],

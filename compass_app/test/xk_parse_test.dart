@@ -178,6 +178,34 @@ void main() {
       expect(r.hiddenFields['jg_id'], '01');
       expect(r.hiddenFields.containsKey('blank'), isTrue);
     });
+
+    test('浙大自主选课页（zzxkGhb）：入口=课程类别 dl，标记 zjuGhb', () {
+      const html = '<input type="hidden" name="nj" value="2026"/>'
+          '<input type="hidden" name="xn" value="2026-2027"/>'
+          '<input type="hidden" name="xq" value="1"/>'
+          '<input type="hidden" name="zydm" value="1321"/>'
+          '<a class="category" data-dl="xk_1" data-lx="bl" '
+          'onclick="categroyClick(this,\'xk_1\',\'bl\')">本类(专业)</a>'
+          '<a class="category" data-dl="EA" data-lx="bl" '
+          'onclick="categroyClick(this,\'EA\',\'bl\')">思政类</a>'
+          '<a class="category" data-dl="EA" data-lx="bl" '
+          'onclick="categroyClick(this,\'EA\',\'bl\')">必修课程</a>'; // 同 dl 去重
+      final r = parseXkIndexHtml(html);
+      expect(r.zjuGhb, isTrue);
+      expect(r.queryCourseHits, 0); // 浙大页没有 queryCourse
+      expect(r.rounds.map((e) => e.xkkzId), ['xk_1', 'EA']);
+      expect(r.rounds[1].label, '思政类'); // 同类别多次出现只留首个
+      expect(r.xkxnm, '2026-2027'); // 浙大隐藏域 xn/xq
+      expect(r.xkxqm, '1');
+      expect(r.issues.any((i) => i.contains('浙大自主选课')), isTrue);
+    });
+
+    test('浙大页无类别锚点（不在开放期）→ 如实说明开放期', () {
+      const html = 'zzxkGhb 页面 categroyClick(this) 但无 data-dl 锚点';
+      final r = parseXkIndexHtml(html);
+      expect(r.rounds, isEmpty);
+      expect(r.issues.any((i) => i.contains('开放')), isTrue);
+    });
   });
 
   group('parseXkCourseList 课程列表', () {
@@ -236,6 +264,36 @@ void main() {
       expect(r.courses.single.cap, 30);
       expect(r.courses.single.selected, 10);
       expect(r.courses.single.teacher, '李四');
+    });
+
+    test('浙大 KcList：裸数组 + kcxx 学分 + xxq 子学期 + 类别标签', () {
+      final row = {
+        'kcdm': 'MATH1135G',
+        'kcmc': '微积分（甲）Ⅰ',
+        'kcxx': '0~5.0~4.0-2.0',
+        'kcxz': '通识',
+        'kclb': '通识',
+        'xkkh': 'T(2026-2027-1)-MATH1135G',
+        'xxq': '秋冬',
+      };
+      final r = parseXkCourseList('[${_json(row)}]', xkkzId: 'xk_1', label: '本类(专业)');
+      expect(r.state, 'data'); // 裸数组信封
+      final c = r.courses.single;
+      expect(c.xf, 5.0); // 学分从 kcxx 中段取
+      expect(c.subTerm, '秋冬');
+      expect(c.tags, ['通识']);
+      expect(c.kch, 'MATH1135G');
+      expect(c.raw['xkkh'], 'T(2026-2027-1)-MATH1135G');
+    });
+
+    test('浙大 KcList：不在开放期返回 [] → empty（不是 unavailable）', () {
+      expect(parseXkCourseList('[]', xkkzId: 'xk_1').state, 'empty');
+    });
+
+    test('kcxx 形态不符 → 不猜学分（xf 保持 null）', () {
+      final r = parseXkCourseList(
+          '[${_json({'kcmc': '怪课', 'kcxx': 'abc'})}]', xkkzId: 'R');
+      expect(r.courses.single.xf, isNull);
     });
 
     test('三态：open 空列表 = empty', () {
@@ -401,6 +459,59 @@ void main() {
     test('非列表输入不崩', () {
       expect(parseXskbListToSlots(null).slots, isEmpty);
       expect(parseXskbListToSlots('abc').slots, isEmpty);
+    });
+
+    test('真实形态行（kcb/djj/skcd/dsz/xxq）→ 时隙 + 结构化行', () {
+      // 结构对齐 LIVE 取证样本（虚构课程名，无真实身份信息）
+      final r = parseXskbListToSlots([
+        {
+          'kcb': '线性代数（甲）<br>秋冬{第1-8周|1节/周}<br>示例教师甲<br>示例楼A-203zwf2027年01月10日(08:00-10:00)zwf',
+          'xqj': '1',
+          'djj': '9',
+          'skcd': '1',
+          'dsz': '2',
+          'xxq': '秋冬',
+        },
+        {
+          'kcb': '大学写作<br>秋{第1-8周|2节/周}<br>示例教师乙<br>示例楼B-101zwfzwf',
+          'xqj': '4',
+          'djj': '11',
+          'skcd': '2',
+          'dsz': '2',
+          'xxq': '秋',
+        },
+      ]);
+      expect(r.rows.length, 2);
+      final a = r.rows[0];
+      expect(a.name, '线性代数（甲）');
+      expect(a.teacher, '示例教师甲');
+      expect(a.place, '示例楼A-203');
+      expect(a.day, 1);
+      expect(a.start, 9);
+      expect(a.end, 9); // skcd=1 单节
+      expect(a.weekStart, 1);
+      expect(a.weekEnd, 8);
+      expect(a.parity, 0); // dsz=2 全周
+      expect(a.subTerm, '秋冬');
+      expect(r.rows[1].end, 12); // skcd=2 → 11-12
+      expect(r.rows[1].subTerm, '秋');
+      expect(r.slots.length, 2);
+      expect(r.courses, containsAll(['线性代数（甲）', '大学写作']));
+    });
+
+    test('单双周行（dsz=1/3）→ parity 逐周展开（与冲突口径一致）', () {
+      final r = parseXskbListToSlots([
+        {
+          'kcb': '体育课<br>秋冬{第2-16周|1节/周}<br>示例教师丙<br>操场zwfzwf',
+          'xqj': '3',
+          'djj': '1',
+          'skcd': '1',
+          'dsz': '1', // 单周
+          'xxq': '秋冬',
+        },
+      ]);
+      expect(r.rows.every((e) => e.parity == 1), isTrue);
+      expect(r.slots.length, 7); // 2-16 单周共 7 周（3,5,7,9,11,13,15）
     });
   });
 }

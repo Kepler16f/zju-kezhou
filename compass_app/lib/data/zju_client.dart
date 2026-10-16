@@ -555,6 +555,13 @@ class ZjuClient {
     return resp.body;
   }
 
+  /// 探针/诊断专用：原始 GET HTML / POST JSON（只读；不记正文、不落盘、App 业务 UI 不调用）。
+  /// 用于接口形态回归取证（如选课入口结构变化）。
+  Future<String> rawGetHtmlForProbe(String path) => _getHtml(path);
+
+  Future<String> rawPostForProbe(String path, Map<String, String> form) =>
+      _postQuery(Uri.parse('$_zdbk/jwglxt/$path'), form);
+
   // ── 业务接口：专业识别 / 培养方案 / 实践分 ─────────────────────────
   /// 本人学号（正方部分接口不带 su= 会返回空数据，登录时已存）。
   String? get _studentId => store.memory('student_id');
@@ -1439,10 +1446,17 @@ class ZjuClient {
   }
 
   // ── 业务接口：选课(xsxk)（只读；提交/退课等写接口绝不调用，见 docs/选课模块接入说明.md）──
+  // 两套页面形态（LIVE 取证 2026-10-16）：
+  //  - 通用正方：zzxkyzb_cxZzxkYzbIndex.html?gnmkdm=N253512（入口=轮次×类别 xkkz_id）；
+  //  - 浙大：zzxkghb_cxZzxkGhbIndex.html?gnmkdm=N253530（入口=课程类别 dl，列表走 KcList）。
+  // 浙大实例 N253512 路径直接 404，故双路径都试，以能解出入口者为准。
 
   static const _xkIndexPath = 'xsxk/zzxkyzb_cxZzxkYzbIndex.html';
   static const _xkListPath = 'xsxk/zzxkyzb_cxZzxkYzbPartDisplay.html';
   static const _xkMenu = 'N253512';
+  static const _xkGhbIndexPath = 'xsxk/zzxkghb_cxZzxkGhbIndex.html';
+  static const _xkGhbListPath = 'xsxk/zzxkghb_cxZzxkGhbKcList.html';
+  static const _xkGhbMenu = 'N253530';
 
   /// 缓存键分量编码：base64url（去掉 '='）保住原值，避免 _cacheSafe 把不同 xkkzId
   /// 清洗成同一个键（如 'AB-CD' 与 'ABCD' 撞键，评审L2）。
@@ -1483,6 +1497,7 @@ class ZjuClient {
           firstXkkzId: obj['firstXkkzId']?.toString(),
           issues: const ['读取自本地缓存（可能过期，请刷新）'],
           queryCourseHits: (obj['hits'] as num?)?.toInt() ?? rounds.length,
+          zjuGhb: obj['zju_ghb'] == true,
           hiddenFields: {
             for (final e in ((obj['hidden'] as Map?) ?? const {}).entries)
               '${e.key}': '${e.value}',
@@ -1505,9 +1520,26 @@ class ZjuClient {
     lastXkIndexFromCache = false;
     try {
       await ensureZdbkSession();
-      final html =
+      var html =
           await _getHtml('$_xkIndexPath?gnmkdm=$_xkMenu&layout=default$_suParam');
-      final parsed = parseXkIndexHtml(html);
+      var parsed = parseXkIndexHtml(html);
+      // 浙大实例：通用路径 404/无入口 → 改打浙大自主选课页（zzxkGhb）。
+      final is404 = html.contains('HTTP Status 404');
+      if (parsed.rounds.isEmpty && !parsed.zjuGhb) {
+        final hbHtml = await _getHtml(
+            '$_xkGhbIndexPath?gnmkdm=$_xkGhbMenu&layout=default$_suParam');
+        final hbParsed = parseXkIndexHtml(hbHtml);
+        if (hbParsed.rounds.isNotEmpty) {
+          parsed = hbParsed;
+          html = hbHtml;
+        } else if (is404) {
+          // 两页都不通：保留通用路径的 issues，但如实提到 404
+          parsed = XkIndexParseResult(
+              rounds: const [],
+              hiddenFields: parsed.hiddenFields,
+              issues: [...parsed.issues, ...hbParsed.issues]);
+        }
+      }
       if (parsed.rounds.isNotEmpty) {
         await store.saveCache(
             cacheKey,
@@ -1517,6 +1549,7 @@ class ZjuClient {
               'xkxqm': parsed.xkxqm,
               'firstXkkzId': parsed.firstXkkzId,
               'hits': parsed.queryCourseHits,
+              'zju_ghb': parsed.zjuGhb,
               'hidden': parsed.hiddenFields,
               'rounds': [
                 for (final x in parsed.rounds)
@@ -1563,6 +1596,7 @@ class ZjuClient {
     Map<String, String> hiddenFields = const {},
     String? xkxnm,
     String? xkxqm,
+    bool zjuGhb = false, // 浙大自主选课页形态（入口=课程类别 dl）
     bool refresh = false,
   }) async {
     final term =
@@ -1617,28 +1651,57 @@ class ZjuClient {
     try {
       await ensureZdbkSession();
       final now = DateTime.now().millisecondsSinceEpoch;
-      final query = <String, String>{
-        ...hiddenFields,
-        'gnmkdm': _xkMenu,
-        'xkkz_id': round.xkkzId,
-        if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
-        if (term.isNotEmpty) 'xkxnm': xkxnm!,
-        if (term.isNotEmpty) 'xkxqm': xkxqm!,
-        'nd': '$now',
-        'time': '0',
-      };
-      final su = _studentId;
-      if (su != null && su.isNotEmpty) query['su'] = su;
-      final uri =
-          Uri.parse('$_zdbk/jwglxt/$_xkListPath').replace(queryParameters: query);
-      final text = await _postQuery(uri, {
-        'xkkz_id': round.xkkzId,
-        if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
-        if (term.isNotEmpty) 'xkxnm': xkxnm!,
-        if (term.isNotEmpty) 'xkxqm': xkxqm!,
-        'kspage': '1',
-        'jspage': '1',
-      });
+      final String text;
+      if (zjuGhb) {
+        // 浙大 zzxkGhb：入口=类别 dl，参数来自首页隐藏域（xn/xq/nj/zydm）。
+        // 不在开放期 KcList 返回空数组 → empty（不是 unavailable，如实呈现"本学期该类别暂无可选课程"）。
+        final xn = hiddenFields['xn'] ?? xkxnm ?? '';
+        final xq = hiddenFields['xq'] ?? xkxqm ?? '1';
+        final uri = Uri.parse('$_zdbk/jwglxt/$_xkGhbListPath')
+            .replace(queryParameters: {
+          'gnmkdm': _xkGhbMenu,
+          if ((_studentId ?? '').isNotEmpty) 'su': _studentId!,
+          'nd': '$now',
+          'time': '0',
+        });
+        text = await _postQuery(uri, {
+          'dl': round.xkkzId,
+          'lx': round.kklxdm,
+          'xkmc': '',
+          'kcbs': '',
+          'nj': hiddenFields['nj'] ?? '',
+          'xn': xn,
+          'xq': xq,
+          'zydm': hiddenFields['zydm'] ?? '',
+          'jxjhh': '',
+          'xnxq': '($xn-$xq)-',
+          'kspage': '1',
+          'jspage': '100',
+        });
+      } else {
+        final query = <String, String>{
+          ...hiddenFields,
+          'gnmkdm': _xkMenu,
+          'xkkz_id': round.xkkzId,
+          if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
+          if (term.isNotEmpty) 'xkxnm': xkxnm!,
+          if (term.isNotEmpty) 'xkxqm': xkxqm!,
+          'nd': '$now',
+          'time': '0',
+        };
+        final su = _studentId;
+        if (su != null && su.isNotEmpty) query['su'] = su;
+        final uri =
+            Uri.parse('$_zdbk/jwglxt/$_xkListPath').replace(queryParameters: query);
+        text = await _postQuery(uri, {
+          'xkkz_id': round.xkkzId,
+          if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
+          if (term.isNotEmpty) 'xkxnm': xkxnm!,
+          if (term.isNotEmpty) 'xkxqm': xkxqm!,
+          'kspage': '1',
+          'jspage': '1',
+        });
+      }
       final parsed = parseXkCourseList(text,
           xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
       if (parsed.state == 'data' || parsed.state == 'empty') {
@@ -1689,11 +1752,13 @@ class ZjuClient {
     final now = DateTime.now();
     final isAutumn = now.month >= 8;
     final y0 = isAutumn ? now.year : now.year - 1;
+    // 学期码（LIVE 取证）：xnm='YYYY-YYYY+1'，xqm='1' 秋冬 / '2' 春夏；
+    // 子学期细分参数是 '1|秋'/'1|冬'/'1|短'/'1|暑'/'2|春'/'2|夏'（默认主学期即覆盖全部）。
     final candidates = <List<String>>[
-      ['$y0-${y0 + 1}', isAutumn ? '3' : '12'],
-      ['$y0-${y0 + 1}', isAutumn ? '12' : '3'],
-      ['${y0 - 1}-$y0', '12'],
-      ['${y0 - 1}-$y0', '3'],
+      ['$y0-${y0 + 1}', '1'],
+      ['$y0-${y0 + 1}', '2'],
+      ['${y0 - 1}-$y0', '1'],
+      ['${y0 - 1}-$y0', '2'],
     ];
     Future<TimetableParseResult?> fromCache() async {
       final cached = await store.readCache(cacheKey);

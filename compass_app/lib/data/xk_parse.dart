@@ -246,6 +246,7 @@ class XkIndexParseResult {
   final List<String> issues;
   final int queryCourseHits; // onclick 原始命中次数（区分「无入口」与「解析失败」）
   final Map<String, String> hiddenFields; // 首页全部 input[name]=value（查询参数以首页为准的载体）
+  final bool zjuGhb; // 浙大自主选课页（zzxkghb：入口=课程类别 dl，列表走 KcList 接口）
   final bool fromCache; // 本次结果是否来自本地缓存（由客户端置位）
   final int fetchedAtMillis; // 拉取时刻（缓存回读时保留原值；0=未知）
   const XkIndexParseResult({
@@ -256,6 +257,7 @@ class XkIndexParseResult {
     this.issues = const [],
     this.queryCourseHits = 0,
     this.hiddenFields = const {},
+    this.zjuGhb = false,
     this.fromCache = false,
     this.fetchedAtMillis = 0,
   });
@@ -310,12 +312,46 @@ XkIndexParseResult parseXkIndexHtml(String html) {
     return _hiddenValue(html, key);
   }
 
+  // ── 浙大自主选课页（zzxkghb）：入口 = 课程类别树（LIVE 取证 2026-10-16）──
+  // 锚点：<a class="category" data-dl="EA" data-lx="bl" onclick="categroyClick(this,'EA','bl')">思政类</a>
+  final zju = RegExp(r"""data-dl="([^"]+)"[^>]*data-lx="([^"]*)"[^>]*"""
+          r"""onclick="categroyClick\(this,'[^']*','[^']*'[^)]*\)">([^<]{1,24})""")
+      .allMatches(html)
+      .toList();
+  if (rounds.isEmpty && zju.isNotEmpty) {
+    final dlSeen = <String>{};
+    for (final m in zju) {
+      final dl = m.group(1)!;
+      final lx = m.group(2)!;
+      final label = _unescape(m.group(3)!.trim());
+      if (!dlSeen.add(dl)) continue; // 同类别码多次出现（下拉子项）只留首个
+      rounds.add(XkRound(xkkzId: dl, kklxdm: lx, label: label));
+    }
+    issues.add('浙大自主选课模式：入口为课程类别（共 ${rounds.length} 类）。');
+    return XkIndexParseResult(
+      rounds: rounds,
+      xkxnm: pick('xn'), // 浙大页隐藏域是 xn/xq（2026-2027 / 1）
+      xkxqm: pick('xq'),
+      firstXkkzId: rounds.isEmpty ? null : rounds.first.xkkzId,
+      issues: issues,
+      queryCourseHits: 0,
+      hiddenFields: hidden,
+      zjuGhb: true,
+    );
+  }
+
   final firstXkkzId = pick('firstXkkzId');
   if (rounds.isEmpty && firstXkkzId != null) {
     rounds.add(XkRound(xkkzId: firstXkkzId, label: '默认入口'));
     issues.add('未找到选课入口菜单，仅发现默认入口（firstXkkzId），页面结构可能变化。');
   } else if (rounds.isEmpty) {
-    issues.add('未发现选课入口（queryCourse 命中 0 次）：可能未开放选课、页面结构变化或需要登录。');
+    // 浙大页特征存在但没抓到类别锚点 → 多半是不在选课期（列表区被禁用），如实说明
+    if (html.contains('zzxkGhb') || html.contains('categroyClick')) {
+      issues.add('浙大自主选课页已打开，但未发现可选课程类别——大概率不在选课开放期，'
+          '请在开放时段重试或到网页端确认。');
+    } else {
+      issues.add('未发现选课入口（queryCourse 命中 0 次）：可能未开放选课、页面结构变化或需要登录。');
+    }
   }
   return XkIndexParseResult(
     rounds: rounds,
@@ -484,13 +520,14 @@ XkListParseResult parseXkCourseList(String body,
       kcmc: kcmc,
       kch: _pick(m, const ['kch', 'xk_kch', 'kcdm', 'courseCode']).trim(),
       kchId: _pick(m, const ['kch_id', 'kchId']).trim(),
-      xf: _num(_pick(m, const ['xf', 'credit', 'kcxf'])),
+      xf: _num(_pick(m, const ['xf', 'credit', 'kcxf'])) ?? _creditsFromKcxx(m['kcxx']),
       jxbId: _pick(m, const ['jxb_id', 'jxbId']).trim(),
       jxbmc: _pick(m, const ['jxbmc', 'jxb']).trim(),
       teacher: _pick(m, const ['jsxx', 'jsxm', 'teacher', 'skjs']).trim(),
       sksj: sksj,
       cdmc: _pick(m, const ['cdmc', 'place']).trim(),
       xqjmc: _pick(m, const ['xqjmc', 'campus']).trim(),
+      subTerm: _pick(m, const ['xxq']),
       tags: _collectTags(m),
       cap: _int(_pick(m, const ['jxbrl', 'capacity'])),
       selected: _int(_pick(m, const ['yxzrs', 'selected_number', 'yxrs'])),
@@ -516,52 +553,166 @@ XkListParseResult parseXkCourseList(String body,
 
 // ───────────────────────── 当前课表（xskbcx kbList）→ 时隙 ─────────────────────────
 
+class TimetableRow {
+  final String name;
+  final String teacher;
+  final String place;
+  final int day; // 1-7
+  final int start; // 起始节次（djj）
+  final int end; // 结束节次 = start + skcd - 1
+  final int weekStart;
+  final int weekEnd;
+  final int parity; // 0 全 / 1 单 / 2 双（dsz=2 归 0）
+  final String subTerm; // 秋 / 冬 / 秋冬 / 短 / 春 / 夏（诉求 #4：秋、冬分开）
+  const TimetableRow({
+    required this.name,
+    required this.teacher,
+    required this.place,
+    required this.day,
+    required this.start,
+    required this.end,
+    required this.weekStart,
+    required this.weekEnd,
+    required this.parity,
+    required this.subTerm,
+  });
+}
+
 class TimetableParseResult {
   final List<Map<String, dynamic>> slots;
   final List<String> courses; // 课程名（去重，供 AI 上下文与展示）
+  final List<TimetableRow> rows; // 结构化行（周视图渲染用，含秋/冬归属）
   final List<String> issues;
   final bool fromCache;
   final int fetchedAtMillis;
   const TimetableParseResult({
     required this.slots,
     this.courses = const [],
+    this.rows = const [],
     this.issues = const [],
     this.fromCache = false,
     this.fetchedAtMillis = 0,
   });
 }
 
-/// 把课表接口的 kbList 行转换成时隙（复用 parseSksj，避免第二套周次/节次语义）。
-/// 行字段（多键容错）：kcmc/xqj(星期)/jcs 或 jc(节次，如 "3-4")/zcd(周次，如 "1-16")。
-TimetableParseResult parseXskbListToSlots(Object? kbList) {
-  final slots = <Map<String, dynamic>>[];
-  final courses = <String>{};
-  final issues = <String>[];
-  if (kbList is! List) {
-    return const TimetableParseResult(slots: [], issues: ['课表数据不是列表']);
-  }
+/// kbList 行 → 结构化课程。两条链路按字段判别：
+///  A. 真实 zdbk 形态（实测）：有 kcb（`名称<br>学期{第a-b周|n节/周}<br>教师<br>地点zwf考试zwf`），
+///     配 xqj(星期)/djj(起始节)/skcd(跨节数)/dsz(1单/2全/3双)/xxq(秋|冬|秋冬|短|春|夏)。
+///     每源行产出一条课程粒度行（保留 第a-b周 区间与单双周标记，供课表视图渲染）。
+///  B. 旧多键容错：kcmc/xqj/jcs|jc/zcd，合成文本走 parseSksj（原行为不变）。
+List<TimetableRow> timetableRows(Object? kbList, List<String> issues) {
+  final out = <TimetableRow>[];
+  if (kbList is! List) return out;
   for (final r in kbList) {
     if (r is! Map) continue;
     final m = <String, dynamic>{};
     r.forEach((k, v) => m[k.toString()] = v);
-    final kcmc = _pick(m, const ['kcmc', 'courseName']).trim();
-    final xqj = _pick(m, const ['xqj', 'xingqi', 'weekday']).trim();
-    final jcs = _pick(m, const ['jcs', 'jc', 'jcor']).trim();
-    final zcd = _pick(m, const ['zcd', 'zcmc', 'weeks']).trim();
-    if (kcmc.isEmpty || xqj.isEmpty || jcs.isEmpty) continue;
-    final zcdClean = zcd.replaceAll('周', '').trim();
-    final composed =
-        '星期$xqj第$jcs节${zcdClean.isEmpty ? '' : '{$zcdClean周}'}';
-    final sp = parseSksj(composed);
-    for (final i in sp.issues) {
-      // 缺周次等解析留痕必须传递（曾漏传，见本文件回归用例）
-      if (issues.length < 8) issues.add(i);
+    final kcb = _pick(m, const ['kcb']);
+    if (kcb.isEmpty) {
+      // B 链路：旧形态合成文本再走 parseSksj（原行为不变，含缺周次留痕）
+      final kcmc = _pick(m, const ['kcmc', 'courseName']).trim();
+      final xqj = _pick(m, const ['xqj', 'weekday']);
+      final jcs = _pick(m, const ['jcs', 'jc', 'jcor']);
+      if (kcmc.isEmpty || xqj.isEmpty || jcs.isEmpty) continue;
+      final zcd = _pick(m, const ['zcd', 'weeks']).replaceAll('周', '').trim();
+      final composed =
+          '星期$xqj第$jcs节${zcd.isEmpty ? '' : '{$zcd周}'}';
+      final sp = parseSksj(composed);
+      for (final i in sp.issues) {
+        if (issues.length < 8) issues.add(i);
+      }
+      for (final s in sp.slots) {
+        out.add(TimetableRow(
+            name: kcmc,
+            teacher: '',
+            place: '',
+            day: s['day'] as int,
+            start: s['start'] as int,
+            end: s['end'] as int,
+            weekStart: s['week_start'] as int,
+            weekEnd: s['week_end'] as int,
+            parity: s['parity'] as int? ?? 0,
+            subTerm: _pick(m, const ['xxq'])));
+      }
+      continue;
     }
-    if (sp.slots.isEmpty) continue;
-    slots.addAll(sp.slots);
-    courses.add(kcmc);
+    // A 链路：真实形态。kcb 按 <br>/zwf 切段
+    final segs = _splitKcb(kcb);
+    final name = segs.isNotEmpty ? segs.first : _pick(m, const ['kcmc']);
+    final teacher = segs.length > 2 ? segs[2] : '';
+    final place =
+        segs.length > 3 ? segs[3].split(RegExp(r'[（(]')).first.trim() : '';
+    final day = _dayOf(_pick(m, const ['xqj']));
+    if (day == null) {
+      if (issues.length < 8) issues.add('课表行星期缺失：${_short(name)}');
+      continue;
+    }
+    final start = int.tryParse(_pick(m, const ['djj'])) ?? 1;
+    final span = int.tryParse(_pick(m, const ['skcd'])) ?? 1;
+    final dszRaw = _pick(m, const ['dsz']);
+    final parity = dszRaw == '1' ? 1 : (dszRaw == '3' ? 2 : 0); // 1单/3双/2全
+    // 周次取 kcb 中段 {第a-b周|…}；缺省 1-18（正方常态），并留痕
+    var ws = 1, we = 18;
+    var sawWeek = false;
+    for (final s in segs) {
+      final wm = RegExp(r'第(\d{1,2})[-—~至](\d{1,2})周').firstMatch(s);
+      if (wm != null) {
+        ws = int.parse(wm.group(1)!);
+        we = int.parse(wm.group(2)!);
+        sawWeek = true;
+        break;
+      }
+    }
+    if (!sawWeek && issues.length < 8) {
+      issues.add('周次区间未能解析，按 1-18 周处理：${_short(name)}');
+    }
+    out.add(TimetableRow(
+        name: name,
+        teacher: teacher.replaceAll(RegExp(r'[·、,，]'), ' '),
+        place: place,
+        day: day,
+        start: start,
+        end: start + (span > 1 ? span - 1 : 0),
+        weekStart: ws,
+        weekEnd: we,
+        parity: parity,
+        subTerm: _pick(m, const ['xxq'])));
   }
-  return TimetableParseResult(slots: slots, courses: courses.toList(), issues: issues);
+  return out;
+}
+
+/// 结构化行 → 冲突检测时隙（与 parseSksj 同口径：单双周逐周展开，绝不压缩成整段，
+/// 以免与另一奇偶周的课程假冲突）。
+List<Map<String, dynamic>> slotsOfRow(TimetableRow r) {
+  final composed = '星期${r.day}第${r.start}-${r.end}节'
+      '{${r.weekStart}-${r.weekEnd}周'
+      '${r.parity == 1 ? '(单)' : (r.parity == 2 ? '(双)' : '')}}';
+  return parseSksj(composed).slots;
+}
+
+/// kcb 复合文本切段：<br> 与 zwf 都是分隔符；去掉考试日期尾巴与空段。
+List<String> _splitKcb(String kcb) => kcb
+    .split(RegExp(r'<br>|zwf'))
+    .map((e) => e.trim())
+    .where((e) => e.isNotEmpty && !RegExp(r'^\d{4}年').hasMatch(e))
+    .toList();
+
+/// 把课表接口的 kbList 行转换成时隙（复用结构化行 → slotsOfRow，
+/// 保证与周视图同源、与冲突检测逐周展开口径一致）。
+TimetableParseResult parseXskbListToSlots(Object? kbList) {
+  if (kbList is! List) {
+    return const TimetableParseResult(slots: [], issues: ['课表数据不是列表']);
+  }
+  final issues = <String>[];
+  final rows = timetableRows(kbList, issues);
+  final slots = <Map<String, dynamic>>[
+    for (final r in rows) ...slotsOfRow(r),
+  ];
+  return TimetableParseResult(
+      slots: slots,
+      courses: rows.map((r) => r.name).toSet().toList(),
+      rows: rows,
+      issues: issues);
 }
 
 // ───────────────────────── 工具 ─────────────────────────
@@ -594,6 +745,16 @@ double? _num(String s) {
   if (s.isEmpty) return null;
   final d = double.tryParse(s);
   return d;
+}
+
+/// 浙大 KcList 行的 kcxx 复合字段（"0~5.0~4.0-2.0"＝学时~学分~周学时）取学分段。
+/// 形态不符 / 越界（≤0 或 >30）返回 null，绝不猜。
+double? _creditsFromKcxx(Object? v) {
+  if (v is! String) return null;
+  final parts = v.split('~');
+  if (parts.length < 2) return null;
+  final c = double.tryParse(parts[1].trim());
+  return (c != null && c > 0 && c <= 30) ? c : null;
 }
 
 /// 教务列表行的「课程标签/性质」多键收集（诉求 #5：标签→培养方案课程类别）。

@@ -309,6 +309,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         hiddenFields: _index?.hiddenFields ?? const {},
         xkxnm: _index?.xkxnm,
         xkxqm: _index?.xkxqm,
+        zjuGhb: _index?.zjuGhb ?? false,
         refresh: refresh,
       );
       if (!mounted || !widget.loggedIn) return;
@@ -349,6 +350,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     final hf = _index?.hiddenFields ?? const <String, String>{};
     final xnm = _index?.xkxnm;
     final xqm = _index?.xkxqm;
+    final zhb = _index?.zjuGhb ?? false;
     final gen = _listGeneration;
     setState(() {
       _aggregating = true;
@@ -360,7 +362,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       if (gen != _listGeneration) break; // 刷新换代：中止本轮（避免旧轮配新参数写回）
       if (!_lists.containsKey(r.xkkzId)) {
         final res = await widget.client.fetchXkCourses(
-            round: r, hiddenFields: hf, xkxnm: xnm, xkxqm: xqm);
+            round: r, hiddenFields: hf, xkxnm: xnm, xkxqm: xqm, zjuGhb: zhb);
         if (!mounted) break;
         if (gen == _listGeneration) {
           setState(() {
