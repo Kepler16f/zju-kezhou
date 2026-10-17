@@ -926,27 +926,21 @@ class _InterfacePrefsCard extends StatelessWidget {
             child: Text('下次启动课舟时默认打开的页签',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
           ),
-          // RadioGroup（新 API；旧 groupValue/onChanged 在本 SDK 已弃用）：
-          // 回调未接线时用 enabled:false 明确禁用，避免"能点但没反应"。
-          RadioGroup<int>(
-            groupValue: homeTab,
-            onChanged: (v) {
-              if (v != null) onDefaultTabChange?.call(v);
-            },
-            child: Column(
-              children: [
-                for (var i = 0; i < _tabNames.length; i++)
-                  RadioListTile<int>(
-                    dense: true,
-                    visualDensity: VisualDensity.compact,
-                    value: i,
-                    enabled: onDefaultTabChange != null,
-                    title: Text(_tabNames[i],
-                        style: const TextStyle(fontSize: 13)),
-                  ),
-              ],
+          // RadioListTile 用旧 groupValue/onChanged API：flutter-ohos 3.27（Dart 3.6）
+          // 没有 RadioGroup 符号，回退到两版 SDK 通吃的写法（3.47 仅 deprecation info）。
+          // 回调未接线时禁用，避免"能点但没反应"。
+          for (var i = 0; i < _tabNames.length; i++)
+            RadioListTile<int>(
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              groupValue: homeTab,
+              value: i,
+              enabled: onDefaultTabChange != null,
+              onChanged: (v) {
+                if (v != null) onDefaultTabChange?.call(v);
+              },
+              title: Text(_tabNames[i], style: const TextStyle(fontSize: 13)),
             ),
-          ),
           const SizedBox(height: 8),
         ],
       ),
