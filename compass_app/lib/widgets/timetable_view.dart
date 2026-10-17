@@ -3,11 +3,15 @@
 /// 顶部子学期分段（全部/秋/冬/短），主体为周一..周日 × 第1..13节网格：
 /// - 「秋」显示 subTerm∈{秋,秋冬}；「冬」∈{冬,秋冬}；「短」=='短'；
 ///   春/夏与未标注行只在「全部」出现（真实数据 '秋冬' 贯穿秋+冬两个子学期）。
-/// - 列横向可滚（SingleChildScrollView 横向），行首「节次」列固定、不随横滚。
+/// - 日列宽自适应窗口（任务9）：LayoutBuilder 量可用宽度，
+///   日列宽 = max(64, (可用宽 - 节次列40) / 7)；列宽达 ~100 即铺满窗口不再横滚，
+///   不足则保持横向滚动，行首「节次」列固定、不随横滚。
 /// - 同日同节次区间多门课 → 格内纵向堆叠小卡片（名称粗体 11.5 / 教师·地点 / 第a-b周·单双）；
-///   同格 ≥2 门视为冲突，卡片描 error 色 1.5 边框（纯视觉标记）。
+///   同格 ≥2 门视为冲突，卡片描 error 色 1.5 边框（纯视觉标记）；窄列时省略周次行更紧凑。
 /// 零新增依赖；配色复用 scholar_cards 浅色盘（只读参考，不改它）。
 library;
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -17,7 +21,10 @@ import 'scholar_cards.dart';
 // ── 网格几何（节次行高 / 总节数 / 单日列宽 / 固定标签列宽）──
 const double _kCellH = 44.0;
 const double _kHeadH = 28.0;
-const double _kDayW = 110.0;
+const double _kDayW = 110.0; // 传统/兜底单日列宽（可用宽不可有限时回退）
+const double _kMinDayW = 64.0; // 自适应列宽下限（再窄保持横滚）
+const double _kComfortDayW = 100.0; // 列宽达此值即铺满窗口、不再横滚
+const double _kCompactDayW = 90.0; // 窄列阈值：格内省略周次行
 const double _kGutterW = 40.0;
 const int _kPeriods = 13;
 const int _kDays = 7;
@@ -63,56 +70,80 @@ class _TimetableViewState extends State<TimetableView> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final rows = widget.rows.where(_matches).toList(growable: false);
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-          child: SegmentedButton<String>(
-            segments: [
-              for (var i = 0; i < _kFilters.length; i++)
-                ButtonSegment(
-                    value: _kFilters[i], label: Text(_kFilterLabels[i])),
-            ],
-            selected: {_subTerm},
-            onSelectionChanged: (s) => setState(() => _subTerm = s.first),
-          ),
-        ),
-        if (rows.isEmpty)
-          SizedBox(
-            height: 220,
-            child: Center(
-              child: Text(
-                '本学期暂无课表数据',
-                style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+    return LayoutBuilder(
+      builder: (context, cons) {
+        // 可用宽不有限（理论上被放进横向滚筒）→ 回退固定列宽，保持旧行为
+        final availW = cons.maxWidth.isFinite
+            ? cons.maxWidth
+            : _kDayW * _kDays + _kGutterW;
+        // 任务9：日列宽随窗口自适应 = max(64, (可用宽 - 节次列40) / 7)；
+        // 列宽达 ~100 即恰好铺满、不再横滚；不足则保持现有横向滚动。
+        final dayW = math.max(_kMinDayW, (availW - _kGutterW) / _kDays);
+        final hScroll = dayW < _kComfortDayW;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+              child: SegmentedButton<String>(
+                segments: [
+                  for (var i = 0; i < _kFilters.length; i++)
+                    ButtonSegment(
+                        value: _kFilters[i], label: Text(_kFilterLabels[i])),
+                ],
+                selected: {_subTerm},
+                onSelectionChanged: (s) => setState(() => _subTerm = s.first),
               ),
             ),
-          )
-        else
-          SizedBox(
-            height: _kHeadH + _kPeriods * _kCellH,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _gutterColumn(scheme),
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        for (var d = 1; d <= _kDays; d++)
-                          _dayColumn(d, rows, scheme),
-                      ],
-                    ),
+            if (rows.isEmpty)
+              SizedBox(
+                height: 220,
+                child: Center(
+                  child: Text(
+                    '本学期暂无课表数据',
+                    style:
+                        TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
                   ),
                 ),
-              ],
-            ),
-          ),
-      ],
+              )
+            else
+              SizedBox(
+                height: _kHeadH + _kPeriods * _kCellH,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _gutterColumn(scheme),
+                    Expanded(
+                      child: hScroll
+                          ? SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  for (var d = 1; d <= _kDays; d++)
+                                    _dayColumn(d, rows, scheme, dayW),
+                                ],
+                              ),
+                            )
+                          : Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // 铺满分支：Expanded 均分（每列恰为 (可用宽-40)/7），
+                                // 免除固定宽浮点累计 ±1ULP 造成的溢出报错
+                                for (var d = 1; d <= _kDays; d++)
+                                  Expanded(
+                                      child: _dayColumn(d, rows, scheme, dayW)),
+                              ],
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -145,12 +176,14 @@ class _TimetableViewState extends State<TimetableView> {
   }
 
   /// 单日列：星期表头 + 网格线背景 + 课程卡片（同格堆叠 / 重叠块分栏 / 冲突描边）。
-  Widget _dayColumn(int day, List<TimetableRow> rows, ColorScheme scheme) {
+  Widget _dayColumn(
+      int day, List<TimetableRow> rows, ColorScheme scheme, double dayW) {
     final blocks = _pack(rows.where((r) => r.day == day).toList());
     final laneCount = blocks.isEmpty
         ? 1
         : blocks.map((b) => b.lane).reduce((a, b) => a > b ? a : b) + 1;
-    final laneW = (_kDayW - 4) / laneCount;
+    final laneW = (dayW - 4) / laneCount;
+    final compact = dayW < _kCompactDayW; // 窄列：格内省略周次行，名称仍 ellipsis
     final dark = scheme.brightness == Brightness.dark;
     final lineColor =
         scheme.onSurfaceVariant.withValues(alpha: dark ? 0.20 : 0.14);
@@ -158,7 +191,7 @@ class _TimetableViewState extends State<TimetableView> {
         scheme.onSurfaceVariant.withValues(alpha: dark ? 0.16 : 0.10);
 
     return SizedBox(
-      width: _kDayW,
+      width: dayW,
       child: Column(
         children: [
           SizedBox(
@@ -199,7 +232,11 @@ class _TimetableViewState extends State<TimetableView> {
                       left: 2 + b.lane * laneW,
                       width: laneW - 3,
                       height: b.slotH,
-                      child: _CourseCard(b.rows[i], conflict: b.conflict),
+                      child: _CourseCard(
+                        b.rows[i],
+                        conflict: b.conflict,
+                        compact: compact,
+                      ),
                     ),
               ],
             ),
@@ -281,7 +318,10 @@ Color _courseColor(String name) {
 class _CourseCard extends StatelessWidget {
   final TimetableRow row;
   final bool conflict;
-  const _CourseCard(this.row, {required this.conflict});
+
+  /// 窄列（<90px）紧凑模式：省略周次行，名称/教师·地点行仍 ellipsis。
+  final bool compact;
+  const _CourseCard(this.row, {required this.conflict, this.compact = false});
 
   @override
   Widget build(BuildContext context) {
@@ -326,14 +366,15 @@ class _CourseCard extends StatelessWidget {
                   style: TextStyle(
                       fontSize: 9.5, color: scheme.onSurfaceVariant),
                 ),
-              Text(
-                '第${row.weekStart}-${row.weekEnd}周'
-                '${parity.isEmpty ? '' : '·$parity'}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    TextStyle(fontSize: 9.5, color: scheme.onSurfaceVariant),
-              ),
+              if (!compact)
+                Text(
+                  '第${row.weekStart}-${row.weekEnd}周'
+                  '${parity.isEmpty ? '' : '·$parity'}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      TextStyle(fontSize: 9.5, color: scheme.onSurfaceVariant),
+                ),
             ],
           ),
         ),

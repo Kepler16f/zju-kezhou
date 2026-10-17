@@ -1353,7 +1353,7 @@ class ZjuClient {
       // 学生端课程明细接口不开放（实测 HTTP 910）——改走官方培养方案 PDF 全文解析：
       // 板块/课程完整（实测 30 板块 / 88 门），审计不再把大量已修课误报"未匹配到方案"
       //（用户反馈 #7/#6：方案页标亮的课审计却说没匹配）。失败才退回摘要口径。
-      final pdf = await _auditPlanFileFromPdf(plan);
+      final pdf = await _auditPlanFileFromPdf(plan, transcript);
       if (pdf != null) {
         planFile = pdf;
         notes.add('课程清单来自官方培养方案 PDF 解析（完整板块与课程表）');
@@ -1379,7 +1379,8 @@ class ZjuClient {
   /// 缓存优先（与课程规划页 [readBinaryCache] 同名 `planpdf_<id>.pdf` 复用同一份），
   /// 命中不重复下载；无缓存再拉并落盘。PDF 缺失 / 解析出 0 板块 → 返回 null，
   /// 调用方回落 planFileFromSummary。任何异常吞掉返回 null（宁缺勿崩，红线只读）。
-  Future<Map<String, dynamic>?> _auditPlanFileFromPdf(PlanSummary plan) async {
+  Future<Map<String, dynamic>?> _auditPlanFileFromPdf(
+      PlanSummary plan, List<Map<String, dynamic>> transcript) async {
     try {
       final id = plan.jxjhh.isNotEmpty ? plan.jxjhh : plan.id;
       final name = 'planpdf_${id.replaceAll(RegExp(r'[^0-9A-Za-z_-]'), '')}.pdf';
@@ -1396,6 +1397,7 @@ class ZjuClient {
         major: plan.zymc.isEmpty ? plan.id : plan.zymc,
         grade: plan.synj,
         totalCredits: plan.zdbyxf,
+        transcript: transcript,
         sourceDoc: '教务网培养方案 ${plan.zymc} ${plan.synj} 级'
             '（教学计划号 ${plan.jxjhh}｜官方 PDF 解析）',
       );

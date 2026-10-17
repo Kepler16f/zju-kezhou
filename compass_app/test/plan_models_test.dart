@@ -271,6 +271,30 @@ void main() {
               .any((q) => q.toString().contains('学分未知')),
           isTrue);
     });
+
+    test('并列三组无父子嵌套：模块要求和 == 课程学分和（无重复计费）', () {
+      // 对照 PDF 全量方案的「叶子优先」取舍（plan_audit_adapter.keptSectionFlags）：
+      // 摘要口径只有并列三组（核心/实践/前沿），无父子包含关系，
+      // AuditEngine 直接对 required_credits 求和不会重复计费。
+      final p = PlanSummary.fromRow(planRow());
+      final file = planFileFromSummary(p, grade: '2026', transcript: [
+        {'name': '密码学', 'credits': 3.0},
+        {'name': '网络安全', 'credits': 3.0},
+        {'name': '操作系统', 'credits': 4.5},
+        {'name': '计算机网络', 'credits': 3.0},
+        {'name': '数据结构基础', 'credits': 3.0},
+        {'name': '信息安全综合实践Ⅰ', 'credits': 2.0},
+        {'name': '信息安全综合实践Ⅱ', 'credits': 2.0},
+        {'name': '网络空间安全导论', 'credits': 1.5},
+      ]);
+      final modules = (file['modules'] as List).cast<Map<String, dynamic>>();
+      expect(modules.length, 3); // major_core / intensive_practice / major_limited
+      final sumReq = modules.fold<double>(
+          0, (a, m) => a + (m['required_credits'] as num).toDouble());
+      final sumCourse = (file['courses'] as List)
+          .fold<double>(0, (a, c) => a + (c['credits'] as num).toDouble());
+      expect(sumReq, sumCourse); // 22.0 == 22.0：严格直和，无父子重复
+    });
   });
 
   group('StudentProfile', () {

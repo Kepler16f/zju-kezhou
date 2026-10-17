@@ -4,9 +4,11 @@
 ///  → 方案目录（正方"培养方案查询"列表接口 N153020，一次拿全校方案）
 ///  → 客户端匹配（专业全称 × 年级；命中多条一律交给用户点选，绝不替用户猜）
 ///  → 结构化展示（培养目标/要求、专业核心课、学分与课堂要求）
-///  → 课程明细（多端点 best-effort）+ 官方培养方案 PDF（下载/系统阅读器打开）。
+///  + 官方培养方案 PDF（下载/系统阅读器打开，各板块修读要求解析后内嵌展示）。
 /// 另内嵌：学业达成审计区（原「审计」页签并入，诉求 #13/#14/#2/#11）、
 /// 本学期已选计数（诉求 #8）、本学期课表周视图（诉求 #16）。
+/// 逐门课程明细表已移除（任务 10：教务不普遍开放，且信息与 PDF 板块重复）；
+/// 微辅修板块整支隐藏（诉求 #10：清单面向其他专业学生，与本人修读无关）。
 library;
 
 import 'dart:async';
@@ -22,6 +24,9 @@ import '../data/semester.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
 import '../engine/plan_audit_adapter.dart';
+// getCloseMatches 实际定义在 engine/timeline.dart（difflib 移植，纯函数）；
+// engine/matching.dart 只是引用方且未 re-export，引擎文件本任务不可改。
+import '../engine/timeline.dart' show getCloseMatches;
 import '../widgets/report_view.dart';
 import '../widgets/scholar_cards.dart' show SectionHeader;
 import '../widgets/timetable_view.dart';
@@ -71,13 +76,10 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   StudentProfile _profile = const StudentProfile();
   PlanMatchResult _match = PlanMatchResult.empty;
   PlanSummary? _selected;
-  List<PlanCourseRow> _courseTable = const [];
   List<PlanSummary> _searchHits = const [];
   String? _pdfPath;
   String? _error;
-  String? _courseHint;
   bool _loading = false;
-  bool _loadingCourses = false;
   bool _loadingPdf = false;
   PlanPdfSections? _pdfSections; // PDF 解析出的各板块修读要求
   // 板块卡片的收起/展开状态（键 = 解析结果里的文档序下标；换方案时清空）。
@@ -101,14 +103,12 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _profile = const StudentProfile();
         _match = PlanMatchResult.empty;
         _selected = null;
-        _courseTable = const [];
         _searchHits = const [];
         _pdfPath = null;
         _pdfSections = null;
         _collapsedSecs.clear();
         _notesOpen.clear();
         _error = null;
-        _courseHint = null;
       });
     }
   }
@@ -133,7 +133,6 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     setState(() {
       _loading = true;
       _error = null;
-      _courseHint = null;
     });
     try {
       final profile =
@@ -146,46 +145,18 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _profile = profile;
         _match = match;
         _selected = best;
-        _courseTable = const [];
         _pdfPath = null;
         _pdfSections = null;
         _collapsedSecs.clear();
         _notesOpen.clear();
       });
       if (best != null) {
-        await _loadCourses(best);
         unawaited(_ensurePdfSections(best)); // 各板块修读要求：自动拉取解析
       }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  /// 课程明细（多端点 best-effort，拿不到就提示看 PDF）。
-  Future<void> _loadCourses(PlanSummary plan) async {
-    final wanted = plan.id;
-    setState(() {
-      _loadingCourses = true;
-      _courseHint = null;
-    });
-    try {
-      final rows = await widget.client.fetchPlanCourseTable(plan);
-      if (!mounted || _selected?.id != wanted) return;
-      setState(() {
-        _courseTable = rows;
-        if (rows.isEmpty) {
-          _courseHint = '教务未开放逐门课程表（学生端该功能属教师菜单），'
-              '完整课程表请下载下方 PDF 查看。';
-        }
-      });
-    } catch (e) {
-      if (mounted && _selected?.id == wanted) {
-        setState(() => _courseHint = '课程表获取异常：$e');
-      }
-    } finally {
-      if (mounted) setState(() => _loadingCourses = false);
     }
   }
 
@@ -222,8 +193,6 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   Future<void> _pick(PlanSummary plan) async {
       setState(() {
         _selected = plan;
-        _courseTable = const [];
-        _courseHint = null;
         _pdfPath = null;
         _pdfSections = null;
         _collapsedSecs.clear();
@@ -232,7 +201,6 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _searchCtl.text = '';
       });
     await widget.client.selectPlan(plan);
-    await _loadCourses(plan);
     unawaited(_ensurePdfSections(plan));
   }
 
@@ -307,6 +275,12 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       _snack('调用系统阅读器失败：$e\n文件已保存在 $path');
     }
   }
+
+  /// 成绩单课程名集合（trim 去空）：「已修」标定的对照基准。
+  Set<String> _transcriptNames() => widget.transcript
+      .map((c) => (c['name'] ?? '').toString().trim())
+      .where((n) => n.isNotEmpty)
+      .toSet();
 
   // ── 视图 ────────────────────────────────────────────────────────────────
   @override
@@ -498,14 +472,6 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                   icon: const Icon(Icons.refresh, size: 18),
                   label: const Text('重新匹配'),
                 ),
-                if (_selected != null)
-                  OutlinedButton.icon(
-                    onPressed: _loadingCourses
-                        ? null
-                        : () => _loadCourses(_selected!),
-                    icon: const Icon(Icons.list_alt_outlined, size: 18),
-                    label: const Text('刷新课程表'),
-                  ),
               ],
             ),
           ],
@@ -552,10 +518,13 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       );
 
   List<Widget> _planSections(PlanSummary p) {
-    final passed = widget.transcript
-        .map((c) => (c['name'] ?? '').toString().trim())
-        .where((n) => n.isNotEmpty)
-        .toSet();
+    // 「已修」标定（配合任务 5）：成绩单全等命中 + 名称相似度 ≥0.85 模糊命中。
+    // 一次性解析成集合：chips 随收起/展开频繁重建，查表 O(1)，避免重复算相似度。
+    final passed = resolvePassedNames([
+      ...p.zyhxkc,
+      ...p.zyhxsjkc,
+      ...p.qywkc,
+    ], _transcriptNames());
     return [
       _card('方案概览', [
         _kv('专业', p.zymc),
@@ -611,7 +580,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _card('专业核心课程（${p.zyhxkc.length} 门）', [
           _chips(p.zyhxkc, passed),
           const SizedBox(height: 6),
-          const Text('高亮=你的成绩单里已出现同名课程；逐门学分/学期见课程表或 PDF。',
+          const Text('高亮=你的成绩单里已出现同名或相近课程；逐门学分/学期见各板块修读要求或官方 PDF。',
               style: TextStyle(fontSize: 11, color: Colors.grey)),
         ]),
       if (p.zyhxsjkc.isNotEmpty)
@@ -619,7 +588,6 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             [_chips(p.zyhxsjkc, passed)]),
       if (p.qywkc.isNotEmpty)
         _card('前沿与荣誉课程（${p.qywkc.length} 门）', [_chips(p.qywkc, passed)]),
-      _courseCard(),
       if (_pdfSections != null && _pdfSections!.sections.isNotEmpty)
         _pdfSectionsCard(),
       if (p.bz.isNotEmpty) _expandCard('辅修/微辅修说明', p.bz),
@@ -646,52 +614,6 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     ];
   }
 
-  Widget _courseCard() {
-    if (_loadingCourses) {
-      return _card('课程表', [
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 10),
-          child: Center(
-            child: SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          ),
-        ),
-      ]);
-    }
-    if (_courseTable.isEmpty) {
-      return _card('课程表', [
-        Text(_courseHint ?? '暂无课程明细',
-            style: const TextStyle(fontSize: 12, color: Colors.grey)),
-      ]);
-    }
-    return _card('课程表（${_courseTable.length} 门）', [
-      for (final r in _courseTable) _courseTile(r),
-    ]);
-  }
-
-  Widget _courseTile(PlanCourseRow r) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Text(r.name, style: const TextStyle(fontSize: 12.5)),
-            ),
-            if (r.semester.isNotEmpty)
-              Text(' ${prettySemester(r.semester, gradeYear: _selected?.gradeYear ?? 0)} ',
-                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
-            if (r.nature.isNotEmpty)
-              Text(' ${r.nature} ',
-                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
-            Text(r.credits == null ? '—' : '${_num(r.credits!)} 分',
-                style: const TextStyle(fontSize: 12)),
-          ],
-        ),
-      );
-
   /// 各板块修读要求（PDF 解析，诉求 #14）：整块一张 Card，去掉原先
   /// 「卡外套大标题、卡内再套卡」的嵌套。卡内首行大标题；每个一级板块是
   /// 独立可折叠块（点标题收起/展开），板块之间用 Divider 分隔；
@@ -699,11 +621,16 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   /// 子层级保持 _subBlock 样式。
   Widget _pdfSectionsCard() {
     final ps = _pdfSections!;
-    final passed = widget.transcript
-        .map((c) => (c['name'] ?? '').toString().trim())
-        .where((n) => n.isNotEmpty)
-        .toSet();
+    // 「已修」标定与 _planSections 同口径（全等 + 模糊 ≥0.85），对 PDF 全部
+    // 板块的课程名一次性解析，收起/展开重绘时只做查表。
+    final passed = resolvePassedNames(
+      [for (final s in ps.sections) ...s.courses.map((c) => c.name)],
+      _transcriptNames(),
+    );
     final roots = _buildSectionTree(ps.sections);
+    // 微辅修板块整支剔除（诉求 #10）：索引保持文档序，收起/展开状态键不受影响。
+    _pruneMinorSections(roots);
+    if (roots.isEmpty) return const SizedBox.shrink();
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
@@ -712,7 +639,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
           children: [
             const Text('各板块修读要求',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-            const Text('来自官方培养方案 PDF · 高亮=成绩单已出现同名课程',
+            const Text('来自官方培养方案 PDF · 高亮=成绩单已出现同名或相近课程',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
             if (ps.qualityNotes.isNotEmpty)
               Padding(
@@ -812,6 +739,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                   _courseChips(s.courses, passed),
                   const SizedBox(height: 6),
                 ],
+                ..._certifiedChipBlock(s, passed),
                 for (final k in node.children) _subBlock(k, passed),
                 ..._notesBlock(s, node.index),
               ],
@@ -890,6 +818,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                     _courseChips(s.courses, passed),
                     const SizedBox(height: 6),
                   ],
+                  ..._certifiedChipBlock(s, passed),
                   for (final k in node.children) _subBlock(k, passed),
                   ..._notesBlock(s, node.index),
                 ],
@@ -970,6 +899,19 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             ),
         ],
       );
+
+  /// 认定类板块（美育/劳育/创新创业/心理健康，#13）在 PDF 里只有说明文字、
+  /// 无课程表：把成绩单里同类课程（certifiedCategoryOf 命中该板块类别）显示为
+  /// 「已修」标亮 chips。板块自带课程表时 certifiedRowsForSection 返回空，不重复。
+  List<Widget> _certifiedChipBlock(PdfModuleSection s, Set<String> passed) {
+    final rows = certifiedRowsForSection(s, widget.transcript);
+    if (rows.isEmpty) return const [];
+    // chips 本身取自成绩单，直接并入已修集合（与 _transcriptNames 同口径）
+    return [
+      _courseChips(rows, passed.union(_transcriptNames())),
+      const SizedBox(height: 6),
+    ];
+  }
 
   /// 「N选M」等修读约束的小徽章（诉求 #2/#11）：纯展示，规则识别在
   /// choiceBadgeText（引擎适配器的 detectChoiceRule），这里只负责样式。
@@ -1263,6 +1205,59 @@ String? choiceBadgeText(PdfModuleSection s) {
   return rule == null ? null : '规则：${rule.text}';
 }
 
+/// 「微辅修」板块判据（顶层纯函数，供 UI 与单测共用；诉求 #10 / 任务 7）：
+/// 板块标题或上级链（parentPath，含全部祖先标题）出现「微辅修」即命中。
+/// 理由：本专业方案 PDF 里的微辅修清单是面向其他专业学生的修读要求，
+/// 与本人修读无关，故整支（含其子块）不渲染；「其他专业微辅修」入口卡
+/// （MinorPlanPage 跳转卡）保留不动。
+bool isMinorElectiveSection(PdfModuleSection s) =>
+    s.title.contains('微辅修') || s.parentPath.contains('微辅修');
+
+/// 方案课程名「已修」解析（顶层纯函数，供 UI 与单测共用；配合任务 5）：
+/// 返回 names 中视为已修的子集（保留原写法，chips 构建时直接查表）——
+/// 成绩单全等命中优先，另用 difflib 风格相似度（getCloseMatches，cutoff 0.85）
+/// 兜底：成绩单与方案的写法略有出入（如「大学英语（II）」vs「大学英语II」）
+/// 也算已修。纯函数、不抛异常、宁缺勿猜：无命中一律视为未修。
+Set<String> resolvePassedNames(
+    Iterable<String> names, Set<String> transcriptNames) {
+  if (transcriptNames.isEmpty) return const {};
+  final possibilities = transcriptNames.toList();
+  final out = <String>{};
+  for (final raw in names) {
+    final n = raw.trim();
+    if (n.isEmpty) continue;
+    if (transcriptNames.contains(n) ||
+        getCloseMatches(n, possibilities, n: 1, cutoff: 0.85).isNotEmpty) {
+      out.add(raw);
+    }
+  }
+  return out;
+}
+
+/// 认定类板块无课程表时，从成绩单里找可标亮「已修」的课程行（顶层纯函数，
+/// 供 UI 与单测共用；#13）。判定与引擎适配器同源：certifiedSectionCategory
+/// 认板块（level≤3、标题命中美育/劳育/创新创业/心理健康），certifiedCategoryOf
+/// 认课程；板块自带课程表时不重复补（宁缺勿猜），同名课（重修）只取一次。
+List<PdfCourseRow> certifiedRowsForSection(
+    PdfModuleSection s, List<Map<String, dynamic>> transcript) {
+  final cat = certifiedSectionCategory(s);
+  if (cat == null || s.courses.isNotEmpty) return const [];
+  final out = <PdfCourseRow>[];
+  final used = <String>{};
+  for (final r in transcript) {
+    final name = '${r['name'] ?? ''}'.trim();
+    if (name.isEmpty || !used.add(name)) continue;
+    if (certifiedCategoryOf(name) != cat) continue;
+    final cr = r['credits'];
+    out.add(PdfCourseRow(
+      code: '${r['course_id'] ?? ''}',
+      name: name,
+      credits: cr is num ? cr.toDouble() : 0.0,
+    ));
+  }
+  return out;
+}
+
 /// PDF 板块树节点（_pdfSectionsCard 按层级组树后渲染）。
 class _SecNode {
   final PdfModuleSection section;
@@ -1284,4 +1279,15 @@ List<_SecNode> _buildSectionTree(List<PdfModuleSection> secs) {
     stack.add(node);
   }
   return roots;
+}
+
+/// 微辅修板块整支剔除（诉求 #10，判据见 isMinorElectiveSection）：命中板块
+/// 连同其全部子块一并移除；节点 index 保持文档序，收起/展开状态键不受影响。
+/// 就地修改并返回传入列表（_buildSectionTree 每次构建新建节点，无共享风险）。
+List<_SecNode> _pruneMinorSections(List<_SecNode> nodes) {
+  nodes.removeWhere((n) => isMinorElectiveSection(n.section));
+  for (final n in nodes) {
+    _pruneMinorSections(n.children);
+  }
+  return nodes;
 }

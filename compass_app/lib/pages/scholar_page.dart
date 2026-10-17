@@ -1,6 +1,7 @@
-/// pages/scholar_page.dart — 学业页 v3：顶部日期·学期·周次栏 + 考试周冲刺置顶卡 +
-/// 成绩额头条（点击进成绩详情页）+ GPA 数字格 + 学分看板 + 课堂分 + 学期走势 +
-/// GPA 模拟器（原「工具」页并入，诉求 #2）。空数据引导去"设置"页。
+/// pages/scholar_page.dart — 学业页 v3：顶部日期·学期·周次栏（下接快捷卡，随内容滚动）
+/// + 考试周冲刺置顶卡 + 成绩额头条（点击进成绩详情页）+ GPA 数字格 + 学分看板 +
+/// 课堂分 + 学期走势（五分制，可收起）+ GPA 模拟器（原「工具」页并入，诉求 #2）。
+/// 空数据引导去"设置"页。
 library;
 
 import 'dart:async';
@@ -44,6 +45,7 @@ class ScholarPage extends StatefulWidget {
 class _ScholarPageState extends State<ScholarPage> {
   // 日期栏跨午夜/跨周需自刷新：每小时重算一次足够，且成本低。
   late Timer _clock;
+  bool _trendOpen = false; // 走势卡默认收起（诉求：可收起/展开）
 
   @override
   void initState() {
@@ -73,7 +75,11 @@ class _ScholarPageState extends State<ScholarPage> {
       return Column(
         children: [
           _dateBanner(context),
-          _quickLinks(context),
+          // 空态无滚动区，快捷卡自带横向留白；有数据态由 ListView 提供留白。
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: _quickLinks(context),
+          ),
           Expanded(
             child: Center(
               child: Padding(
@@ -106,16 +112,19 @@ class _ScholarPageState extends State<ScholarPage> {
     final cats = Analytics.creditByCategory(courses);
     final maxCat = cats.isEmpty ? 1.0 : (cats.first['credits'] as double);
     final trend = Analytics.semesterTrend(courses);
+    // semesterOrder 与 semesterTrend 内部同序（升序，unknown 最前），按下标配对。
+    final sems = Analytics.semesterOrder(courses);
+    // 走势默认五分制（任务包 B）：喂 five/cumulative_five，TrendChart 的
+    // term/cumulative 字段名本就与分制无关，line_chart.dart 无需改动。
     final points = [
       for (var i = 0; i < trend.length; i++)
-        TrendPoint(_label(trend[i]), trend[i]['four']!,
-            trend[i]['cumulative_four']!)
+        TrendPoint(scholarTrendShortLabel(sems[i]), trend[i]['five']!,
+            trend[i]['cumulative_five']!)
     ];
 
     return Column(
       children: [
         _dateBanner(context),
-        _quickLinks(context),
         Expanded(
           child: RefreshIndicator(
             onRefresh: () async => await onRefresh?.call(),
@@ -123,6 +132,9 @@ class _ScholarPageState extends State<ScholarPage> {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
               children: [
+                // 快捷入口移入滚动内容首行（诉求 #8）：与内容同滚；
+                // 日期栏底边距 4 + ListView 顶留白 4 = 8px 节奏。
+                _quickLinks(context),
                 // 考试周冲刺置顶卡（21 天窗口内有考试才渲染，内部 30s 自刷倒计时）
                 if (exams.isNotEmpty) ExamSprintCard(exams: exams),
                 ForeheadCard(
@@ -258,27 +270,74 @@ class _ScholarPageState extends State<ScholarPage> {
                           ),
                         ),
                 ),
-                const SectionHeader('学期走势（4.3 制）'),
+                // 学期走势：可收起卡片（诉求 #6），默认收起，标题行自带文案
+                //（不再用独立 SectionHeader）。收起时不构建曲线，省一次绘制。
                 Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Column(
-                      children: [
-                        TrendChart(points: points),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _legend(
-                                Theme.of(context).colorScheme.primary,
-                                '累计 GPA'),
-                            const SizedBox(width: 12),
-                            _legend(
-                                Theme.of(context).colorScheme.tertiary,
-                                '学期 GPA'),
-                          ],
+                  margin: const EdgeInsets.symmetric(vertical: 6),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () => setState(() => _trendOpen = !_trendOpen),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                          child: Row(
+                            children: [
+                              Icon(Icons.show_chart,
+                                  size: 18,
+                                  color:
+                                      Theme.of(context).colorScheme.primary),
+                              const SizedBox(width: 6),
+                              const Expanded(
+                                child: Text('学期走势（五分制）',
+                                    style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold)),
+                              ),
+                              AnimatedRotation(
+                                turns: _trendOpen ? 0.5 : 0.0,
+                                duration: const Duration(milliseconds: 200),
+                                child: const Icon(Icons.expand_more,
+                                    size: 20, color: Colors.grey),
+                              ),
+                            ],
+                          ),
                         ),
-                      ],
-                    ),
+                      ),
+                      AnimatedSize(
+                        duration: const Duration(milliseconds: 200),
+                        alignment: Alignment.topCenter,
+                        child: _trendOpen
+                            ? Padding(
+                                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                                child: Column(
+                                  children: [
+                                    TrendChart(points: points),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        _legend(
+                                            Theme.of(context)
+                                                .colorScheme
+                                                .primary,
+                                            '累计 GPA'),
+                                        const SizedBox(width: 12),
+                                        _legend(
+                                            Theme.of(context)
+                                                .colorScheme
+                                                .tertiary,
+                                            '学期 GPA'),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : const SizedBox(width: double.infinity),
+                      ),
+                    ],
                   ),
                 ),
                 const SectionHeader('GPA 模拟器'),
@@ -296,21 +355,19 @@ class _ScholarPageState extends State<ScholarPage> {
     );
   }
 
-  /// 日期栏下方的快捷入口（诉求 #16）：培养方案 / 我的课表（空态与有数据都展示）。
+  /// 快捷入口（诉求 #16）：培养方案 / 我的课表。已移入滚动内容首行（诉求 #8），
+  /// 横向留白由外层 ListView/空态容器提供，此处只管行内布局与窄屏收字。
   Widget _quickLinks(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-      child: Row(
-        children: [
-          Expanded(
-              child: _quickCard(
-                  Icons.menu_book, '培养方案', widget.onGoPlan)),
-          const SizedBox(width: 8),
-          Expanded(
-              child: _quickCard(
-                  Icons.calendar_month, '我的课表', widget.onGoTimetable)),
-        ],
-      ),
+    return Row(
+      children: [
+        Expanded(
+            child: _quickCard(
+                Icons.menu_book, '培养方案', widget.onGoPlan)),
+        const SizedBox(width: 8),
+        Expanded(
+            child: _quickCard(
+                Icons.calendar_month, '我的课表', widget.onGoTimetable)),
+      ],
     );
   }
 
@@ -325,8 +382,11 @@ class _ScholarPageState extends State<ScholarPage> {
               children: [
                 Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
                 const SizedBox(width: 6),
-                Expanded(
+                // 窄屏不溢出：文字走 Flexible 收缩 + ellipsis。
+                Flexible(
                   child: Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           fontSize: 13, fontWeight: FontWeight.w600)),
                 ),
@@ -387,13 +447,6 @@ class _ScholarPageState extends State<ScholarPage> {
     );
   }
 
-  String _label(Map<String, double> t) {
-    final idx = t['semester_idx']!;
-    if (idx < 0) return '?';
-    final y = (idx / 2).floor();
-    return '$y-${idx % 2 == 0 ? 'A' : 'B'}';
-  }
-
   double _legacyFour(List<Map<String, dynamic>> courses) {
     var sum = 0.0, credits = 0.0;
     for (final c in courses) {
@@ -413,4 +466,16 @@ class _ScholarPageState extends State<ScholarPage> {
           Text(label, style: const TextStyle(fontSize: 11)),
         ],
       );
+}
+
+/// 学期编码 → 走势图短标签（纯函数，测试锁定于 test/scholar_trend_test.dart）：
+/// '2023-A' → '23秋'，'2023-B' → '24春'，'2022-C' → '23短'。
+/// 先走 data/semester.dart 的 termCodeLabel（'2023-A'→'2023秋冬'），
+/// 再取年份后两位 + 季名首字压缩宽度；解析不了原样返回，'unknown' 显示 '?'。
+String scholarTrendShortLabel(String sem) {
+  if (sem == 'unknown') return '?';
+  final full = termCodeLabel(sem);
+  final m = RegExp(r'^(\d{2})(\d{2})([秋冬春短])').firstMatch(full);
+  if (m == null) return full; // 宁缺勿猜：认不出就显示全称
+  return '${m.group(2)}${m.group(3)}';
 }

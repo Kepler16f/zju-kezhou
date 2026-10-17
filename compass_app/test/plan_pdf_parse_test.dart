@@ -98,6 +98,109 @@ MARX1004G 大学生思想文化素养 2.0 2.0-0.0 32 一(秋冬)
       final r = parsePlanPdfText(text);
       expect(r.courseCount, 0);
     });
+
+    test('通识选修「N门」子规则行：各成板块、课程按紧邻归属', () {
+      const text = '''
+课程设置与学分分布
+一、通识课程                72.5学分
+2.通识选修课程                10.5学分
+    通识选修课程修读要求为：
+   1)至少修读1门通识核心课程                1门
+   2)至少修读1门“博雅技艺”类课程；本专业要求在以下《大学写作》课程中必修1门                1门
+课程号 课程名称 学分 周学时 总学时 建议学年学期
+PHIL0701G 大学写作——写作・人 1.5 1.0-1.0 32 一(秋冬)
+   3)理工农医学生在人文社科等四类中至少修读2门                2门
+课程号 课程名称 学分 周学时 总学时 建议学年学期
+HUMN1001G 人文示例课 2.0 2.0-0.0 32 一(秋冬)
+SOCN1002G 社科示例课 2.0 2.0-0.0 32 二(春夏)
+''';
+      final r = parsePlanPdfText(text);
+      final titles = r.sections.map((s) => s.title).toList();
+      expect(titles, [
+        '通识课程',
+        '通识选修课程',
+        '至少修读1门通识核心课程',
+        '至少修读1门“博雅技艺”类课程；本专业要求在以下《大学写作》课程中必修1门',
+        '理工农医学生在人文社科等四类中至少修读2门',
+      ]);
+
+      // 层级与上级链：门规则行仍走四级槽位
+      final gen = r.sections[1];
+      final r1 = r.sections[2], r2 = r.sections[3], r3 = r.sections[4];
+      expect(gen.level, 2);
+      for (final s in [r1, r2, r3]) {
+        expect(s.level, 4, reason: s.title);
+        expect(s.parentPath, '通识课程 · 通识选修课程', reason: s.title);
+      }
+
+      // 单位标记：父板块是学分，门子规则是"门"
+      expect(gen.creditsUnit, '学分');
+      expect(gen.isCountRule, isFalse);
+      for (final s in [r1, r2, r3]) {
+        expect(s.creditsUnit, '门', reason: s.title);
+        expect(s.isCountRule, isTrue, reason: s.title);
+      }
+      expect(r1.creditsRaw, '1');
+      expect(r3.creditsRaw, '2');
+
+      // 课程表紧邻归属：不全并到父板块
+      expect(r1.courses, isEmpty, reason: '规则1无自己的课程表 → 空课程板块');
+      expect(r1.title, '至少修读1门通识核心课程'); // 要求文字保留在标题里
+      expect(r2.courses.map((c) => c.code), ['PHIL0701G']);
+      expect(r3.courses.map((c) => c.code), ['HUMN1001G', 'SOCN1002G']);
+      expect(gen.courses, isEmpty);
+      expect(gen.notes.single, contains('通识选修课程修读要求为'));
+    });
+
+    test('以「N门」收尾的正文说明句不误判为子规则板块', () {
+      const text = '''
+一、通识课程 72.5学分
+2.通识选修课程 10.5学分
+学生应修读若干门课程，详见《通识选修课程修读说明》。
+2)跨专业课程须经学院审核认定，总计不超过 6 门
+这一句正文说明很长中间没有任何句读逗号句号都没有只是恰好以一个数字加一个门字收尾用来验证长度防护应当把这类行拒绝掉而不是识别成子规则板块 4门
+1)至少修读1门通识核心课程 1门
+''';
+      final r = parsePlanPdfText(text);
+      final titles = r.sections.map((s) => s.title).toList();
+      expect(titles, ['通识课程', '通识选修课程', '至少修读1门通识核心课程']);
+      // 被拒的正文行留在父板块说明里
+      final gen = r.sections[1];
+      final notes = gen.notes.join('\n');
+      expect(notes, contains('详见《通识选修课程修读说明》'));
+      expect(notes, contains('跨专业课程'));
+      expect(notes, contains('长度防护'));
+    });
+
+    test('「学分」收尾的四级行不受影响（creditsUnit 默认学分）', () {
+      const text = '''
+一、通识课程 72.5学分
+1.通识必修课程 62学分
+(1)思政类 14学分
+   1)必修课程 12学分
+课程号 课程名称 学分 周学时 总学时 建议学年学期
+MARX1004G 大学生思想文化素养 2.0 2.0-0.0 32 一(秋冬)
+''';
+      final r = parsePlanPdfText(text);
+      final s = r.sections[3];
+      expect(s.title, '必修课程');
+      expect(s.creditsUnit, '学分');
+      expect(s.isCountRule, isFalse);
+      expect(s.credits, 12);
+      expect(s.courses.single.code, 'MARX1004G');
+    });
+
+    test('无中文序号版式：「N门」规则行随层级自适应上移（四级→三级）', () {
+      const text = '''
+1.通识选修课程 10.5学分
+   1)至少修读1门通识核心课程 1门
+''';
+      final r = parsePlanPdfText(text);
+      expect(r.sections[0].level, 1);
+      expect(r.sections[1].level, 3);
+      expect(r.sections[1].creditsUnit, '门');
+      expect(r.sections[1].isCountRule, isTrue);
+    });
   });
 
   group('真实方案 PDF', skip: !File(

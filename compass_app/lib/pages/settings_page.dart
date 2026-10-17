@@ -1,5 +1,8 @@
 /// pages/settings_page.dart — 设置页（Helechron Option 风格）：分组卡片列表。
-/// 组：账号（教务网登录）/ 数据（数据源+方案+学期+运行）/ 通用（诊断/合规）/ AI 解读 / 关于。
+/// 组：登录（教务网账号）/ 数据（数据源+方案+学期+运行）/ AI 解读 /
+/// 关于（版本·致谢·数据与合规·登录诊断日志）。
+/// 通用组已解散（任务 11）：诊断与合规入口并入「关于」组，
+/// 登录组里的诊断/日志类信息默认折叠、点开可见。
 library;
 
 import 'package:flutter/material.dart';
@@ -30,7 +33,7 @@ class SettingsPage extends StatefulWidget {
   final String? loggedInAs; // 已记住的学号（自动登录状态）
   final DateTime? lastDataAt; // 上次成功拉取数据的时间
   final VoidCallback onClearData;
-  final AiConfig aiConfig; // AI 解读配置（默认关闭）
+  final AiConfig aiConfig; // AI 解读配置（出厂无存档时默认公益端点）
   final Future<void> Function(AiConfig config) onAiConfigChange;
   final Future<String> Function(AiConfig config) onTestAi;
 
@@ -54,6 +57,10 @@ class _SettingsPageState extends State<SettingsPage> {
   bool? _credsExpanded;
 
   bool get _showCreds => _credsExpanded ?? (widget.loggedInAs == null);
+
+  /// 诊断/日志类信息默认折叠（任务 11）：登录卡里只留一行开关，
+  /// 点开才见上次取数时间等运行信息（_showCreds 同款 bool 模式）。
+  bool _diagOpen = false;
 
   static const _semesters = [
     '2023-A','2023-B','2024-A','2024-B','2025-A','2025-B',
@@ -83,7 +90,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
-        _groupHeader('账号'),
+        _groupHeader('登录'),
         Card(
           child: Column(
             children: [
@@ -102,18 +109,40 @@ class _SettingsPageState extends State<SettingsPage> {
                   ],
                 ),
               ),
-              if (lastDataAt != null)
+              // 任务 11：诊断/日志类信息默认隐藏，点「诊断与日志」才展开
+              // （_showCreds 同款 bool 模式，不让运行细节常驻首屏）。
+              if (lastDataAt != null) ...[
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
                   child: Row(
                     children: [
-                      const Icon(Icons.schedule, size: 16),
-                      const SizedBox(width: 8),
-                      Text('上次数据：${_fmt(lastDataAt)}',
-                          style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      TextButton.icon(
+                        onPressed: () => setState(() => _diagOpen = !_diagOpen),
+                        icon: Icon(
+                            _diagOpen
+                                ? Icons.keyboard_arrow_up
+                                : Icons.keyboard_arrow_down,
+                            size: 18),
+                        label: const Text('诊断与日志',
+                            style: TextStyle(fontSize: 12)),
+                      ),
                     ],
                   ),
                 ),
+                if (_diagOpen)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.schedule, size: 16),
+                        const SizedBox(width: 8),
+                        Text('上次数据：${_fmt(lastDataAt)}',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
+              ],
               // 需求 #2：已登录时收起学号/密码输入区，点"修改"才展开。
               if (loggedInAs != null)
                 Padding(
@@ -247,46 +276,42 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Text(notice,
                 style: const TextStyle(color: Colors.red, fontSize: 13)),
           ),
-        _groupHeader('通用'),
+        _groupHeader('AI 解读'),
+        _AiCard(config: aiConfig, onSave: onAiConfigChange, onTest: onTestAi),
+        _groupHeader('关于'),
+        // 通用组已解散（任务 11）：「数据与合规」「登录诊断日志」两个入口
+        // 并入关于组，标题保持原名（main.dart 崩溃引导文案指名「登录诊断日志」）。
         Card(
           child: Column(
             children: [
+              const ListTile(
+                leading: Icon(Icons.info_outline),
+                title: Text('课舟 v$kAppVersion'),
+                subtitle: Text('培养方案结构化与选课风险审计；学分/缺口/冲突全部在本机计算；AI 仅做文字解读（可选、可关闭）',
+                    style: TextStyle(fontSize: 11)),
+              ),
+              const Divider(height: 1, indent: 16),
+              const ListTile(
+                leading: Icon(Icons.favorite_outline),
+                title: Text('开源致谢'),
+                subtitle: Text('字体 Noto Sans SC（OFL）；教务协议参考开源社区成果',
+                    style: TextStyle(fontSize: 11)),
+              ),
+              const Divider(height: 1, indent: 16),
+              ListTile(
+                leading: const Icon(Icons.privacy_tip_outlined),
+                title: const Text('数据与合规'),
+                subtitle: const Text('凭证沙箱存储、Cookie 仅内存、只读通道；AI 开箱即用（公益端点）',
+                    style: TextStyle(fontSize: 11)),
+                onTap: () => _showCompliance(context),
+              ),
+              const Divider(height: 1, indent: 16),
               ListTile(
                 leading: const Icon(Icons.bug_report_outlined),
                 title: const Text('登录诊断日志'),
                 subtitle: const Text('逐步记录登录/取数卡点（不含密码）',
                     style: TextStyle(fontSize: 11)),
                 onTap: () => _showDiagnostics(context),
-              ),
-              const Divider(height: 1, indent: 16),
-              ListTile(
-                leading: const Icon(Icons.privacy_tip_outlined),
-                title: const Text('数据与合规'),
-                subtitle: const Text('凭证沙箱存储、Cookie 仅内存、只读通道；AI 解读默认关闭',
-                    style: TextStyle(fontSize: 11)),
-                onTap: () => _showCompliance(context),
-              ),
-            ],
-          ),
-        ),
-        _groupHeader('AI 解读'),
-        _AiCard(config: aiConfig, onSave: onAiConfigChange, onTest: onTestAi),
-        _groupHeader('关于'),
-        const Card(
-          child: Column(
-            children: [
-              ListTile(
-                leading: Icon(Icons.info_outline),
-                title: Text('课舟 v$kAppVersion'),
-                subtitle: Text('培养方案结构化与选课风险审计；学分/缺口/冲突全部在本机计算；AI 仅做文字解读（可选、可关闭）',
-                    style: TextStyle(fontSize: 11)),
-              ),
-              Divider(height: 1, indent: 16),
-              ListTile(
-                leading: Icon(Icons.favorite_outline),
-                title: Text('开源致谢'),
-                subtitle: Text('字体 Noto Sans SC（OFL）；教务协议参考开源社区成果',
-                    style: TextStyle(fontSize: 11)),
               ),
             ],
           ),
@@ -454,12 +479,16 @@ class _AiCardState extends State<_AiCard> {
     super.dispose();
   }
 
-  AiConfig _collect() => AiConfig(
-        provider: _provider,
-        baseUrl: AiConfig.normalizeBaseUrl(_base.text),
-        apiKey: _key.text.trim(),
-        model: _model.text.trim(),
-      );
+  AiConfig _collect() => _provider == AiProvider.pollinations
+      // 公益端点形状固定（地址/模型内置、无 Key）：不读输入框——切走再切回时
+      // 隐藏字段可能残留旧值，直接用预设保证存下去的配置永远可用。
+      ? AiConfig.preset(AiProvider.pollinations)
+      : AiConfig(
+          provider: _provider,
+          baseUrl: AiConfig.normalizeBaseUrl(_base.text),
+          apiKey: _key.text.trim(),
+          model: _model.text.trim(),
+        );
 
   Future<void> _save() async {
     final cfg = _collect();
@@ -522,18 +551,32 @@ class _AiCardState extends State<_AiCard> {
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: SegmentedButton<AiProvider>(
-              segments: const [
-                ButtonSegment(value: AiProvider.none, label: Text('关闭')),
-                ButtonSegment(value: AiProvider.openai, label: Text('OpenAI 兼容')),
-                ButtonSegment(value: AiProvider.anthropic, label: Text('Anthropic')),
-                ButtonSegment(value: AiProvider.dify, label: Text('Dify')),
-              ],
-              selected: {_provider},
-              onSelectionChanged: (s) => _onProviderChanged(s.first),
+            // 五个段落在窄屏（360dp 手机）会超宽，套横向滚动兜底。
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SegmentedButton<AiProvider>(
+                segments: const [
+                  ButtonSegment(value: AiProvider.none, label: Text('关闭')),
+                  ButtonSegment(value: AiProvider.pollinations, label: Text('公益免费')),
+                  ButtonSegment(value: AiProvider.openai, label: Text('OpenAI 兼容')),
+                  ButtonSegment(value: AiProvider.anthropic, label: Text('Anthropic')),
+                  ButtonSegment(value: AiProvider.dify, label: Text('Dify')),
+                ],
+                selected: {_provider},
+                onSelectionChanged: (s) => _onProviderChanged(s.first),
+              ),
             ),
           ),
-          if (_provider != AiProvider.none) ...[
+          if (_provider == AiProvider.pollinations)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                  '内置公益端点（text.pollinations.ai，模型 openai），'
+                  '无需接口地址与 API Key。免费通道偶有限流，'
+                  '高峰期回复可能变慢或失败，可随时切回自建接口。',
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
+            )
+          else if (_provider != AiProvider.none) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: TextField(

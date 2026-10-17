@@ -5,7 +5,7 @@
 ///  - 拉取策略（评审A8）：进入本页且已登录才按需拉取；单轮点选即拉；跨轮汇总为显式按钮
 ///    （串行 + 间隔），禁止启动期扇出；IndexedStack 保活下以 active 门控；
 ///  - 三态文案（评审A6）：「已开放有数据 / 已开放但无结果 / 未开放或状态未知」三种如实显示；
-///  - AI 解读（评审C）：默认关闭；首次发送前确认发送范围；越界提问直接回退固定文案；
+///  - AI 解读（评审C）：出厂默认公益免费端点（无存档时），可切自有服务/关闭；首次发送前确认发送范围；越界提问直接回退固定文案；
 ///    输出页脚（kAiFooter）与免责声明（kDisclaimer）由本页硬拼接，模型无权删改。
 library;
 
@@ -24,6 +24,7 @@ import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
 import '../engine/disclaimer.dart';
 import '../engine/selection.dart';
+import '../engine/timeline.dart';
 
 enum _View { rounds, merged, advice }
 
@@ -888,7 +889,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             ),
           ),
           const SizedBox(height: 8),
-          for (final a in advice.candidates) _candidateCard(a),
+          ..._candidateCards(advice.candidates),
         ],
         const SizedBox(height: 8),
         _aiPanel(advice),
@@ -896,6 +897,30 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     );
   }
 
+  /// 建议卡列表：与课程列表同一套响应式网格（同一 gridColumns 断点、6 间距）。
+  List<Widget> _candidateCards(List<CandidateAnalysis> candidates) {
+    if (candidates.isEmpty) return const [];
+    return [
+      LayoutBuilder(
+        builder: (context, cons) {
+          final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
+          final cols = gridColumns(maxW);
+          const gap = 6.0;
+          final cardW = (maxW - gap * (cols - 1)) / cols;
+          return Wrap(
+            spacing: gap,
+            runSpacing: gap,
+            children: [
+              for (final a in candidates)
+                SizedBox(width: cardW, child: _candidateCard(a)),
+            ],
+          );
+        },
+      ),
+    ];
+  }
+
+  /// 建议卡紧凑版（网格单元）：数据源/状态色沿用原口径，仅排版收紧。
   Widget _candidateCard(CandidateAnalysis a) {
     final b = a.course.base;
     final roleText = switch (a.role) {
@@ -910,39 +935,47 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       _ => '开课季未标注',
     };
     return Card(
+      margin: EdgeInsets.zero, // 间距统一交给外层 Wrap（卡间距 6）
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               children: [
                 Expanded(
-                  child: Text(b.kcmc,
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.bold)),
+                  child: Tooltip(
+                    message: b.kcmc,
+                    child: Text(b.kcmc,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  ),
                 ),
+                const SizedBox(width: 4),
                 _tag(roleText,
                     a.role == 'gap' ? Colors.blue : Colors.grey),
               ],
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2),
             Text(
               [
                 if (b.teacher.isNotEmpty) '教师 ${b.teacher}',
-                if (b.sksj.isNotEmpty) '时间 ${b.sksj}',
+                if (b.sksj.isNotEmpty) '时间 ${b.sksj.replaceAll('星期', '')}',
                 if (b.cap != null || b.selected != null)
                   '容量 ${b.cap ?? '-'}/已选 ${b.selected ?? '-'}',
                 offeredText,
               ].join('｜'),
-              style: const TextStyle(fontSize: 12),
+              style: const TextStyle(fontSize: 11),
             ),
             if (a.planCategory != null || b.tags.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(top: 4),
+                padding: const EdgeInsets.only(top: 3),
                 child: Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
+                  spacing: 4,
+                  runSpacing: 2,
                   children: [
                     if (a.planCategory != null)
                       _tag(
@@ -960,13 +993,13 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
               Padding(
                 padding: const EdgeInsets.only(top: 2),
                 child: Text(c,
-                    style: const TextStyle(fontSize: 12, color: Colors.red)),
+                    style: const TextStyle(fontSize: 11, color: Colors.red)),
               ),
             for (final n in a.notes)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
                 child: Text(n,
-                    style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                    style: const TextStyle(fontSize: 10.5, color: Colors.grey)),
               ),
           ],
         ),
@@ -1195,36 +1228,150 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         ),
       );
 
+  /// 课程列表：响应式多列网格（任务3），不再一节课一整行。
+  /// 列数按可用宽算（gridColumns：每列目标最小 260px、最多 3 列、窄屏退一列），
+  /// 卡间距 6；数据源与截断策略（前 120 条）不变，冲突标签复用 Timeline.slotsConflict
+  /// （仅当课表时隙已知时才判定，宁缺勿猜）。
   List<Widget> _courseCards(List<XkCourse> courses) {
     if (courses.isEmpty) return const [];
+    final ttSlots = _timetable?.slots ?? const [];
+    bool conflictsWithTimetable(XkCourse c) =>
+        ttSlots.isNotEmpty && Timeline.slotsConflict(c.slots, ttSlots) != null;
     return [
-      for (final c in courses.take(120))
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('${c.kcmc}${c.jxbmc.isEmpty ? '' : '（${c.jxbmc}）'}',
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.bold)),
-                Text(
-                  [
-                    if (c.kch.isNotEmpty) '课程号 ${c.kch}',
-                    if (c.teacher.isNotEmpty) c.teacher,
-                    if (c.sksj.isNotEmpty) c.sksj,
-                    if (c.cap != null || c.selected != null)
-                      '容量 ${c.cap ?? '-'}/已选 ${c.selected ?? '-'}',
-                  ].join('｜'),
-                  style: const TextStyle(fontSize: 12),
+      LayoutBuilder(
+        builder: (context, cons) {
+          final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
+          final cols = gridColumns(maxW);
+          const gap = 6.0;
+          final cardW = (maxW - gap * (cols - 1)) / cols;
+          return Wrap(
+            spacing: gap,
+            runSpacing: gap,
+            children: [
+              for (final c in courses.take(120))
+                SizedBox(
+                  width: cardW,
+                  child: CourseMiniCard(
+                    course: c,
+                    conflict: conflictsWithTimetable(c),
+                  ),
                 ),
-              ],
-            ),
-          ),
-        ),
+            ],
+          );
+        },
+      ),
       if (courses.length > 120)
         Text('仅显示前 120 条（共 ${courses.length} 条，请用搜索与汇总视图查看）',
             style: const TextStyle(fontSize: 11, color: Colors.grey)),
     ];
+  }
+}
+
+// ───────────────────────── 课程网格（任务3：响应式多列） ─────────────────────────
+
+/// 课程网格列数（顶层纯函数，test/course_grid_test.dart 直连断言）：
+/// 每列目标最小 260px、最多 3 列；宽度不足一列保底 1 列（手机窄屏自动退一列）。
+int gridColumns(double availableWidth) {
+  final n = availableWidth ~/ 260;
+  return n < 1 ? 1 : (n > 3 ? 3 : n);
+}
+
+/// 选课课程紧凑小卡（响应式网格单元，任务3）：
+/// 行1 课程名（粗体 12.5，ellipsis + Tooltip 全称）+ 状态小标签（冲突/已满/余量）；
+/// 行2 教师｜时间（缩写：去「星期」字样）；行3 容量/已选（仅快照可得时显示）。
+/// 状态色沿用本页既有口径：冲突=红、已满=橙、余量=青；不新增任何网络请求。
+class CourseMiniCard extends StatelessWidget {
+  final XkCourse course;
+
+  /// 与当前课表时隙冲突（页面用 Timeline.slotsConflict 判定；课表未知时恒 false）。
+  final bool conflict;
+
+  const CourseMiniCard({super.key, required this.course, this.conflict = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = course;
+    final fullName = '${c.kcmc}${c.jxbmc.isEmpty ? '' : '（${c.jxbmc}）'}';
+    final isFull =
+        c.cap != null && c.selected != null && c.selected! >= c.cap!;
+    final left =
+        c.cap != null && c.selected != null ? c.cap! - c.selected! : null;
+    final meta = [
+      if (c.teacher.isNotEmpty) c.teacher,
+      if (c.sksj.isNotEmpty) c.sksj.replaceAll('星期', ''),
+    ].join('｜');
+    String? tagText;
+    Color? tagColor;
+    if (conflict) {
+      tagText = '冲突';
+      tagColor = Colors.red;
+    } else if (isFull) {
+      tagText = '已满';
+      tagColor = Colors.orange;
+    } else if (left != null) {
+      tagText = '余 $left';
+      tagColor = Colors.teal;
+    }
+    return Card(
+      margin: EdgeInsets.zero, // 间距统一交给外层 Wrap（卡间距 6）
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Tooltip(
+                    message: fullName,
+                    child: Text(
+                      fullName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+                if (tagText != null) ...[
+                  const SizedBox(width: 4),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: tagColor!.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(tagText,
+                        style: TextStyle(fontSize: 10, color: tagColor)),
+                  ),
+                ],
+              ],
+            ),
+            if (meta.isNotEmpty)
+              Text(
+                meta,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            if (c.cap != null || c.selected != null)
+              Text(
+                '容量 ${c.cap ?? '-'}/已选 ${c.selected ?? '-'}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+            if (conflict)
+              const Padding(
+                padding: EdgeInsets.only(top: 2),
+                child: Text('与当前课表冲突',
+                    style: TextStyle(fontSize: 11, color: Colors.red)),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }

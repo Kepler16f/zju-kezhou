@@ -32,6 +32,7 @@ jobs:
             test/xk_parse_test.dart test/xk_models_test.dart \
             test/selection_test.dart test/ai_client_test.dart \
             test/plan_audit_adapter_test.dart \
+            test/category_wiring_test.dart \
             test/ai_compliance_test.dart
           # 说明：widget_test / live_probe_test / ai_config_store_test 不在本 job
           # （ai_config_store_test 经 credential_store 依赖 path_provider→Flutter；

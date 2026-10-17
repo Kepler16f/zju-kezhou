@@ -1,6 +1,6 @@
 /// 课舟 App 主入口：底部导航四页签（学业/方案/选课/设置；审计并入方案页，原「工具」页签并入学业页）。
 /// 数据流：设置页选源运行 → 状态持有 courses/report/practice/choosed/timetable → 各页消费。
-/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（默认关闭）。
+/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（出厂默认公益免费端点）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
 library;
 
@@ -25,11 +25,14 @@ import 'engine/adapters.dart';
 import 'engine/audit.dart';
 import 'engine/course_marks.dart';
 import 'engine/exam.dart';
+// 课程类别打通（学分看板「未分类」修复）：用审计方案板块补全展示链路的 category。
+import 'engine/plan_audit_adapter.dart' show applyPlanCategories;
 import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
 import 'widgets/ai_chat.dart';
+import 'widgets/boat_icon.dart';
 
 void main(List<String> args) async {
   // 崩溃自动恢复标记（RegisterApplicationRestart 重启时带 --crashed）
@@ -183,7 +186,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _busy = false;
   String? _notice;
   Map<String, dynamic>? _auditPlan; // 当前审计所用方案（选课页做缺口/先修/开课季匹配用）
-  AiConfig _aiConfig = const AiConfig(); // AI 解读配置（默认关闭）
+  AiConfig _aiConfig = const AiConfig(); // AI 解读配置（出厂无存档时默认公益端点，见 initState）
   int _aiSessionReset = 0; // 一键清除时自增：通知选课页清掉 AI 问答历史等会话态
 
   static const majors = {
@@ -233,9 +236,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _mode = DataMode.zju;
       });
     }
-    // AI 解读配置（默认关闭；缺失/损坏回落 none，绝不拖崩启动）
+    // AI 解读配置：出厂从未存过配置 → 默认「公益免费」端点（开箱即用，诉求 #4：
+    // 免 Key、有限额）；用户显式保存过（含选「关闭」）后完全尊重其选择。
+    // 缺失/损坏回落 none 同样按未存过处理（下次开机仍是免费端点）。
     final aiCfg = await _store.loadAiConfig();
-    if (mounted) setState(() => _aiConfig = aiCfg);
+    final firstRun =
+        aiCfg.provider == AiProvider.none && !await _store.hasStoredAiConfig();
+    if (mounted) {
+      setState(() => _aiConfig =
+          firstRun ? AiConfig.preset(AiProvider.pollinations) : aiCfg);
+    }
     // 本地排除标记随会话恢复（不依赖登录，粘贴/样例模式同样生效）
     final marksRaw = await _store.readCache('course_marks');
     final marks = parseMarks(marksRaw);
@@ -339,6 +349,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       auditPlan = engine.findPlan(record['student']['major'] as String);
     } catch (_) {}
+    // 类别打通（学分看板「未分类」修复）：报告已在 engine.main 里算完，此处
+    // 改写 record 课程行只影响展示链路（学业页学分看板）与 _saveSession 落盘。
+    // 以审计方案的板块为唯一类别事实源，只补空/「未分类」，教务自带 kcxzmc 不动。
+    if (auditPlan != null) {
+      final filled = applyPlanCategories(
+          (record['courses'] as List).cast<Map<String, dynamic>>(), auditPlan);
+      if (filled > 0) {
+        DiagnosticLog.instance.record('课程类别',
+            detail: '按培养方案板块补全 $filled 门课程的类别（展示链路）');
+      }
+    }
     setState(() {
       _report = out['report'] as Map<String, dynamic>;
       _courses = (record['courses'] as List).cast<Map<String, dynamic>>();
@@ -688,7 +709,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           contextSummary: _aiAuditSummary(),
         ),
         tooltip: 'AI 助手',
-        child: const Icon(Icons.smart_toy_outlined),
+        child: const BoatIcon(size: 26),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,

@@ -1,5 +1,5 @@
 /// widgets/gpa_simulator.dart — GPA 模拟器（what-if + 目标反推），学业页内嵌卡片。
-/// 从原「工具」页签合并而来（诉求 #2：合并"学业"和"工具"）。
+/// 从原「工具」页签合并而来（诉求 #2）；默认五分制口径（任务包 B），副行保留 4.3 制对照。
 library;
 
 import 'package:flutter/material.dart';
@@ -16,15 +16,18 @@ class GpaSimulatorCard extends StatefulWidget {
 
 class _GpaSimulatorCardState extends State<GpaSimulatorCard> {
   final _planned = <Map<String, dynamic>>[];
-  double _targetFour = 3.8;
+  double _targetFive = 4.5; // 五分制目标（≈ 原 4.3 制默认 3.8 的档位）
   double _remainingCredits = 30;
 
   @override
   Widget build(BuildContext context) {
-    final currentFour = Analytics.overall(widget.courses)['four']!;
-    final projected = Analytics.simulateGpa(widget.courses, _planned);
-    final required = Analytics.requiredFiveForTarget(
-        widget.courses, _targetFour, _remainingCredits);
+    final o = Analytics.overall(widget.courses);
+    final currentFive = o['five']!;
+    final currentFour = o['four']!;
+    final projectedFive = Analytics.simulateFiveGpa(widget.courses, _planned);
+    final projectedFour = Analytics.simulateGpa(widget.courses, _planned);
+    final required = Analytics.requiredFiveForTargetFive(
+        widget.courses, _targetFive, _remainingCredits);
     final scheme = Theme.of(context).colorScheme;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 6),
@@ -39,8 +42,9 @@ class _GpaSimulatorCardState extends State<GpaSimulatorCard> {
           title: const Text('GPA 模拟器',
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
           subtitle: Text(
-              '当前 4.3 制 ${currentFour.toStringAsFixed(2)}'
-              '${_planned.isNotEmpty ? ' → 模拟后 ${projected.toStringAsFixed(2)}（${projected >= currentFour ? "↑" : "↓"}${(projected - currentFour).abs().toStringAsFixed(2)}）' : ''}',
+              '当前五分制 ${currentFive.toStringAsFixed(2)}'
+              '（4.3 制 ${currentFour.toStringAsFixed(2)}）'
+              '${_planned.isNotEmpty ? ' → 模拟后 ${projectedFive.toStringAsFixed(2)}（${projectedFive >= currentFive ? "↑" : "↓"}${(projectedFive - currentFive).abs().toStringAsFixed(2)}，4.3 制 ${projectedFour.toStringAsFixed(2)}）' : ''}',
               style: const TextStyle(fontSize: 12)),
           childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
           expandedCrossAxisAlignment: CrossAxisAlignment.start,
@@ -65,15 +69,15 @@ class _GpaSimulatorCardState extends State<GpaSimulatorCard> {
               ],
             ),
             const Divider(),
-            Text('目标反推：剩余 ${_remainingCredits.round()} 学分，想达到 ${_targetFour.toStringAsFixed(1)}',
+            Text('目标反推：剩余 ${_remainingCredits.round()} 学分，想达到五分制 ${_targetFive.toStringAsFixed(1)}',
                 style: const TextStyle(fontSize: 13)),
             Slider(
-              value: _targetFour,
-              min: 2.0,
-              max: 4.3,
-              divisions: 23,
-              label: _targetFour.toStringAsFixed(1),
-              onChanged: (v) => setState(() => _targetFour = v),
+              value: _targetFive,
+              min: 3.0,
+              max: 5.0,
+              divisions: 20,
+              label: _targetFive.toStringAsFixed(1),
+              onChanged: (v) => setState(() => _targetFive = v),
             ),
             Slider(
               value: _remainingCredits,
@@ -85,8 +89,8 @@ class _GpaSimulatorCardState extends State<GpaSimulatorCard> {
             ),
             Text(
               required == null
-                  ? '该目标在剩余学分内无法达到（上限 4.3）'
-                  : '需要剩余课程平均五分绩点 ≥ $required（约 ${_fiveToHint(required)} 分制成绩）',
+                  ? '该目标在剩余学分内无法达到（五分制上限 5.0）'
+                  : '需要剩余课程平均五分绩点 ≥ ${required.toStringAsFixed(2)}（约 ${_fiveToHint(required)} 分制成绩）',
               style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.bold,

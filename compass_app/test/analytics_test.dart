@@ -77,6 +77,12 @@ void main() {
       // 累计: (4.2*4 + 20.9)/9 = (16.8+20.9)/9
       expect(t[1]['cumulative_four']!, closeTo(37.7 / 9, 1e-9));
       expect(t[1]['credits'], 5.0);
+      // 五分制口径（走势图默认）：2023-A 单门 4.8；
+      // 2023-B (4.5*3 + 5.0*2)/5 = 23.5/5 = 4.7；
+      // 累计五分 (4.8*4 + 4.7*5)/9 = (19.2+23.5)/9
+      expect(t[0]['five']!, closeTo(4.8, 1e-9));
+      expect(t[1]['five']!, closeTo(23.5 / 5, 1e-9));
+      expect(t[1]['cumulative_five']!, closeTo(42.7 / 9, 1e-9));
     });
   });
 
@@ -115,6 +121,47 @@ void main() {
       expect(Analytics.requiredFiveForTarget(base, 4.2, 8), 4.8);
       // 目标 4.0，剩 8：需要 (48-16.8)/8 = 3.9 → <4.0，五分=3.9
       expect(Analytics.requiredFiveForTarget(base, 4.0, 8), closeTo(3.9, 1e-9));
+    });
+  });
+
+  group('simulateFiveGpa', () {
+    test('五分制直接加权，不走 4.3 映射', () {
+      final base = [c('A', 4, 4.8, 92)];
+      // (4.8*4 + 4.5*3)/7 = (19.2+13.5)/7 = 32.7/7；
+      // 若误走映射会是 (4.2*4 + 4.1*3)/7 = 29.1/7，两者应可区分
+      final g = Analytics.simulateFiveGpa(base, [
+        {'credits': 3.0, 'five_point': 4.5}
+      ]);
+      expect(g, closeTo(32.7 / 7, 1e-9));
+      expect(g, isNot(closeTo(29.1 / 7, 1e-3)));
+    });
+    test('与 overall 五分口径一致（挂科/弃修排除），空课程返回 0', () {
+      final courses = [
+        c('A', 4, 4.8, 92),
+        c('F', 3, 0.0, 55, passed: false), // 不计入
+      ];
+      expect(Analytics.simulateFiveGpa(courses, []),
+          Analytics.overall(courses)['five']!);
+      expect(Analytics.simulateFiveGpa([], []), 0.0);
+    });
+  });
+
+  group('requiredFiveForTargetFive', () {
+    test('可达目标闭式解', () {
+      final base = [c('A', 4, 4.8, 92)]; // 已有 Σ五分×学分 = 19.2，共 4 学分
+      // 目标 4.5 剩 8 学分：(4.5*12 - 19.2)/8 = (54-19.2)/8 = 34.8/8 = 4.35
+      expect(Analytics.requiredFiveForTargetFive(base, 4.5, 8),
+          closeTo(4.35, 1e-9));
+      // 目标 4.8 剩 4 学分：(4.8*8 - 19.2)/4 = (38.4-19.2)/4 = 4.8
+      expect(Analytics.requiredFiveForTargetFive(base, 4.8, 4),
+          closeTo(4.8, 1e-9));
+    });
+    test('不可达返回 null（所需越界 / 目标超上限 / 无剩余学分）', () {
+      final base = [c('A', 4, 4.8, 92)];
+      // 目标 5.0 剩 8：(5.0*12 - 19.2)/8 = 40.8/8 = 5.1 > 5.0 → 不可达
+      expect(Analytics.requiredFiveForTargetFive(base, 5.0, 8), isNull);
+      expect(Analytics.requiredFiveForTargetFive(base, 5.2, 8), isNull); // 目标本身超上限
+      expect(Analytics.requiredFiveForTargetFive(base, 4.5, 0), isNull); // 无剩余学分
     });
   });
 }

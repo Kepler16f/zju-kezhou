@@ -17,6 +17,8 @@
 /// ```
 /// 规则：
 ///  - 层级行：中文序号 `一、` / `1.` / `(1)` / `1)`，以"…学分"收尾；
+///    四级行也接受「…N门」收尾（通识选修的子修读规则行：数字是要求门数，
+///    记入 creditsUnit='门'，上层按 isCountRule 区分）；
 ///  - 「…：N学分」行（微辅修/辅修专业）也识别为二级条目；
 ///  - 表格头之后、下一个层级行之前的课程号行归当前板块；
 ///  - 非表格区、非层级行的正文归当前板块的修读要求；
@@ -29,6 +31,10 @@ class PdfModuleSection {
   final String title; // "思政类" / "必修课程"
   final int level; // 1-4；「：N学分」式条目记 2
   final String creditsRaw; // "12" / "3-6" / "+4" / ""（无学分声明）
+  /// 修读数量单位：'学分'（默认）或 '门'。
+  /// 四级「…N门」子规则行（通识选修的"至少修读N门…"）记 '门'，
+  /// 此时 creditsRaw 里的数字是"要求门数"而非学分。
+  final String creditsUnit;
   final String parentPath; // "通识课程 · 通识必修课程"（上级链，不含自身）
   final List<String> notes; // 修读要求说明
   final List<PdfCourseRow> courses; // 该板块课程表
@@ -37,16 +43,22 @@ class PdfModuleSection {
     required this.title,
     required this.level,
     this.creditsRaw = '',
+    this.creditsUnit = '学分',
     this.parentPath = '',
     this.notes = const [],
     this.courses = const [],
   });
 
   /// 数字学分（"3-6" 取 3、" +4" 取 4、无声明为 0）。
+  /// 注意：isCountRule 为 true 时该数字是"要求门数"，不是学分。
   double get credits {
     final m = RegExp(r'\d+(?:\.\d+)?').firstMatch(creditsRaw);
     return m == null ? 0 : (double.tryParse(m.group(0)!) ?? 0);
   }
+
+  /// 单位为「门」的子规则：credits 是"要求修读门数"而非学分。
+  /// 上层审计/展示据此区分，勿把该数字直接当 required_credits 用。
+  bool get isCountRule => creditsUnit == '门';
 
   String get label => parentPath.isEmpty ? title : '$parentPath · $title';
 }
@@ -91,8 +103,9 @@ final _lvl2Re = RegExp(r'^\d+\.\s*(\S.*?)\s+([\d.+\-]+)\s*学分$');
 /// 三级：`(1)思政类 14学分` / `(1)美育类`（无学分）。
 final _lvl3Re = RegExp(r'^\((\d+)\)\s*(.+?)(?:\s+([\d.+\-]+)\s*学分)?$');
 
-/// 四级：`1)必修课程 12学分`（要求以学分收尾，避免吃到"1)至少修读1门…"）。
-final _lvl4Re = RegExp(r'^(\d+)\)\s*(\S.*?)\s+([\d.+\-]+)\s*学分$');
+/// 四级：`1)必修课程 12学分`；通识选修的子修读规则行 `1)至少修读1门通识核心课程 1门`
+/// 也接受（以"N学分"或"N门"收尾；"门"单位时数字是要求门数，记入 creditsUnit）。
+final _lvl4Re = RegExp(r'^(\d+)\)\s*(\S.*?)\s+([\d.+\-]+)\s*(学分|门)$');
 
 /// 冒号式：`微辅修：12.5学分`。
 final _colonRe = RegExp(r'^([^：:]{2,20})[：:]\s*([\d.+\-]+)\s*学分$');
@@ -145,7 +158,7 @@ PlanPdfSections parsePlanPdfText(String text) {
   });
   final levelShift = hasHanziTop ? 0 : -1;
 
-  ({String title, int level, String credits})? sectionOf(String line) {
+  ({String title, int level, String credits, String unit})? sectionOf(String line) {
     var m = _lvl1Re.firstMatch(line);
     if (m != null) {
       final t = _cleanTitle(m.group(1)!);
@@ -153,30 +166,58 @@ PlanPdfSections parsePlanPdfText(String text) {
       // 标题不含句读、且长度有限，超过即拒。
       if (t.length > 16 || RegExp(r'[。；，]').hasMatch(t)) return null;
       // 无中文序号体系时，「一、」多是正文误报；真出现也按 2 级处理
-      return (title: t, level: hasHanziTop ? 1 : 2, credits: (m.group(2) ?? '').trim());
+      return (
+        title: t,
+        level: hasHanziTop ? 1 : 2,
+        credits: (m.group(2) ?? '').trim(),
+        unit: '学分',
+      );
     }
     m = _lvl2Re.firstMatch(line);
     if (m != null) {
-      return (title: _cleanTitle(m.group(1)!), level: 2 + levelShift, credits: m.group(2)!);
+      return (
+        title: _cleanTitle(m.group(1)!),
+        level: 2 + levelShift,
+        credits: m.group(2)!,
+        unit: '学分',
+      );
     }
     m = _colonRe.firstMatch(line);
     if (m != null) {
-      return (title: _cleanTitle(m.group(1)!), level: 2 + levelShift, credits: m.group(2)!);
+      return (
+        title: _cleanTitle(m.group(1)!),
+        level: 2 + levelShift,
+        credits: m.group(2)!,
+        unit: '学分',
+      );
     }
     m = _lvl3Re.firstMatch(line);
     if (m != null) {
-      return (title: _cleanTitle(m.group(2)!), level: 3 + levelShift, credits: (m.group(3) ?? '').trim());
+      return (
+        title: _cleanTitle(m.group(2)!),
+        level: 3 + levelShift,
+        credits: (m.group(3) ?? '').trim(),
+        unit: '学分',
+      );
     }
     m = _lvl4Re.firstMatch(line);
     if (m != null) {
-      return (title: _cleanTitle(m.group(2)!), level: 4 + levelShift, credits: m.group(3)!);
+      final unit = m.group(4)!;
+      final t = _cleanTitle(m.group(2)!);
+      // 「…N门」子规则行防护：真实规则行整行短、标题无句读（。/，），
+      // 以"N门"收尾的正文说明句（带句读或过长）不识别，宁缺勿猜。
+      // （；与书名号在真实规则标题中出现，如"博雅技艺"类，不拒。）
+      if (unit == '门' && (t.length > 60 || RegExp(r'[。，]').hasMatch(t))) {
+        return null;
+      }
+      return (title: t, level: 4 + levelShift, credits: m.group(3)!, unit: unit);
     }
     return null;
   }
 
   /// 落地待定说明：提到新板块名的归新板块（双栏排版下说明先于标题出现），
   /// 其余留在上一板块（preIdx 为推入新板块之前的板块下标）。
-  void flushPending(({String title, int level, String credits})? incoming, int preIdx) {
+  void flushPending(({String title, int level, String credits, String unit})? incoming, int preIdx) {
     if (pending.isEmpty) return;
     final newIdx = incoming == null ? -1 : sections.length - 1;
     for (final n in pending) {
@@ -189,7 +230,7 @@ PlanPdfSections parsePlanPdfText(String text) {
     pending = <String>[];
   }
 
-  void pushSection(({String title, int level, String credits}) s) {
+  void pushSection(({String title, int level, String credits, String unit}) s) {
     final preIdx = curIndex;
     // 相邻重复条目（如同一"微辅修：12.5学分"出现两次）合并到前一条
     if (preIdx >= 0) {
@@ -210,6 +251,7 @@ PlanPdfSections parsePlanPdfText(String text) {
         title: s.title,
         level: s.level,
         creditsRaw: s.credits,
+        creditsUnit: s.unit,
         parentPath: chain.join(' · ')));
     titles[s.level] = s.title;
     for (var l = s.level + 1; l <= 4; l++) {
@@ -301,6 +343,7 @@ PlanPdfSections parsePlanPdfText(String text) {
       title: s.title,
       level: s.level,
       creditsRaw: s.creditsRaw,
+      creditsUnit: s.creditsUnit,
       parentPath: s.parentPath,
       notes: _mergeWrapped(notesAcc[i] ?? const []),
       courses: coursesAcc[i] ?? const [],
