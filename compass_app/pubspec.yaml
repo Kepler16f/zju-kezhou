@@ -1,5 +1,5 @@
 name: compass_app
-description: "学业罗盘 — 本科培养方案结构化与选课风险审计（全平台 Flutter 成品）"
+description: "课舟 ClassArk — 本科培养方案结构化与选课风险审计（全平台 Flutter 成品）"
 publish_to: 'none'
 version: 0.12.1+13
 
