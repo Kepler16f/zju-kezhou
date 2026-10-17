@@ -71,7 +71,7 @@ void main() {
       onRegisterPlan: (_, __) {},
     )));
     await tester.pump();
-    expect(find.text('导师审阅模式'), findsOneWidget);
+    expect(find.text('选课指导模式'), findsOneWidget);
     expect(find.textContaining('不登录教务'), findsOneWidget);
     expect(find.textContaining('不含分数'), findsWidgets);
     expect(find.text('还没有导入分享包'), findsOneWidget);
@@ -123,7 +123,7 @@ void main() {
     expect(find.textContaining('有效的 JSON'), findsOneWidget);
   });
 
-  testWidgets('设置页：分享给导师卡渲染导出与导师入口', (tester) async {
+  testWidgets('设置页：分享给指导教师卡渲染导出与选课指导入口', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.runAsync(() async {
@@ -141,9 +141,12 @@ void main() {
       const Offset(0, -300),
     );
     await tester.pump();
-    expect(find.text('分享给导师'), findsOneWidget);
+    // 2026-10-18 需求 #3：「分享给导师」改名「分享给指导教师」，
+    // 「导师审阅模式」改名「选课指导模式」且为独立开关（SwitchListTile）。
+    expect(find.text('分享给指导教师'), findsOneWidget);
     expect(find.text('导出到剪贴板'), findsOneWidget);
-    expect(find.text('导师审阅模式'), findsWidgets);
+    expect(find.text('选课指导模式'), findsOneWidget);
+    expect(find.byType(Switch), findsWidgets);
     expect(find.textContaining('实名导出'), findsOneWidget);
   });
 }

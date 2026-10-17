@@ -3,7 +3,7 @@
 /// 实现来源说明：登录与取数链路的每个细节对齐 Helechron/Celechron（GPL-3.0）被实战验证的行为
 /// （execution 表单、RSA 裸 modPow、CAS service 双跳、JSESSIONID+route 成对、xkkh 学期切片、
 ///   空提交体、Connection:close、portal 证书容忍、校内域直连、票据短 TTL、会话过期自动重登、
-///   网络抖动重试），传输层代码为本项目独立编写。
+///   网络抖动重试、素拓 sztz 的 service 票据+ctx 验身份），传输层代码为本项目独立编写。
 ///
 /// 关键（上一版登录失败的根因修复）：
 ///  - 必须 badCertificateCallback 容忍校园 portal 自签名证书；
@@ -190,6 +190,14 @@ class ZjuClient {
   static const _zdbk = 'https://zdbk.zju.edu.cn';
   static const _service =
       '$_zjuam/cas/login?service=https%3A%2F%2Fzdbk.zju.edu.cn%2Fjwglxt%2Fxtgl%2Flogin_ssologin.html';
+  // 素质拓展平台（第二三四课堂真实数据源，对齐 Helechron Sztz 实测）
+  static const _sztz = 'https://sztz.zju.edu.cn';
+  static const _sztzService = '$_sztz/dekt/';
+  static const _sztzJsonAccept = 'application/json, text/plain, */*';
+  static const _sztzPageAccept =
+      'text/html,application/xhtml+xml,application/xml;q=0.9,'
+      'image/avif,image/webp,image/apng,*/*;q=0.8,'
+      'application/signed-exchange;v=b3;q=0.7';
   static const _ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
   static const _ticketTtl = Duration(minutes: 2);
@@ -352,6 +360,24 @@ class ZjuClient {
     _log('ZJUAM 登录成功', detail: '票据已签发，${DateTime.now().difference(t0).inMilliseconds}ms');
   }
 
+  // ── 统一身份认证重登单飞 ────────────────────────────────────────────
+  Future<void>? _ssoLoginTask;
+
+  /// 素拓/教务两条会话链并发失效时只重登一次（并发各自 CAS 表单登录易触发风控）。
+  Future<void> _reloginSso() {
+    final pending = _ssoLoginTask;
+    if (pending != null) return pending;
+    final task = () async {
+      final cred = await store.loadCredentials();
+      if (cred == null) throw AuthException('请先登录统一身份认证');
+      await login(cred.$1, cred.$2); // login 内部会签发新 iPlanetDirectoryPro
+    }();
+    _ssoLoginTask = task;
+    return task.whenComplete(() {
+      if (identical(_ssoLoginTask, task)) _ssoLoginTask = null;
+    });
+  }
+
   // ── 正方教务会话 ────────────────────────────────────────────────────
   bool get zdbkLoggedIn =>
       store.memory('JSESSIONID') != null && store.memory('route') != null;
@@ -392,9 +418,7 @@ class ZjuClient {
       await Future.delayed(Duration(seconds: backoff.clamp(1, 30)));
     }
     if (!_ticketFresh) {
-      final cred = await store.loadCredentials();
-      if (cred == null) throw AuthException('请先登录统一身份认证');
-      await login(cred.$1, cred.$2); // login 内部会签发新 iPlanetDirectoryPro
+      await _reloginSso(); // 单飞重登（素拓/教务并发失效时只登一次，防 CAS 风控）
     }
     // 双跳：CAS service → Location → 业务站签发 JSESSIONID+route（必须成对）
     final first = await _send('GET', _service,
@@ -1424,17 +1448,202 @@ class ZjuClient {
     }
   }
 
-  /// 实践分/课堂分（第二三四课堂，N108001 + su=）。
-  Future<Map<String, double>> fetchPracticeScores() async {
-    await ensureZdbkSession();
+  // ── 业务接口：素质拓展平台（sztz.zju.edu.cn/dekt，第二三四课堂）──────
+  // 主链路对齐 Helechron Sztz（lib/http/zjuServices/sztz.dart，实测可用）：
+  // CAS service=https://sztz.zju.edu.cn/dekt/ → 完整访问回调取 SESSION →
+  // POST /dekt/ctx 校验非匿名身份 → GET getSqjl 明细 + getMyInfo 官方汇总。
+  // 教务网 N108001（dessktcx HTML，Helechron zdbk.dart getPracticeScores 同款
+  // 遗留来源）对部分学生返回空壳页，只配作兜底。
+
+  bool get _sztzReady => store.memory('sztz_SESSION') != null;
+  Future<void>? _sztzSessionTask; // 单飞：并发取数共享一次素拓会话重建
+
+  /// 确保素拓会话可用；force 时强制重建（认证类失败后的重试路径）。
+  Future<void> _ensureSztzSession({bool force = false}) async {
+    if (_sztzReady && !force) return;
+    final pending = _sztzSessionTask;
+    if (pending != null) {
+      await pending; // 已有重建在进行：等待并复用结果
+      return;
+    }
+    final task = _rebuildSztzSession();
+    _sztzSessionTask = task;
     try {
+      await task;
+    } finally {
+      if (identical(_sztzSessionTask, task)) _sztzSessionTask = null;
+    }
+  }
+
+  /// 素拓登录三步（顺序不可交换，对齐 Helechron Sztz._doLogin）：
+  /// ① CAS service 票据（一次性）；② 完整访问回调——仅拿 Location 不消费回调
+  /// 不会建立正式业务 SESSION；③ POST ctx 确认 Base64 上下文为非匿名身份。
+  Future<void> _rebuildSztzSession() async {
+    store.removeMemory('sztz_SESSION');
+    var needRelogin = ssoTicket == null;
+    // ① CAS service 票据；SSO 票据被拒（无回跳）时重登一次再试（至多一轮，防轰炸）
+    for (var attempt = 0; attempt < 2; attempt++) {
+      if (needRelogin) {
+        await _reloginSso();
+        needRelogin = false;
+      }
+      final hop = Uri.parse('$_zjuam/cas/login')
+          .replace(queryParameters: {'service': _sztzService});
+      final first =
+          await _send('GET', hop.toString(), cookies: {'iPlanetDirectoryPro': ssoTicket!});
+      if (first.redirected && (first.location?.isNotEmpty ?? false)) {
+        var location = first.location!;
+        if (location.startsWith('http://')) {
+          location = 'https://${location.substring(7)}';
+        }
+        await _finishSztzLogin(hop.resolve(location), ssoTicket!);
+        return;
+      }
+      _log('素拓会话', level: 'warn',
+          detail: 'CAS 未回跳（HTTP ${first.status}），SSO 票据可能失效');
+      needRelogin = true;
+    }
+    throw AuthException('素质拓展登录：CAS 未签发 service 票据，请重新登录统一身份认证');
+  }
+
+  /// ②③ 回调消费 + ctx 身份校验（对齐 Helechron _visitCasCallback/_verifyContext）。
+  Future<void> _finishSztzLogin(Uri callback, String sso) async {
+    final second = await _send('GET', callback.toString(),
+        headers: {'Accept': _sztzPageAccept},
+        cookies: {'iPlanetDirectoryPro': sso});
+    final session = second.cookies['SESSION'];
+    if (second.status != 200 || session == null || session.isEmpty) {
+      _log('素拓会话', level: 'error',
+          detail: '回调未取得正式 SESSION（HTTP ${second.status}）');
+      throw AuthException('素质拓展登录：CAS 回调未取得正式 SESSION（HTTP ${second.status}）');
+    }
+    final ctx = await _send('POST', '$_sztz/dekt/ctx', headers: {
+      'Accept': _sztzJsonAccept,
+      'Origin': _sztz,
+      'Referer': _sztzService,
+    }, cookies: {'SESSION': session, 'iPlanetDirectoryPro': sso}, body: '');
+    if (!parseSztzCtxOk(ctx.body)) {
+      _log('素拓会话', level: 'error',
+          detail: 'ctx 返回匿名或无效身份（HTTP ${ctx.status}）');
+      throw AuthException('素质拓展登录：ctx 返回匿名或无效身份（HTTP ${ctx.status}）');
+    }
+    store.setMemory('sztz_SESSION', session);
+    _log('素拓会话', detail: 'SESSION 已建立且 ctx 身份已确认');
+  }
+
+  /// 素拓数据 GET（请求头对齐 Helechron）：非 200 / 被重定向 / 回登录页 →
+  /// AuthException（触发会话重建重试一次）。
+  Future<String> _sztzGet(String url, String session, String accept) async {
+    final cookies = <String, String>{'SESSION': session};
+    final sso = ssoTicket;
+    if (sso != null) cookies['iPlanetDirectoryPro'] = sso;
+    final resp = await _send('GET', url, headers: {
+      'Accept': accept,
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+    }, cookies: cookies);
+    final authFail = resp.redirected || resp.status == 401 || resp.status == 403 ||
+        looksAuthFailure(resp.body, location: resp.location);
+    if (authFail) {
+      throw AuthException('素质拓展会话失效（HTTP ${resp.status}）');
+    }
+    return resp.body;
+  }
+
+  /// 素拓实时取数：getMyInfo 官方汇总优先，getSqjl"审核通过"明细合计兜底
+  /// （对齐 Helechron PracticeScoreSnapshot.resolve 的网络侧顺序）。两接口并行
+  /// （throttle 限并发）；认证类失败重建会话重试一次，至多一轮。
+  Future<Map<String, double>> _fetchPracticeScoresSztz() async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        await _ensureSztzSession(force: attempt > 0);
+        final session = store.memory('sztz_SESSION')!;
+        final bodies = await Future.wait([
+          _sztzGet('$_sztz/dekt/student/home/getSqjl', session, _sztzPageAccept),
+          _sztzGet('$_sztz/dekt/student/home/getMyInfo', session, _sztzJsonAccept),
+        ]);
+        final sqjl = parseSztzSqjlTotals(bodies[0]);
+        final myInfo =
+            parseSztzMyInfoTotals(bodies[1], expectStudentId: _studentId);
+        if (myInfo == null && sqjl == null) {
+          throw AuthException('素拓两接口均未返回业务 JSON（登录态失效或平台改版）');
+        }
+        _log('素拓取数', detail: myInfo != null
+            ? (sqjl != null ? 'getMyInfo 官方汇总（getSqjl 亦有效）'
+                : 'getMyInfo 官方汇总（getSqjl 无效）')
+            : 'getSqjl 审核通过合计（getMyInfo 无效）');
+        return myInfo ?? sqjl!;
+      } on AuthException catch (e) {
+        lastError = e;
+        _log('素拓取数', level: 'warn', detail: '第 ${attempt + 1} 次尝试失败：$e');
+      }
+    }
+    throw lastError!;
+  }
+
+  /// 实践分/课堂分（第二三四课堂）。
+  /// 四级降级（保留仓库兜底风格）：①素拓实时 → ②素拓缓存 → ③教务网 N108001
+  /// 遗留页 → ④空 Map（宁缺勿假，用户反馈 #12：绝不把没数据渲染成 0 分）。
+  /// 限频（RateLimitedException）不触发任何重试/兜底请求，直接降级缓存。
+  Future<Map<String, double>> fetchPracticeScores() async {
+    try {
+      final scores = await _fetchPracticeScoresSztz();
+      await store.saveCache('practice_scores', json.encode({
+        'v': 1,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'scores': scores,
+      }));
+      _log('课堂分', detail: '素拓平台：${_scoresLabel(scores)}');
+      return scores;
+    } on RateLimitedException {
+      final cached = await _loadCachedPracticeScores();
+      _log('课堂分', level: 'warn',
+          detail: '限频退避，${cached == null ? '无缓存' : '降级缓存'}');
+      return cached ?? const {};
+    } catch (e) {
+      _log('课堂分', level: 'warn', detail: '素拓平台：$e');
+    }
+    final cached = await _loadCachedPracticeScores();
+    if (cached != null) {
+      _log('课堂分', detail: '素拓实时失败，降级缓存：${_scoresLabel(cached)}');
+      return cached;
+    }
+    return _fetchPracticeScoresLegacy();
+  }
+
+  static String _scoresLabel(Map<String, double> s) =>
+      s.entries.map((e) => '${e.key}=${e.value}').join(' ');
+
+  /// ② 素拓缓存（v1 版本化；结构不符一律视为无缓存，绝不臆造）。
+  Future<Map<String, double>?> _loadCachedPracticeScores() async {
+    final raw = await store.readCache('practice_scores');
+    if (raw == null) return null;
+    try {
+      final obj = json.decode(raw);
+      if (obj is! Map || (obj['v'] as num?)?.toInt() != 1) return null;
+      final scores = obj['scores'];
+      if (scores is! Map) return null;
+      const keys = ['第二课堂', '第三课堂', '第四课堂'];
+      if (!keys.every(scores.containsKey)) return null;
+      return {for (final k in keys) k: ((scores[k] as num?) ?? 0).toDouble()};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// ③ 遗留兜底：教务网 N108001 课堂分页（正方 dessert 模块，Helechron
+  /// zdbk.dart getPracticeScores 同端点）。任何异常吞掉返回空 Map（宁缺勿假）。
+  Future<Map<String, double>> _fetchPracticeScoresLegacy() async {
+    try {
+      await ensureZdbkSession();
       final html = await _getHtml(
           'dessktgl/dessktcx_cxDessktcxIndex.html?gnmkdm=N108001&layout=default$_suParam');
       final scores = parsePracticeScores(html);
-      _log('课堂分', detail: scores.entries.map((e) => '${e.key}=${e.value}').join(' '));
+      _log('课堂分', detail: '遗留 N108001：${_scoresLabel(scores)}');
       return scores;
     } catch (e) {
-      _log('课堂分', level: 'warn', detail: '$e');
+      _log('课堂分', level: 'warn', detail: '遗留 N108001：$e');
       return {};
     }
   }

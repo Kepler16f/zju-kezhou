@@ -47,6 +47,10 @@ class CourseSelectPage extends StatefulWidget {
   /// 全局助手由 main.dart 的悬浮按钮呼出，拿不到本页局部状态，故用回调上抛。
   final ValueChanged<Map<String, dynamic>?>? onAiContext;
 
+  /// 需求 #12：学生把本页 AI 选课咨询问答一键导出给指导教师审阅
+  /// （main.dart 实现：并入脱敏分享包并复制到剪贴板 + 落沙箱 share/）。
+  final void Function(List<Map<String, String>> advice)? onExportAdvice;
+
   const CourseSelectPage({
     super.key,
     required this.client,
@@ -63,6 +67,7 @@ class CourseSelectPage extends StatefulWidget {
     required this.resetToken,
     required this.onGoSettings,
     this.onAiContext,
+    this.onExportAdvice,
   });
 
   static const String tabLabel = '选课';
@@ -75,20 +80,26 @@ class CourseSelectPage extends StatefulWidget {
 
 class _CourseSelectPageState extends State<CourseSelectPage> {
   XkIndexParseResult? _index;
-  final Map<String, XkListParseResult> _lists = {}; // xkkzId -> 列表结果
-  String? _selectedRoundId;
+
+  /// 入口复合键：xkkzId + lx。浙大页同一 dl 可挂多个 lx 子入口（认定型，#10），
+  /// 通用页也存在同 xkkz_id 跨类别复用——只按 xkkzId 键控会让这些入口的列表
+  /// 互相覆盖/互斥加载，必须用全身份做键。
+  String _rk(XkRound r) => '${r.xkkzId}\u0000${r.kklxdm}';
+
+  final Map<String, XkListParseResult> _lists = {}; // 入口复合键 -> 列表结果
+  String? _selectedRoundId; // 存入口复合键（_rk），不再裸 xkkzId
   TimetableParseResult? _timetable;
   bool _demoLoaded = false; // 演示数据已加载：真实刷新成功时必须清掉演示残留，防混显
 
   bool _loadingIndex = false;
-  final Set<String> _loadingRounds = {}; // 按入口维护（快速切 chip 不再互相丢弃请求）
+  final Set<String> _loadingRounds = {}; // 按入口复合键维护（快速切 chip 不再互相丢弃请求）
   bool _loadingTimetable = false;
   String? _timetableError; // 课表失败原因：失败不写 _timetable（保留可重试），错误单独记账
   bool _aggregating = false;
   bool _cancelAggregate = false;
   int _aggregateDone = 0;
   String? _error;
-  final Map<String, String> _roundErrors = {}; // xkkzId -> 失败原因（不写 _lists，可重试）
+  final Map<String, String> _roundErrors = {}; // 入口复合键 -> 失败原因（不写 _lists，可重试）
   int _listGeneration = 0; // 入口刷新/登出换代：旧世代在飞结果一律作废（防陈旧写回）
   int _listsVersion = 0; // _lists 每次变更自增（合并结果按版本缓存，避免每帧重算）
   bool _softBlocked = false; // 本轮遇到软封禁（风控/HTML 登录页）：停止继续轰炸，提示稍后重试
@@ -169,7 +180,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     _loadIndex();
   }
 
-  /// 加载离线演示数据（合成样例，video/演示固化与自检.md 场景 6 的固化输入）。
+  /// 加载离线演示数据（合成样例，即录屏场景 6 的固化输入）。
   /// 演示模式下不触碰网络；「刷新入口」等按钮在未登录时被守卫拦截。
   Future<void> _loadDemoData() async {
     try {
@@ -183,8 +194,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         final id = '${r['xkkz_id']}';
         if (id.isEmpty) continue;
         final label = '${r['label'] ?? id}';
-        rounds.add(XkRound(xkkzId: id, label: label));
-        lists[id] = parseXkCourseList(
+        final round = XkRound(xkkzId: id, label: label);
+        rounds.add(round);
+        // 与真实链路同键（_rk）：演示列表也按入口复合键存取，选中态才能对上
+        lists[_rk(round)] = parseXkCourseList(
             json.encode({'tmpList': r['rows'] ?? const []}),
             xkkzId: id,
             label: label);
@@ -204,7 +217,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           ..addAll(lists);
         _listsVersion++;
         _roundErrors.clear();
-        _selectedRoundId = rounds.isNotEmpty ? rounds.first.xkkzId : null;
+        _selectedRoundId = rounds.isNotEmpty ? _rk(rounds.first) : null;
         _error = null;
         _demoLoaded = true;
         if (tt is Map) {
@@ -264,7 +277,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           _listsVersion++;
         }
         // 换批次/换学期后，修剪已不在新入口列表中的旧列表缓存（失败记账一并清理）
-        final validIds = r.rounds.map((x) => x.xkkzId).toSet();
+        final validIds = r.rounds.map(_rk).toSet();
         final removed = _lists.keys.where((k) => !validIds.contains(k)).toList();
         for (final k in removed) {
           _lists.remove(k);
@@ -273,12 +286,12 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         _roundErrors.removeWhere((k, _) => !validIds.contains(k));
         if (r.rounds.isNotEmpty) {
           final first = r.rounds.first;
-          _selectedRoundId ??= first.xkkzId;
+          _selectedRoundId ??= _rk(first);
         }
       });
       // 默认拉一次首入口的列表（单次请求）；课表时隙后台拉取（冲突检测用）
       final first = _index?.rounds.isNotEmpty == true ? _index!.rounds.first : null;
-      final firstCached = first == null ? null : _lists[first.xkkzId];
+      final firstCached = first == null ? null : _lists[_rk(first)];
       if (first != null &&
           (firstCached == null ||
               refresh ||
@@ -333,8 +346,9 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
 
   Future<void> _loadRound(XkRound round, {bool refresh = false}) async {
     if (!widget.loggedIn) return;
-    if (_loadingRounds.contains(round.xkkzId)) return;
-    setState(() => _loadingRounds.add(round.xkkzId));
+    final rk = _rk(round);
+    if (_loadingRounds.contains(rk)) return;
+    setState(() => _loadingRounds.add(rk));
     final gen = _listGeneration;
     try {
       final r = await widget.client.fetchXkCourses(
@@ -350,11 +364,11 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       setState(() {
         _softBlocked = r.blocked && r.state == 'unavailable';
         if (r.state == 'data' || r.state == 'empty') {
-          _lists[round.xkkzId] = r;
-          _roundErrors.remove(round.xkkzId);
+          _lists[rk] = r;
+          _roundErrors.remove(rk);
         } else {
           // unavailable 不写入 _lists：否则会被当作"已拉取"而永久跳过重试（评审L1）
-          _roundErrors[round.xkkzId] = r.issues.isNotEmpty
+          _roundErrors[rk] = r.issues.isNotEmpty
               ? r.issues.first
               : '状态未知（未开放/会话受限/接口未返回数据）';
         }
@@ -364,11 +378,11 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _roundErrors[round.xkkzId] = '课程列表获取失败：$e';
+          _roundErrors[rk] = '课程列表获取失败：$e';
         });
       }
     } finally {
-      if (mounted) setState(() => _loadingRounds.remove(round.xkkzId));
+      if (mounted) setState(() => _loadingRounds.remove(rk));
     }
   }
 
@@ -397,7 +411,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       if (_cancelAggregate || !mounted) break;
       if (gen != _listGeneration) break; // 刷新换代：中止本轮（避免旧轮配新参数写回）
       if (_softBlocked) break; // 已触发软封禁：继续逐入口拉取只会延长封锁（网页正常、App 看不到），停手等冷却
-      final existing = _lists[r.xkkzId];
+      final existing = _lists[_rk(r)];
       if (existing == null ||
           existing.state == 'empty' ||
           existing.fromCache) {
@@ -413,10 +427,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         if (gen == _listGeneration) {
           setState(() {
             if (res.state == 'data' || res.state == 'empty') {
-              _lists[r.xkkzId] = res;
-              _roundErrors.remove(r.xkkzId);
+              _lists[_rk(r)] = res;
+              _roundErrors.remove(_rk(r));
             } else {
-              _roundErrors[r.xkkzId] = res.issues.isNotEmpty
+              _roundErrors[_rk(r)] = res.issues.isNotEmpty
                   ? res.issues.first
                   : '状态未知（未开放/会话受限/接口未返回数据）';
             }
@@ -628,11 +642,11 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           _index?.issues.isNotEmpty == true ? _index!.issues.first : '可能尚未开放选课，或页面结构变化。');
     }
     final selected = rounds.firstWhere(
-        (r) => r.xkkzId == _selectedRoundId,
+        (r) => _rk(r) == _selectedRoundId,
         orElse: () => rounds.first);
-    final list = _lists[selected.xkkzId];
-    final roundError = _roundErrors[selected.xkkzId];
-    final loadingThis = _loadingRounds.contains(selected.xkkzId);
+    final list = _lists[_rk(selected)];
+    final roundError = _roundErrors[_rk(selected)];
+    final loadingThis = _loadingRounds.contains(_rk(selected));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -659,19 +673,19 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             for (final r in rounds)
               ChoiceChip(
                 label: Text(r.label.isEmpty ? '入口' : r.label),
-                selected: r.xkkzId == selected.xkkzId,
+                selected: _rk(r) == _rk(selected),
                 // 汇总期间冻结轮切换：避免与批量拉取并发打同一入口（评审L1）
                 onSelected: _aggregating
                     ? null
                     : (_) {
-                        final existing = _lists[r.xkkzId];
-                        setState(() => _selectedRoundId = r.xkkzId);
+                        final existing = _lists[_rk(r)];
+                        setState(() => _selectedRoundId = _rk(r));
                         if (existing == null ||
                             existing.state == 'empty' ||
                             existing.fromCache) {
                           _loadRound(r,
                               refresh: existing != null ||
-                                  _roundErrors.containsKey(r.xkkzId));
+                                  _roundErrors.containsKey(_rk(r)));
                         }
                       },
               ),
@@ -851,6 +865,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                   conflict: ttSlots.isNotEmpty &&
                       Timeline.slotsConflict(m.slots, ttSlots) != null,
                   selected: _isCourseSelected(m.base, selectedKeys),
+                  // 诉求 #11：跨入口合并后的全部类别（去重保序）逐枚出 Chip
+                  categories: m.categories,
                   extraTags: m.tags,
                   extraDetails: _mergedDetails(m),
                 ),
@@ -1237,6 +1253,30 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                   ],
                 ),
               ],
+              // 需求 #12：整段 AI 选课咨询一键导出为脱敏分享包供指导教师审阅
+              // （随当前审计数据打包；无审计时 main 侧返回引导文案）。
+              if (_aiHistory.isNotEmpty && widget.onExportAdvice != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text('共 ${_aiHistory.length} 轮问答可随分享包导出',
+                            style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: _aiBusy
+                            ? null
+                            : () => widget.onExportAdvice!(
+                                [
+                                  for (final (q, a) in _aiHistory) {'q': q, 'a': a},
+                                ]),
+                        icon: const Icon(Icons.group_outlined, size: 16),
+                        label: const Text('导出给指导教师'),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ],
         ),
@@ -1378,6 +1418,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                     conflict: ttSlots.isNotEmpty &&
                         Timeline.slotsConflict(c.slots, ttSlots) != null,
                     selected: _isCourseSelected(c, selectedKeys),
+                    categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
                   ),
                 ),
             ],
@@ -1417,6 +1458,7 @@ class CourseBubble extends StatelessWidget {
   final XkCourse course;
   final bool conflict;
   final bool selected;
+  final List<String> categories; // 类别标签（诉求 #11：可多枚，全部显示）
   final List<String> extraTags;
   final String? extraDetails;
 
@@ -1425,6 +1467,7 @@ class CourseBubble extends StatelessWidget {
     required this.course,
     this.conflict = false,
     this.selected = false,
+    this.categories = const [],
     this.extraTags = const [],
     this.extraDetails,
   });
@@ -1437,15 +1480,22 @@ class CourseBubble extends StatelessWidget {
     final left =
         c.cap != null && c.selected != null ? c.cap! - c.selected! : null;
     final allTags = <String>{...c.tags, ...extraTags};
+    // Chip 去重（诉求 #11）：类别名在 tags 兼容口径里也会出现，同一文本只出一枚；
+    // 类别 Chip 用独立色并放在最前，剩余标签按原有顺序跟上。
+    final seen = {...categories};
     final tags = <Widget>[
-      if (c.jxbmc.isNotEmpty) _miniTag(c.jxbmc, Colors.blueGrey),
-      if (conflict) _miniTag('冲突', Colors.red),
-      if (selected) _miniTag('本学期已选', Colors.blue),
-      if (isFull)
+      for (final t in categories) _miniTag(t, Colors.indigo),
+      if (c.jxbmc.isNotEmpty && seen.add(c.jxbmc))
+        _miniTag(c.jxbmc, Colors.blueGrey),
+      if (conflict && seen.add('冲突')) _miniTag('冲突', Colors.red),
+      if (selected && seen.add('本学期已选'))
+        _miniTag('本学期已选', Colors.blue),
+      if (isFull && seen.add('已满'))
         _miniTag('已满', Colors.orange)
-      else if (left != null)
+      else if (left != null && seen.add('余 $left'))
         _miniTag('余 $left', Colors.teal),
-      for (final t in allTags) _miniTag(t, Colors.teal),
+      for (final t in allTags)
+        if (seen.add(t)) _miniTag(t, Colors.teal),
     ];
     final details = <String>[
       if (c.kch.isNotEmpty) '课程号 ${c.kch}',
@@ -1503,7 +1553,15 @@ class CourseBubble extends StatelessWidget {
           color: color.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Text(text, style: TextStyle(fontSize: 9.5, color: color)),
+        // maxLines:1（诉求 #11）：类别名可能很长（如「美育类通识必修课程」），
+        // 每枚 Chip 截断保单行，长标签不撑破 Wrap 行高（全称仍可在 Tooltip 查看）
+        child: Tooltip(
+          message: text,
+          child: Text(text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 9.5, color: color)),
+        ),
       );
 }
 

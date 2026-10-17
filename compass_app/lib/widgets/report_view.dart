@@ -27,6 +27,7 @@ class ReportSection extends StatelessWidget {
     'green': Color(0xFF16A34A),
     'yellow': Color(0xFFF59E0B),
     'red': Color(0xFFDC2626),
+    'blue': Color(0xFF2563EB), // 口径色（诉求 #4）：蓝=已选上（已选未获学分）
   };
 
   @override
@@ -39,6 +40,10 @@ class ReportSection extends StatelessWidget {
     final extra = (report['extra_courses'] as List? ?? const [])
         .cast<Map<String, dynamic>>();
     final trace = (report['trace'] as Map?) ?? const {};
+    // 口径说明（诉求 #4）：引擎逐字输出的 caliber_notes（kCaliberEarnedNote /
+    // kCaliberSelectedNote 等），UI 只搬运不复制；紧邻 disclaimer 展示。
+    final caliberNotes =
+        (report['caliber_notes'] as List? ?? const []).whereType<String>();
     // stretch：宿主 ListView 原本给子项的是通栏宽度，这里保持同样的通栏排版。
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -67,9 +72,43 @@ class ReportSection extends StatelessWidget {
               style: const TextStyle(
                   fontWeight: FontWeight.bold, fontSize: 15)),
           children: [
+            // 颜色口径（诉求 #4）：绿=已获学分，蓝=已选上（已选未获学分）。
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Text('绿=已获学分；蓝=已选上（已选未获学分，与已取得分开呈现）',
+                  style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+            ),
             for (final m in summary) _moduleTile(context, m),
           ],
         ),
+        if (caliberNotes.isNotEmpty)
+          ExpansionTile(
+            key: const PageStorageKey<String>('report-caliber'),
+            initiallyExpanded: false,
+            tilePadding: EdgeInsets.zero,
+            title: Text('口径说明（${caliberNotes.length} 条）',
+                style:
+                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final n in caliberNotes)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Text('· $n',
+                            style: const TextStyle(
+                                fontSize: 11.5,
+                                height: 1.45,
+                                color: Colors.blueGrey)),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         if (extra.isNotEmpty)
           ExpansionTile(
             key: const PageStorageKey<String>('report-extra'),
@@ -132,6 +171,10 @@ class ReportSection extends StatelessWidget {
     final stats = (m['course_stats'] as Map?) ?? const {};
     final path = '${m['module_path'] ?? ''}';
     final title = '${m['title'] ?? _lastSegment(path)}';
+    // 口径（诉求 #4）：已取得学分绿色（绿=已获学分）；模块存在 selected_no_credit>0
+    // 时追加蓝色注释「另 N 门已选未获学分」（蓝=已选上），与 earned 分开呈现。
+    final selNoCredit = (m['selected_no_credit'] as num?)?.toInt() ?? 0;
+    final earnedVal = (m['earned'] as num?) ?? 0;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       child: ExpansionTile(
@@ -159,9 +202,12 @@ class ReportSection extends StatelessWidget {
                 runSpacing: 2,
                 children: [
                   _stat('应修', '${m['required']}', onSurface),
-                  _stat('已取得', '${m['earned']}', onSurface),
+                  _stat('已取得', '$earnedVal',
+                      earnedVal > 0 ? _colors['green']! : onSurface),
                   _stat('缺口', '${m['gap']}',
                       (m['gap'] as num) > 0 ? _colors['red']! : onSurface),
+                  if (selNoCredit > 0)
+                    _stat('已选未获学分', '另 $selNoCredit 门', _colors['blue']!),
                   _stat('方案课程', '${stats['total'] ?? 0} 门', onSurface),
                   _stat('已取得课程', '${stats['passed'] ?? 0} 门', onSurface),
                   _stat('待修课程', '${stats['pending'] ?? 0} 门', onSurface),

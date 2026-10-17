@@ -2,6 +2,7 @@
 // 时间串 14 类边界来自设计评审B清单；首页 onclick 4/5 参形态来自评审A1。
 import 'package:test/test.dart';
 
+import 'package:compass_app/data/xk_models.dart';
 import 'package:compass_app/data/xk_parse.dart';
 import 'package:compass_app/engine/timeline.dart';
 
@@ -536,6 +537,82 @@ void main() {
       ]);
       expect(r.rows.every((e) => e.parity == 1), isTrue);
       expect(r.slots.length, 7); // 2-16 单周共 7 周（3,5,7,9,11,13,15）
+    });
+
+    group('认定型课程与多类别标签（#10/#11）', () {
+      // 认定型子入口 lx 的真实码值待探针确认（docs §9）：解析层不预设码值，
+      // 测试里的 'rd' 只代表「与 bl 不同的任意 lx」——同 dl 跨 lx 子入口不得被去重吞掉。
+      test('同 dl 多个 lx 子入口不去重（认定型子入口整类可见）', () {
+        const html = '<a class="category" data-dl="50" data-lx="bl" '
+                'onclick="categroyClick(this,\'50\',\'bl\')">美育类选修课程</a>'
+            '<a class="category" data-dl="50" data-lx="rd" '
+            'onclick="categroyClick(this,\'50\',\'rd\')">美育类通识必修课程</a>';
+        final r = parseXkIndexHtml(html);
+        expect(r.zjuGhb, isTrue);
+        expect(r.rounds.length, 2);
+        expect(r.rounds[0].xkkzId, '50');
+        expect(r.rounds[0].kklxdm, 'bl');
+        expect(r.rounds[0].label, '美育类选修课程');
+        expect(r.rounds[1].xkkzId, '50');
+        expect(r.rounds[1].kklxdm, 'rd');
+        expect(r.rounds[1].label, '美育类通识必修课程');
+      });
+
+      test('仅 data-dl/data-lx 无 categroyClick 的锚点也能解析为入口', () {
+        const html =
+            '<a class="category" data-dl="51" data-lx="rd">劳育类通识必修课程</a>';
+        final r = parseXkIndexHtml(html);
+        expect(r.zjuGhb, isTrue);
+        expect(r.rounds.single.xkkzId, '51');
+        expect(r.rounds.single.kklxdm, 'rd');
+        expect(r.rounds.single.label, '劳育类通识必修课程');
+      });
+
+      test('认定型课程行（无教学班/无时间/无容量）仍解析保留，类别入口进 categories', () {
+        final row = {'kch': 'ART1100G', 'kcmc': '艺术与审美', 'xxq': '秋冬'};
+        final r = parseXkCourseList('[${_json(row)}]',
+            xkkzId: '50', label: '美育类通识必修课程');
+        expect(r.state, 'data');
+        final c = r.courses.single;
+        expect(c.identityTier, 3); // 无教学班标识：档3聚合，仍展示
+        expect(c.categories, ['美育类通识必修课程']);
+        expect(c.tags, contains('美育类通识必修课程')); // tags 兼容口径保留入口名
+        expect(c.cap, isNull); // 认定型页无容量列 → 未知，不当 0
+        expect(c.raw['kch'], 'ART1100G');
+      });
+
+      test('多类别合并（诉求 #11）：categories 跨入口去重保序，tags 并集不变', () {
+        final a = parseXkCourseList('[{"kcmc":"中国书法","kch":"ART1101"}]',
+                xkkzId: '50', label: '美育类通识必修课程')
+            .courses
+            .single;
+        final b = parseXkCourseList('[{"kcmc":"中国书法","kch":"ART1101"}]',
+                xkkzId: 'zhct', label: '中华传统（演示）')
+            .courses
+            .single;
+        final merged = mergeXkCourses([a, b]).courses.single;
+        expect(merged.categories, ['美育类通识必修课程', '中华传统（演示）']); // 保序
+        expect(merged.tags.toSet(), {'美育类通识必修课程', '中华传统（演示）'}); // 兼容并集
+      });
+
+      test('同类别重复观测：categories 不重复', () {
+        final a = parseXkCourseList('[{"kcmc":"中国书法"}]',
+                xkkzId: '50', label: '美育类通识必修课程')
+            .courses
+            .single;
+        final b = parseXkCourseList('[{"kcmc":"中国书法"}]',
+                xkkzId: '50', label: '美育类通识必修课程')
+            .courses
+            .single;
+        final merged = mergeXkCourses([a, b]).courses.single;
+        expect(merged.categories, ['美育类通识必修课程']);
+      });
+
+      test('无入口 label 的行：categories 为空，不硬造', () {
+        final r =
+            parseXkCourseList('[{"kcmc":"中国书法"}]', xkkzId: '50');
+        expect(r.courses.single.categories, isEmpty);
+      });
     });
   });
 }

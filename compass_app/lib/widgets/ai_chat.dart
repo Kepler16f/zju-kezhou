@@ -7,6 +7,8 @@
 ///  - 未配置（provider==none 或 !enabled）时只显示引导空态与「去设置」按钮，
 ///    发送入口禁用，绝不发起任何请求（AiClient 侧还有 config.enabled 兜底，
 ///    未配置直接返回 AiFailure(notConfigured)，不触网）；
+///    开关的「开启」动作由接线层的入口弹窗完成（main.dart 写存档后以启用态
+///    config 唤起本组件即可正常对话）；本组件只按传入 config 渲染，不写配置。
 ///  - 零新依赖：只用 flutter/material、dart:math 与仓库内既有 data 层。
 ///
 /// 脱敏契约（合规红线，违反即事故）：
@@ -123,7 +125,7 @@ class AiChatController {
   /// 最近一次失败的中文可读文案（AiClient 已保证不含密钥；null 表示无错误）。
   String? lastError;
 
-  /// 本次会话是否已确认发送范围（公益免费端点默认开启后，首次发送仍需确认一次）。
+  /// 本次会话是否已确认发送范围（公益免费端点经入口弹窗开启后，首次发送仍需确认一次）。
   bool consented = false;
 
   /// 自动识屏：提问里出现「屏幕/当前页面/截图」等词时，自动读取屏幕文字。
@@ -503,8 +505,11 @@ class _AiChatSheetState extends State<AiChatSheet> {
             Icon(Icons.smart_toy_outlined,
                 size: 20, color: theme.colorScheme.primary),
             const SizedBox(width: 8),
+            // 标题标签单行省略（移动端窄屏适配：不放任换行挤压按钮）。
             const Expanded(
               child: Text('AI 助手',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
             ),
             IconButton(

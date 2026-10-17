@@ -15,6 +15,11 @@
           "module_path": { "type": "string" },
           "required": { "type": "number" },
           "earned": { "type": "number" },
+          "selected_no_credit": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "已选未获学分课程数：本模块内已修未通过（含在修未出分、弃修/待录/缓考/无效）或已列入计划选课、尚未取得学分的课程门数（按方案课程去重）；与 earned 分开呈现"
+          },
           "gap": { "type": "number" },
           "remaining_future": { "type": "number", "description": "毕业前该模块仍可选到的方案内学分" },
           "color": { "enum": ["green", "yellow", "red"] },
@@ -59,13 +64,23 @@
         "gap": { "type": "number" }
       }
     },
+    "caliber_notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "口径说明（earned / selected_no_credit / 选课组折算 / 外语等级封顶），供 UI 用不同颜色注释；紧邻 disclaimer"
+    },
     "disclaimer": { "type": "string" },
     "trace": {
       "type": "object",
       "required": ["plan", "engine"],
       "properties": {
         "plan": { "type": "string" },
-        "engine": { "type": "string" }
+        "engine": { "type": "string" },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "口径留痕：外语等级未选择/已生效/未识别外语模块等（宁缺勿猜，不假设等级）"
+        }
       }
     }
   }

@@ -245,17 +245,6 @@ class CredentialStore {
     } catch (_) {/* 沙箱不可用（测试环境等）：静默 */}
   }
 
-  /// 是否存过 AI 配置（ai.cfg 存在与否）。主界面据此区分
-  /// 「出厂从未配置（默认给公益免费端点，开箱即用）」与
-  /// 「用户显式配置过（含选过关闭）→ 完全尊重用户选择」。
-  Future<bool> hasStoredAiConfig() async {
-    try {
-      return await File(p.join((await _dirGet()).path, 'ai.cfg')).exists();
-    } catch (_) {
-      return false; // 沙箱不可用：按未存过处理（等价出厂态）
-    }
-  }
-
   /// 读取 AI 配置：缺文件/坏内容/未知提供方一律回落未配置（none），绝不抛异常
   /// ——启动早期读配置抛错会把整个 App 拖崩。
   Future<AiConfig> loadAiConfig() async {
@@ -303,6 +292,105 @@ class CredentialStore {
       final f = File(p.join((await _dirGet()).path, 'ui.cfg'));
       if (await f.exists()) await f.delete();
     } catch (_) {}
+  }
+
+  /// 底栏布局偏好（nav.cfg）：页签顺序 + 启动默认首页（诉求 #9）。
+  /// 与 ui.cfg 同理不用 cache_ 前缀（清缓存不重置界面习惯）；两个键同文件，
+  /// 写入走"读-改-写"合并，避免 saveTabOrder / saveDefaultTab 互相覆盖；
+  /// 一键清除全量数据时可调用 [deleteNavPrefs]。
+  static const _defaultTabOrder = '0,1,2,3';
+
+  /// 页签顺序落盘：逗号分隔的规范索引（0=学业 1=方案 2=选课 3=设置），如 '2,0,1,3'。
+  Future<void> saveTabOrder(String order) => _saveNavPref('tabOrder', order);
+
+  /// 读取页签顺序：缺文件/坏内容/非法形状（不是四个 0..3 索引的全排列）一律
+  /// 回落默认 '0,1,2,3'，绝不抛异常。
+  Future<String> loadTabOrder() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'nav.cfg'));
+      if (await f.exists()) {
+        final raw = json.decode(_deobfuscate(await f.readAsString()));
+        if (raw is Map) {
+          final v = raw['tabOrder'];
+          if (v is String && _isValidTabOrder(v)) return v;
+        }
+      }
+    } catch (_) {/* 坏文件/沙箱不可用：回落默认 */}
+    return _defaultTabOrder;
+  }
+
+  /// 启动默认首页落盘：规范索引 0..3。
+  Future<void> saveDefaultTab(int index) => _saveNavPref('defaultTab', index);
+
+  /// 外语等级选择（需求 #5）：'L1'|'L2'|'L3' 或 null（未选择，引擎按方案原要求）。
+  Future<void> saveForeignLevel(String? level) =>
+      _saveNavPref('foreignLevel', level ?? '');
+
+  /// 读取外语等级：缺省/空串一律 null（宁缺勿猜），绝不抛异常。
+  Future<String?> loadForeignLevel() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'nav.cfg'));
+      if (await f.exists()) {
+        final raw = json.decode(_deobfuscate(await f.readAsString()));
+        if (raw is Map) {
+          final v = raw['foreignLevel'];
+          if (v is String && (v == 'L1' || v == 'L2' || v == 'L3')) return v;
+        }
+      }
+    } catch (_) {/* 坏文件/沙箱不可用：未选择 */}
+    return null;
+  }
+
+  /// 读取启动默认首页：缺文件/坏内容/越界一律回落 0（学业），绝不抛异常。
+  Future<int> loadDefaultTab() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'nav.cfg'));
+      if (await f.exists()) {
+        final raw = json.decode(_deobfuscate(await f.readAsString()));
+        if (raw is Map) {
+          final v = raw['defaultTab'];
+          if (v is int && v >= 0 && v <= 3) return v;
+        }
+      }
+    } catch (_) {/* 坏文件/沙箱不可用：回落默认 */}
+    return 0;
+  }
+
+  Future<void> deleteNavPrefs() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'nav.cfg'));
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
+  }
+
+  /// nav.cfg 读-改-写合并写入：另一键的旧值原样保留；坏文件按空配置重建。
+  Future<void> _saveNavPref(String key, Object value) async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'nav.cfg'));
+      final data = <String, Object?>{};
+      try {
+        if (await f.exists()) {
+          final raw = json.decode(_deobfuscate(await f.readAsString()));
+          if (raw is Map) {
+            for (final e in raw.entries) {
+              data[e.key.toString()] = e.value;
+            }
+          }
+        }
+      } catch (_) {/* 坏文件：按空配置重写 */}
+      data[key] = value;
+      await f.writeAsString(_obfuscate(json.encode(data)));
+    } catch (_) {/* 沙箱不可用（测试环境等）：静默 */}
+  }
+
+  /// '0,1,2,3' 形状校验：恰好四个 0..3 的整数索引且不重复（纯函数，宁缺勿猜）。
+  static bool _isValidTabOrder(String s) {
+    final seen = <int>{};
+    for (final part in s.split(',')) {
+      final i = int.tryParse(part.trim());
+      if (i == null || i < 0 || i > 3 || !seen.add(i)) return false;
+    }
+    return seen.length == 4;
   }
 
   // 轻量混淆（非加密）：避免明文出现在文件系统搜索中；真实防护来自 OS 沙箱隔离。

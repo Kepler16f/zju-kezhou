@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../data/semester.dart';
+import '../data/xk_models.dart';
 import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/exam.dart';
@@ -113,7 +114,6 @@ class _ScholarPageState extends State<ScholarPage> {
 
     final o = Analytics.overall(courses);
     final cats = Analytics.creditByCategory(courses);
-    final maxCat = cats.isEmpty ? 1.0 : (cats.first['credits'] as double);
     final trend = Analytics.semesterTrend(courses);
     // semesterOrder 与 semesterTrend 内部同序（升序，unknown 最前），按下标配对。
     final sems = Analytics.semesterOrder(courses);
@@ -215,40 +215,9 @@ class _ScholarPageState extends State<ScholarPage> {
                 ),
                 if (choosed != null) _choosedCard(context, choosed),
                 const SectionHeader('学分看板（按课程性质）'),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      children: [
-                        for (final cat in cats)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 3),
-                            child: Row(
-                              children: [
-                                SizedBox(
-                                    width: 108,
-                                    child: Text(cat['category'] as String,
-                                        style: const TextStyle(fontSize: 12),
-                                        overflow: TextOverflow.ellipsis)),
-                                Expanded(
-                                  child: LinearProgressIndicator(
-                                    value: (cat['credits'] as double) / maxCat,
-                                    minHeight: 8,
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                ),
-                                SizedBox(
-                                    width: 48,
-                                    child: Text('${cat['credits']}',
-                                        textAlign: TextAlign.right,
-                                        style: const TextStyle(fontSize: 12))),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
+                // 口径（诉求 #4）：已获学分正常色；审计存在「已选未获学分」时
+                // 由 CreditBoardCard 追加蓝色注释（待 main.dart 接线传审计汇总数）。
+                CreditBoardCard(cats: cats),
                 const SectionHeader('课堂分（素拓）'),
                 Card(
                   child: practice.isEmpty
@@ -455,7 +424,10 @@ class _ScholarPageState extends State<ScholarPage> {
   }
 
   /// 本学期已选（在修）摘要卡。默认收起，展开后列出课程明细。
-  /// 这些课程没有成绩，不参与 GPA、已取得学分或三色达成度计算。
+  /// 诉求 #6：已选列表可能与成绩单重叠（成绩已出/重修补选）——先按课程号/
+  /// 归一化课程名匹配成绩记录再呈现：已获得学分的不再被笼统标成「在修，未出成绩」，
+  /// 未匹配到任何成绩记录的在卡底给清单提示（视为在修）。
+  /// 口径不变：已选课程本身不参与 GPA / 三色达成度计算。
   Widget _choosedCard(BuildContext context, XkListParseResult choosed) {
     final theme = Theme.of(context);
     if (choosed.state == 'unavailable') {
@@ -477,32 +449,107 @@ class _ScholarPageState extends State<ScholarPage> {
         ),
       );
     }
-    final credits = choosed.courses.fold<double>(
-        0, (sum, c) => sum + (c.xf ?? 0));
+    final hits = <Map<String, dynamic>?>[
+      for (final c in choosed.courses)
+        matchRecordForCourse(
+            courseId: c.kch, name: c.kcmc, records: widget.courses),
+    ];
+    var creditedCnt = 0;
+    var earnedCredits = 0.0;
+    var pendingCredits = 0.0;
+    final unmatchedNames = <String>[];
+    for (var i = 0; i < choosed.courses.length; i++) {
+      final c = choosed.courses[i];
+      final h = hits[i];
+      if (h != null && recordEarnedCredit(h)) {
+        creditedCnt++;
+        earnedCredits +=
+            ((h['credits'] as num?)?.toDouble()) ?? (c.xf ?? 0);
+      } else {
+        pendingCredits += c.xf ?? 0;
+        if (h == null) unmatchedNames.add(c.kcmc);
+      }
+    }
     return Card(
       child: ExpansionTile(
         initiallyExpanded: false,
         leading: Icon(Icons.playlist_add_check_circle_outlined,
             color: theme.colorScheme.primary),
-        title: const Text('本学期已选（在修，未出成绩）'),
-        subtitle: Text(
-            '${choosed.courses.length} 门 · ${_fmtCredits(credits)} 学分'
-            ' · 不计入 GPA / 已取得学分'),
+        title: Text(creditedCnt == choosed.courses.length
+            ? '本学期已选（成绩均已出，已获学分）'
+            : creditedCnt > 0
+                ? '本学期已选（$creditedCnt 门已出成绩并获学分）'
+                : '本学期已选（在修，未出成绩）'),
+        subtitle: Text(<String>[
+          '${choosed.courses.length} 门',
+          if (creditedCnt > 0)
+            '已获学分 $creditedCnt 门 ${_fmtCredits(earnedCredits)} 分',
+          if (creditedCnt < choosed.courses.length)
+            '在修 ${_fmtCredits(pendingCredits)} 学分',
+          if (creditedCnt == 0) '不计入 GPA / 已取得学分',
+        ].join(' · ')),
         children: [
-          for (final c in choosed.courses)
-            ListTile(
-              dense: true,
-              title: Text(c.kcmc,
-                  style: const TextStyle(fontSize: 13)),
-              subtitle: Text(<String>[
-                if (c.xf != null) '${c.xf} 学分',
-                if (c.teacher.isNotEmpty) c.teacher,
-                if (c.sksj.isNotEmpty) c.sksj,
-                if (c.cdmc.isNotEmpty) c.cdmc,
-              ].join(' · ')),
+          for (var i = 0; i < choosed.courses.length; i++)
+            _choosedRow(context, choosed.courses[i], hits[i]),
+          if (unmatchedNames.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+              child: Text(
+                  '未匹配到成绩记录（视为在修，未出成绩）${unmatchedNames.length} 门：'
+                  '${unmatchedNames.take(8).join('、')}${unmatchedNames.length > 8 ? ' 等' : ''}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
             ),
         ],
       ),
+    );
+  }
+
+  /// 已选课程明细行（诉求 #6）：按匹配结果分三态——
+  /// 已获学分（绿勾）/ 已有记录未获学分（重修·缓考·待录等）/ 未匹配（在修）。
+  Widget _choosedRow(
+      BuildContext context, XkCourse c, Map<String, dynamic>? hit) {
+    final base = <String>[
+      if (c.xf != null) '${c.xf} 学分',
+      if (c.teacher.isNotEmpty) c.teacher,
+      if (c.sksj.isNotEmpty) c.sksj,
+      if (c.cdmc.isNotEmpty) c.cdmc,
+    ];
+    if (hit == null) {
+      return ListTile(
+        dense: true,
+        leading: const Icon(Icons.schedule, size: 18),
+        title: Text(c.kcmc, style: const TextStyle(fontSize: 13)),
+        subtitle: base.isEmpty ? null : Text(base.join(' · ')),
+      );
+    }
+    final sem = ((hit['semester'] as String?) ?? '').trim();
+    final semLabel = (sem.isEmpty || sem == 'unknown') ? '' : termCodeLabel(sem);
+    final original = ((hit['original'] as String?) ?? '').trim();
+    final grade = (hit['grade'] as num?)?.toInt() ?? 0;
+    if (recordEarnedCredit(hit)) {
+      return ListTile(
+        dense: true,
+        leading: const Icon(Icons.check_circle,
+            size: 18, color: ScholarPalette.earnedGreen),
+        title: Text(c.kcmc, style: const TextStyle(fontSize: 13)),
+        subtitle: Text(<String>[
+          '已获得学分',
+          if (semLabel.isNotEmpty) semLabel,
+          if (grade > 0) '$grade 分',
+          ...base,
+        ].join(' · ')),
+      );
+    }
+    return ListTile(
+      dense: true,
+      leading: const Icon(Icons.history, size: 18),
+      title: Text(c.kcmc, style: const TextStyle(fontSize: 13)),
+      subtitle: Text(<String>[
+        '已有成绩记录，未获学分',
+        if (semLabel.isNotEmpty) semLabel,
+        if (original.isNotEmpty) original else if (grade > 0) '$grade 分' else '未出分',
+        ...base,
+      ].join(' · ')),
     );
   }
 
@@ -544,4 +591,92 @@ String scholarTrendShortLabel(String sem) {
   final m = RegExp(r'^(\d{2})(\d{2})([秋冬春短])').firstMatch(full);
   if (m == null) return full; // 宁缺勿猜：认不出就显示全称
   return '${m.group(2)}${m.group(3)}';
+}
+
+// ── 已选课程 ↔ 成绩单匹配（诉求 #6；纯函数，测试锁定于 test/match_normalize_test.dart）──
+
+/// 成绩记录是否「已获得学分」：通过（passed / grade≥60）且学分未被排除
+/// （credit_included 缺省视为 true；弃修/待录/缓考/无效与本地排除标记均为 false）。
+bool recordEarnedCredit(Map<String, dynamic> r) =>
+    Analytics.isPassed(r) && ((r['credit_included'] as bool?) ?? true);
+
+/// 课程名归一化（诉求 #6）：全角 ASCII → 半角、去全部空白（含全角空格/零宽字符）、
+/// 去括号符号本身但保留括号内文字（（甲）→ 甲）、转小写。
+/// 语义内容一律不删（Ⅰ / 数字版本号 / 教学班尾注文字等后缀保留），
+/// 供正方成绩单与培养方案/已选列表两套数据源对齐后再比对。
+String normalizeCourseName(String raw) {
+  const spaces = {0x20, 0xA0, 0x3000, 0x200B, 0xFEFF};
+  const brackets = {
+    0x28, 0x29, 0x5B, 0x5D, 0x7B, 0x7D, // ( ) [ ] { } 及其全角形态（已折半角）
+    0x3010, 0x3011, 0x300C, 0x300D, // 【 】 「 」
+  };
+  final sb = StringBuffer();
+  for (final ch in raw.runes) {
+    if (ch >= 0x09 && ch <= 0x0D) continue; // 制表/换行等控制空白
+    var half = ch;
+    if (half >= 0xFF01 && half <= 0xFF5E) half -= 0xFEE0; // 全角 ASCII → 半角
+    if (spaces.contains(half) || brackets.contains(half)) continue;
+    sb.writeCharCode(half);
+  }
+  return sb.toString().toLowerCase();
+}
+
+/// 单门已选课程 ↔ 成绩单记录匹配（纯函数、不抛异常、未命中返回 null，宁缺勿猜）：
+///  1) course_id 精确：已选 kch 非空且成绩单存在该课号——同一课号多条（重修多学期）
+///     取「已获学分优先、学期最晚次之、分数再次」的一条；
+///  2) 归一化课程名全等：同名多条合并为同一门课，取法同上；
+///  3) 归一化双向包含兜底：候选去重后唯一命中才认，且已选名≥2 字符（防单字误配）。
+Map<String, dynamic>? matchRecordForCourse({
+  required String? courseId,
+  required String name,
+  required List<Map<String, dynamic>> records,
+}) {
+  final id = (courseId ?? '').trim();
+  if (id.isNotEmpty) {
+    final byId = records
+        .where((r) => ((r['course_id'] as String?) ?? '').trim() == id)
+        .toList();
+    if (byId.isNotEmpty) return _bestRecordOf(byId);
+  }
+  final norm = normalizeCourseName(name);
+  if (norm.isEmpty) return null; // 占位名/空名不参与名称匹配
+  final groups = <String, List<Map<String, dynamic>>>{};
+  for (final r in records) {
+    final rn = normalizeCourseName((r['name'] as String?) ?? '');
+    if (rn.isEmpty) continue;
+    groups.putIfAbsent(rn, () => []).add(r);
+  }
+  final exact = groups[norm];
+  if (exact != null) return _bestRecordOf(exact);
+  if (norm.length < 2) return null; // 包含兜底不认单字（宁缺勿猜）
+  Map<String, dynamic>? hit;
+  var hits = 0;
+  for (final e in groups.entries) {
+    if (e.key.contains(norm) || norm.contains(e.key)) {
+      hits++;
+      hit ??= _bestRecordOf(e.value);
+    }
+  }
+  return hits == 1 ? hit : null;
+}
+
+/// 同一门课的多条成绩记录（重修/补考跨学期）→ 确定性取一条：
+/// 已获学分优先，学期最晚次之（'unknown' 视为最早），百分制分数再次。
+Map<String, dynamic>? _bestRecordOf(List<Map<String, dynamic>> rows) {
+  if (rows.isEmpty) return null;
+  String semKey(Map<String, dynamic> r) {
+    final s = ((r['semester'] as String?) ?? '').trim();
+    return (s.isEmpty || s == 'unknown') ? '' : s;
+  }
+
+  final sorted = [...rows]..sort((a, b) {
+      final pa = recordEarnedCredit(a) ? 1 : 0;
+      final pb = recordEarnedCredit(b) ? 1 : 0;
+      if (pa != pb) return pb - pa;
+      final sa = semKey(a), sb = semKey(b);
+      if (sa != sb) return sb.compareTo(sa);
+      return ((b['grade'] as num?)?.toDouble() ?? 0)
+          .compareTo((a['grade'] as num?)?.toDouble() ?? 0);
+    });
+  return sorted.first;
 }

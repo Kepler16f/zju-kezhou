@@ -1,8 +1,11 @@
 /// data/zju_parse_ext.dart — 教务页面解析扩展：专业识别、培养方案获取、课堂分看板。
 /// 端点与解析模式对齐 Helechron 实战验证（学业生涯页 N105515 / 培养方案列表 N153020 /
-/// 打印页 dyPyfaxs / 实践分 N108001 第二三四课堂）。课程表 HTML→PlanFile 为 best-effort，
+/// 打印页 dyPyfaxs / 实践分主源=素质拓展平台 sztz.zju.edu.cn/dekt 的 getSqjl+getMyInfo、
+/// 遗留兜底=教务网 N108001 第二三四课堂）。课程表 HTML→PlanFile 为 best-effort，
 /// 正方页面版式多样，解析结果附带"数据质量"报告，UI 如实展示，绝不静默出错。
 library;
+
+import 'dart:convert';
 
 String _clean(String s) =>
     s.replaceAll(RegExp(r'[\s\u3000]+'), '').replaceAll('&nbsp;', '');
@@ -419,6 +422,154 @@ Map<String, double> parsePracticeScores(String html) {
     '第三课堂': scores['第三课堂'] ?? 0.0,
     '第四课堂': scores['第四课堂'] ?? 0.0,
   };
+}
+
+// ── 素质拓展平台（sztz.zju.edu.cn/dekt）JSON 解析（对齐 Helechron Sztz 实战）──
+// 平台返回 {success:true, code:0, ...} 形态；HTTP 200 也可能仍是登录页 HTML 或匿名壳，
+// 一切不符合业务约束的响应一律返回 null/false（纯函数、不抛异常、宁缺勿猜）。
+
+/// /dekt/ctx 响应 → 是否已确认非匿名业务身份（对齐 Helechron isAuthenticatedCtxResponse）。
+/// data 是 Base64 编码的 JSON 业务上下文，需同时满足：anonymous 明确为 false、
+/// userId 非空且非 ANONYMOUS、roles 不含 ANONYMOUS_USER_ROLE。任一不成立即 false。
+bool parseSztzCtxOk(String body) {
+  Object? decoded;
+  try {
+    decoded = jsonDecode(body);
+  } catch (_) {
+    return false; // 登录页 HTML 等非 JSON 内容
+  }
+  if (decoded is! Map) return false;
+  if (decoded['success'] != true) return false;
+  final code = decoded['code'];
+  if (code != 0 && code != '0') return false;
+  final data = decoded['data'];
+  if (data is! String || data.isEmpty) return false;
+  Object? ctx;
+  try {
+    ctx = jsonDecode(
+        utf8.decode(base64Decode(base64.normalize(data)), allowMalformed: false));
+  } catch (_) {
+    return false;
+  }
+  if (ctx is! Map) return false;
+  final anon = ctx['anonymous'];
+  // anonymous 字段必须明确为 false（缺失/异常/true 一律不信任）
+  if (!(anon == false || anon == 'false' || anon == 0 || anon == '0')) {
+    return false;
+  }
+  final userId = '${ctx['userId'] ?? ''}'.trim();
+  if (userId.isEmpty || userId.toUpperCase() == 'ANONYMOUS') return false;
+  return !_sztzContainsAnonymousRole(ctx['roles']);
+}
+
+bool _sztzContainsAnonymousRole(Object? roles) {
+  if (roles is List) return roles.any(_sztzContainsAnonymousRole);
+  if (roles is Map) return roles.values.any(_sztzContainsAnonymousRole);
+  final role = roles?.toString() ?? '';
+  return role
+      .split(RegExp(r'[\s,;]+'))
+      .any((v) => v.trim().toUpperCase() == 'ANONYMOUS_USER_ROLE');
+}
+
+/// /dekt/student/home/getMyInfo 响应 → 三课堂官方记点汇总。
+/// 结构 {code:0, extend:{myInfo:{xh, dektJf, dsktJf, dsiktJf, ...}}}（Helechron
+/// PracticeScoreSummary.fromMyInfoJson）：dekt/dskt/dsikt 分别对应第二/三/四课堂。
+/// 缺单个记点字段按 0；三个字段全缺、code 非 0、extend.myInfo 缺失或
+/// xh 与 expectStudentId 不一致（账号隔离）→ null。
+Map<String, double>? parseSztzMyInfoTotals(String body,
+    {String? expectStudentId}) {
+  Object? decoded;
+  try {
+    decoded = jsonDecode(body);
+  } catch (_) {
+    return null;
+  }
+  if (decoded is! Map) return null;
+  final code = decoded['code'];
+  if (code != 0 && code != '0') return null;
+  final extend = decoded['extend'];
+  final myInfo = extend is Map ? extend['myInfo'] : null;
+  if (myInfo is! Map) return null;
+  // xh 存在且与当前账号不符 → 拒绝（宁缺勿猜，绝不渲染他人记点）
+  final xh = '${myInfo['xh'] ?? ''}'.trim();
+  if (xh.isNotEmpty &&
+      expectStudentId != null &&
+      expectStudentId.isNotEmpty &&
+      xh != expectStudentId) {
+    return null;
+  }
+  const jfFields = {
+    '第二课堂': 'dektJf',
+    '第三课堂': 'dsktJf',
+    '第四课堂': 'dsiktJf',
+  };
+  final parsed = <String, double>{};
+  var anyField = false;
+  for (final e in jfFields.entries) {
+    final raw = myInfo[e.value];
+    if (raw == null || (raw is String && raw.trim().isEmpty)) continue;
+    final v = double.tryParse('$raw'.trim());
+    if (v == null || !v.isFinite) return null; // 有字段但解不出 → 整包不信任
+    parsed[e.key] = v;
+    anyField = true;
+  }
+  if (!anyField) return null; // 三个记点字段全缺 → 匿名壳/改版，不算数据
+  return {
+    '第二课堂': parsed['第二课堂'] ?? 0.0,
+    '第三课堂': parsed['第三课堂'] ?? 0.0,
+    '第四课堂': parsed['第四课堂'] ?? 0.0,
+  };
+}
+
+/// /dekt/student/home/getSqjl 响应 → 按"审核通过且未删除"合计的三课堂记点。
+/// 结构 {success:true, code:0, data:[...], totalPages}；每条记录：id、jd（本人实得
+/// 记点）、sfsc（是否删除）、cyrshzt:{value,label}（value==5 或 label=='审核通过'
+/// 即通过）、xm:{mc, xmfl:{id,mc}（分类：1/2/3=第二/三/四课堂）}（对齐 Helechron
+/// PracticeScoreItem.fromSztzJson）。单条格式异常跳过，不使整批失效；缺 id 的记录
+/// 整条丢弃（去重依据）；data 为空列表 → 三键全 0（真实"暂无记录"）；非业务 JSON → null。
+Map<String, double>? parseSztzSqjlTotals(String body) {
+  Object? decoded;
+  try {
+    decoded = jsonDecode(body);
+  } catch (_) {
+    return null;
+  }
+  if (decoded is! Map) return null;
+  if (decoded['success'] != true) return null;
+  final code = decoded['code'];
+  if (code != 0 && code != '0') return null;
+  final data = decoded['data'];
+  if (data is! List) return null;
+  const keyOf = {1: '第二课堂', 2: '第三课堂', 3: '第四课堂'};
+  final totals = <String, double>{'第二课堂': 0, '第三课堂': 0, '第四课堂': 0};
+  final seenIds = <int>{};
+  for (final raw in data) {
+    if (raw is! Map) continue;
+    final id = int.tryParse('${raw['id'] ?? ''}'.trim());
+    if (id == null || !seenIds.add(id)) continue; // 缺 id 或重复记录 → 丢弃
+    final deleted = raw['sfsc'] == true || raw['sfsc'] == 'true' ||
+        raw['sfsc'] == 1 || raw['sfsc'] == '1';
+    if (deleted) continue;
+    final st = raw['cyrshzt'];
+    final stValue = st is Map ? int.tryParse('${st['value'] ?? ''}'.trim()) : null;
+    final stLabel = st is Map ? '${st['label'] ?? ''}'.trim() : '';
+    final approved = stValue == 5 || stLabel == '审核通过';
+    if (!approved) continue;
+    final v = double.tryParse('${raw['jd'] ?? ''}'.trim());
+    if (v == null || !v.isFinite || v < 0) continue; // jd 缺失/非法不计入
+    final xm = raw['xm'];
+    final xmfl = xm is Map ? xm['xmfl'] : null;
+    var cat = xmfl is Map ? int.tryParse('${xmfl['id'] ?? ''}'.trim()) ?? 0 : 0;
+    if (cat == 0) {
+      // 旧响应缺分类 id 时按中文名映射（Helechron 同款兼容）
+      final mc = xmfl is Map ? '${xmfl['mc'] ?? ''}'.trim() : '';
+      cat = mc == '第二课堂' ? 1 : mc == '第三课堂' ? 2 : mc == '第四课堂' ? 3 : 0;
+    }
+    final key = keyOf[cat];
+    if (key == null) continue; // 非二三四课堂（类别 0/越界）不计入
+    totals[key] = totals[key]! + v;
+  }
+  return totals;
 }
 
 /// 结构化课程行（培养方案课程明细接口解析结果）→ PlanFile。

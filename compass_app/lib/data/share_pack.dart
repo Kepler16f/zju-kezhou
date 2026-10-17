@@ -20,7 +20,9 @@ import 'package:path/path.dart' as p;
 const String sharePackFormat = 'kez.share-pack';
 
 /// 包格式版本：引擎字段口径变化时 +1；导入侧宽松兼容（只拒 > 当前版本）。
-const int sharePackVersion = 1;
+/// v2（2026-10-18 需求 #12）：新增可选 ai_advice 段——学生自愿一并导出的
+/// AI 选课咨询问答记录（仅 {q,a} 文本，问答内容在导出侧已过 sanitizeAiOutput）。
+const int sharePackVersion = 2;
 
 /// 导出行保留白名单——审计与展示所需的最小集合。
 /// 名单外字段（grade/five_point/xkkh/source 等）一律剔除，这是脱敏的事实源。
@@ -32,13 +34,16 @@ const Set<String> shareRowKeepFields = {
 /// 学生侧构造分享包 JSON 文本（pretty，便于学生肉眼核对内容后再外发）。
 ///
 /// [courses] 审计报告消费的成绩单行（gradeItemToCourse 形状）；
-/// [plan] 本次审计所用方案快照（可为 null：仅内置方案专业可裸包导入）。
+/// [plan] 本次审计所用方案快照（可为 null：仅内置方案专业可裸包导入）；
+/// [aiAdvice] 学生自愿附带导出的 AI 选课咨询问答（需求 #12）：形如
+/// [{'q': 问题, 'a': 回复}]，文本已在源头过 sanitizeAiOutput；null/空 → 不写入。
 /// 行缺 passed 时若有 grade 则换算为 bool（>=60），两者都缺 → 丢行并计数
 /// （宁缺勿猜：不把未知课伪装成未通过混进审计）。
 ({String jsonText, int droppedRows, int coursesCount}) buildSharePack({
   required Map<String, dynamic> student,
   required List<Map<String, dynamic>> courses,
   Map<String, dynamic>? plan,
+  List<Map<String, String>>? aiAdvice,
 }) {
   final rows = <Map<String, dynamic>>[];
   var dropped = 0;
@@ -78,6 +83,7 @@ const Set<String> shareRowKeepFields = {
     },
     'plan': plan,
     'courses': rows,
+    if (aiAdvice != null && aiAdvice.isNotEmpty) 'ai_advice': aiAdvice,
     'privacy_notice': '本文件由学生本人在课舟 App 自愿导出：不含学号、分数、'
         '绩点与任何教务凭证；仅含课程完成状态，用于导师审阅学业达成情况。',
   };
@@ -159,7 +165,40 @@ List<String> validateSharePack(Map<String, dynamic> pack) {
   if (plan != null && (plan is! Map || plan['modules'] is! List)) {
     issues.add('内嵌方案快照结构不完整（缺 modules）');
   }
+  final advice = pack['ai_advice'];
+  if (advice != null) {
+    if (advice is! List ||
+        advice.any((x) => x is! Map || x['q'] is! String || x['a'] is! String)) {
+      issues.add('AI 咨询记录结构非法（应为 [{q, a}] 文本对）');
+    }
+  }
   return issues;
+}
+
+/// 分享包内嵌的 AI 选课咨询问答（需求 #12；null = 学生未附带）。
+List<Map<String, String>>? sharePackAdvice(Map<String, dynamic> pack) {
+  final a = pack['ai_advice'];
+  if (a is! List || a.isEmpty) return null;
+  return [
+    for (final x in a)
+      if (x is Map && x['q'] is String && x['a'] is String)
+        {'q': x['q'] as String, 'a': x['a'] as String},
+  ];
+}
+
+/// AI 选课咨询问答 → 可直接粘贴给指导教师的纯文本（需求 #12 的轻量通道：
+/// 无审计数据也能导出；每轮问答带序号，尾部固定"AI 仅供参考"声明——
+/// 问答文本在源头已过 sanitizeAiOutput，不含越界推荐）。
+String buildAdviceExportText(List<Map<String, String>> advice) {
+  final sb = StringBuffer('【课舟 · AI 选课咨询记录】（学生自愿导出，供指导教师参考）\n\n');
+  var i = 0;
+  for (final x in advice) {
+    i++;
+    sb.write('$i. 问：${x['q']}\n   答：${x['a']}\n\n');
+  }
+  sb.write('—— 由课舟 ClassArk 导出 ${DateTime.now().toIso8601String()}；'
+      'AI 内容仅作沟通参考，选课与学业认定以教务系统和教师意见为准。');
+  return sb.toString();
 }
 
 /// 敏感键扫描（测试与导入提示共用）：课程行与顶层不应出现这些键。

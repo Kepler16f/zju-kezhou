@@ -1,6 +1,8 @@
 /// pages/settings_page.dart — 设置页（Helechron Option 风格）：分组卡片列表。
 /// 组：登录（教务网账号）/ 数据（数据源+方案+学期+运行）/ AI 解读 /
-/// 关于（版本·致谢·数据与合规·登录诊断日志）。
+/// 分享给指导教师（导出分享包 + 选课指导模式开关）/
+/// 界面（底栏元素排序 + 启动默认首页）/
+/// 桌面端（托盘·退出，按平台显示）/ 关于（版本·致谢·数据与合规·登录诊断日志）。
 /// 通用组已解散（任务 11）：诊断与合规入口并入「关于」组，
 /// 登录组里的诊断/日志类信息默认折叠、点开可见。
 library;
@@ -37,7 +39,7 @@ class SettingsPage extends StatefulWidget {
   final String? loggedInAs; // 已记住的学号（自动登录状态）
   final DateTime? lastDataAt; // 上次成功拉取数据的时间
   final VoidCallback onClearData;
-  final AiConfig aiConfig; // AI 解读配置（出厂无存档时默认公益端点）
+  final AiConfig aiConfig; // AI 解读配置（出厂默认关闭，入口弹窗开闸；需求 #2）
   final Future<void> Function(AiConfig config) onAiConfigChange;
   final Future<String> Function(AiConfig config) onTestAi;
   final Future<AiModelsResult> Function(AiConfig config) onListAiModels;
@@ -54,12 +56,29 @@ class SettingsPage extends StatefulWidget {
   final String? planNote;
   final VoidCallback onGoPlan;
 
-  /// 分享给导师：导出脱敏学业分享包（realName 可选实名，默认匿名）。
+  /// 分享给指导教师：导出脱敏学业分享包（realName 可选实名，默认匿名）。
   /// 返回导出结果提示文本（含课程数与落盘路径），失败返回原因。
   final Future<String> Function({bool realName})? onExportSharePack;
 
-  /// 切换到导师审阅模式（审阅学生分享的包；本页签/教务会话保持不变，仅切视图）。
+  /// 进入选课指导模式（原「导师审阅模式」，#3 改名）：审阅指导教师分享的档案包，
+  /// 不登录教务；本页签/教务会话保持不变，仅切视图。开关当前状态由主线持有，
+  /// 经 [teacherMode] 传入渲染；退出仍走审阅台自身的退出按钮，本页只管"关→开"。
   final VoidCallback? onEnterTeacherMode;
+
+  // —— 底栏布局偏好（诉求 #9）——
+  /// 规范索引固定：0=学业 1=方案 2=选课 3=设置；[tabOrder] 是索引的全排列
+  /// （逗号分隔，如 '0,1,2,3'），由主线经 CredentialStore 持久化。
+  final String tabOrder; // 默认 '0,1,2,3'
+  final ValueChanged<String>? onTabOrderChange; // 上/下移后上抛新顺序串
+  final int defaultTab; // 启动默认首页：规范索引（默认 0=学业）
+  final ValueChanged<int>? onDefaultTabChange;
+
+  /// 选课指导模式开关当前状态（主线持有；传入以渲染开关位置，默认关）。
+  final bool teacherMode;
+
+  /// 外语类等级（需求 #5）：null=未选择（按方案原要求）；'L1'/'L2'/'L3' 折算封顶。
+  final String? foreignLevel;
+  final ValueChanged<String?>? onForeignLevelChange;
 
   const SettingsPage(
       {super.key, required this.mode, required this.onModeChange,
@@ -78,7 +97,11 @@ class SettingsPage extends StatefulWidget {
       this.closeToTray = true,
       this.onCloseToTrayChange,
       this.onQuit,
-      this.onExportSharePack, this.onEnterTeacherMode});
+      this.onExportSharePack, this.onEnterTeacherMode,
+      this.tabOrder = '0,1,2,3', this.onTabOrderChange,
+      this.defaultTab = 0, this.onDefaultTabChange,
+      this.teacherMode = false,
+      this.foreignLevel, this.onForeignLevelChange});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -95,10 +118,14 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 点开才见上次取数时间等运行信息（_showCreds 同款 bool 模式）。
   bool _diagOpen = false;
 
-  /// 「分享给导师」：实名导出选项 + 上次导出结果提示（本机内存态，不落盘）。
+  /// 「分享给指导教师」：实名导出选项 + 上次导出结果提示（本机内存态，不落盘）。
   bool _shareRealName = false;
   String? _shareHint;
   bool _shareBusy = false;
+
+  /// 选课指导模式「首次开启确认」：本页生命周期内问一次（页面在 IndexedStack 中
+  /// 常驻，跨页签不丢），确认过后再进不再打断；跨会话只问一次需主线持久化。
+  bool _guideModeConfirmAsked = false;
 
   Future<void> _doExportShare() async {
     final fn = widget.onExportSharePack;
@@ -115,6 +142,35 @@ class _SettingsPageState extends State<SettingsPage> {
     } finally {
       if (mounted) setState(() => _shareBusy = false);
     }
+  }
+
+  /// 打开选课指导模式：首次（尚未确认过）先弹确认，文案说明合规边界；
+  /// 确认后才触发 [SettingsPage.onEnterTeacherMode]，取消则停在原视图。
+  Future<void> _enterGuideMode() async {
+    if (widget.onEnterTeacherMode == null) return;
+    if (!_guideModeConfirmAsked) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('进入「选课指导模式」？'),
+          content: const Text('进入后不登录教务、只解析指导教师分享的档案包；'
+              '当前页签与教务会话保持不变，仅切换视图，可随时在审阅台退出。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('进入'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+      _guideModeConfirmAsked = true;
+    }
+    widget.onEnterTeacherMode!();
   }
 
   static const _semesters = [
@@ -150,6 +206,8 @@ class _SettingsPageState extends State<SettingsPage> {
     final closeToTray = widget.closeToTray;
     final onCloseToTrayChange = widget.onCloseToTrayChange;
     final onQuit = widget.onQuit;
+    final tabOrder = widget.tabOrder;
+    final defaultTab = widget.defaultTab;
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
@@ -297,6 +355,38 @@ class _SettingsPageState extends State<SettingsPage> {
                   ],
                 ),
               ),
+              // 外语类等级（需求 #5）：培养方案里外语模块要求学分按所选等级封顶。
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('外语类等级（影响方案要求学分折算）',
+                        style: TextStyle(fontSize: 13)),
+                    const SizedBox(height: 6),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: '', label: Text('未选', style: TextStyle(fontSize: 12))),
+                        ButtonSegment(value: 'L1', label: Text('L1·6分', style: TextStyle(fontSize: 12))),
+                        ButtonSegment(value: 'L2', label: Text('L2·4.5分', style: TextStyle(fontSize: 12))),
+                        ButtonSegment(value: 'L3', label: Text('L3·3分', style: TextStyle(fontSize: 12))),
+                      ],
+                      selected: {widget.foreignLevel ?? ''},
+                      onSelectionChanged: widget.onForeignLevelChange == null
+                          ? null
+                          : (s) => widget.onForeignLevelChange!(s.first.isEmpty ? null : s.first),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      widget.foreignLevel == null
+                          ? '未选择：外语模块按方案原要求学分计算（审计溯源里注明）。'
+                          : '已按 ${widget.foreignLevel} 折算：外语类模块要求学分封顶 '
+                              '${widget.foreignLevel == 'L1' ? 6 : widget.foreignLevel == 'L2' ? 4.5 : 3} 分。',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
               _dataAndPlanBlock(context,
                   courses: courses,
                   choosed: choosed,
@@ -350,7 +440,7 @@ class _SettingsPageState extends State<SettingsPage> {
             onSave: onAiConfigChange,
             onTest: onTestAi,
             onListModels: onListAiModels),
-        _groupHeader('分享给导师'),
+        _groupHeader('分享给指导教师'),
         Card(
           child: Column(
             children: [
@@ -370,7 +460,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     style: TextStyle(fontSize: 13)),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
                 child: Row(
                   children: [
                     FilledButton.tonalIcon(
@@ -385,15 +475,23 @@ class _SettingsPageState extends State<SettingsPage> {
                           : const Icon(Icons.share_outlined, size: 18),
                       label: const Text('导出到剪贴板'),
                     ),
-                    const SizedBox(width: 8),
-                    if (widget.onEnterTeacherMode != null)
-                      OutlinedButton.icon(
-                        onPressed: widget.onEnterTeacherMode,
-                        icon: const Icon(Icons.school_outlined, size: 18),
-                        label: const Text('导师审阅模式'),
-                      ),
                   ],
                 ),
+              ),
+              // 选课指导模式入口（原「导师审阅模式」按钮，#3 改名 + 改独立开关）：
+              // 关→开时（首次先确认）回调 onEnterTeacherMode；开→关不走这里
+              // ——审阅台退出按钮负责，且主线进入后整页切视图，本开关不可见。
+              SwitchListTile(
+                secondary: const Icon(Icons.school_outlined),
+                title: const Text('选课指导模式', style: TextStyle(fontSize: 13)),
+                subtitle: const Text('进入后不登录教务，只解析指导教师分享的档案包',
+                    style: TextStyle(fontSize: 11)),
+                value: widget.teacherMode,
+                onChanged: widget.onEnterTeacherMode == null
+                    ? null
+                    : (v) {
+                        if (v) _enterGuideMode();
+                      },
               ),
               if (_shareHint != null)
                 Padding(
@@ -403,6 +501,14 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
             ],
           ),
+        ),
+        _groupHeader('界面'),
+        // 底栏布局偏好（诉求 #9）：排序 + 启动默认首页，状态由主线持有并持久化。
+        _InterfacePrefsCard(
+          tabOrder: tabOrder,
+          onTabOrderChange: widget.onTabOrderChange,
+          defaultTab: defaultTab,
+          onDefaultTabChange: widget.onDefaultTabChange,
         ),
         if (onQuit != null) ...[
           _groupHeader('桌面端'),
@@ -705,6 +811,143 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: const Icon(Icons.delete_outline),
             label: const Text('一键清除全部本地数据'),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 底栏布局偏好卡（诉求 #9）：页签排序（上下移）+ 启动默认首页（单选）。
+/// 全受控组件：状态由主线持有（tabOrder / defaultTab 传入），回调未接线
+/// （null）时相应控件禁用，保证"看得见但没接线"时不产生假交互。
+class _InterfacePrefsCard extends StatelessWidget {
+  final String tabOrder;
+  final ValueChanged<String>? onTabOrderChange;
+  final int defaultTab;
+  final ValueChanged<int>? onDefaultTabChange;
+
+  const _InterfacePrefsCard({
+    required this.tabOrder,
+    this.onTabOrderChange,
+    required this.defaultTab,
+    this.onDefaultTabChange,
+  });
+
+  /// 页签规范名（索引固定：0=学业 1=方案 2=选课 3=设置，与 main.dart 底栏一致）。
+  static const _tabNames = ['学业', '方案', '选课', '设置'];
+
+  /// 解析顺序串为索引列表：非法项丢弃、去重；凑不齐四个一律回落默认顺序
+  /// （纯函数、不抛异常、宁缺勿猜）。
+  static List<int> parseTabOrder(String raw) {
+    final out = <int>[];
+    for (final part in raw.split(',')) {
+      final i = int.tryParse(part.trim());
+      if (i != null && i >= 0 && i < _tabNames.length && !out.contains(i)) {
+        out.add(i);
+      }
+    }
+    if (out.length != _tabNames.length) {
+      return List<int>.generate(_tabNames.length, (i) => i);
+    }
+    return out;
+  }
+
+  void _move(int pos, int delta) {
+    final order = parseTabOrder(tabOrder);
+    final j = pos + delta;
+    if (j < 0 || j >= order.length) return;
+    final next = [...order];
+    final t = next[pos];
+    next[pos] = next[j];
+    next[j] = t;
+    onTabOrderChange?.call(next.join(','));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final order = parseTabOrder(tabOrder);
+    final homeTab =
+        (defaultTab >= 0 && defaultTab < _tabNames.length) ? defaultTab : 0;
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Text('底栏元素排序',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 2, 16, 4),
+            child: Text('调整底栏四个页签的显示顺序（改动立即生效并记住）',
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
+          ),
+          for (var i = 0; i < order.length; i++)
+            Row(
+              children: [
+                const SizedBox(width: 20),
+                SizedBox(
+                  width: 28,
+                  child: Text('${i + 1}.',
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.grey)),
+                ),
+                Expanded(
+                  child: Text(_tabNames[order[i]],
+                      style: const TextStyle(fontSize: 13)),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '上移',
+                  onPressed: (i == 0 || onTabOrderChange == null)
+                      ? null
+                      : () => _move(i, -1),
+                  icon: const Icon(Icons.arrow_upward, size: 18),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '下移',
+                  onPressed: (i == order.length - 1 || onTabOrderChange == null)
+                      ? null
+                      : () => _move(i, 1),
+                  icon: const Icon(Icons.arrow_downward, size: 18),
+                ),
+                const SizedBox(width: 12),
+              ],
+            ),
+          const Divider(height: 1, indent: 16),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Text('启动默认首页',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 2, 16, 0),
+            child: Text('下次启动课舟时默认打开的页签',
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
+          ),
+          // RadioGroup（新 API；旧 groupValue/onChanged 在本 SDK 已弃用）：
+          // 回调未接线时用 enabled:false 明确禁用，避免"能点但没反应"。
+          RadioGroup<int>(
+            groupValue: homeTab,
+            onChanged: (v) {
+              if (v != null) onDefaultTabChange?.call(v);
+            },
+            child: Column(
+              children: [
+                for (var i = 0; i < _tabNames.length; i++)
+                  RadioListTile<int>(
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    value: i,
+                    enabled: onDefaultTabChange != null,
+                    title: Text(_tabNames[i],
+                        style: const TextStyle(fontSize: 13)),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
         ],
       ),
     );

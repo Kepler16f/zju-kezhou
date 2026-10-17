@@ -28,7 +28,38 @@
           "module_id": { "type": "string", "pattern": "^[a-z_]+$" },
           "module_path": { "type": "string" },
           "required_credits": { "type": "number", "minimum": 0 },
-          "course_ids": { "type": "array", "items": { "type": "string" } }
+          "course_ids": { "type": "array", "items": { "type": "string" } },
+          "n_select": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "选课组：组内课程任选 N 门即满足（audit 据此把要求学分按 N 门折算，不再全组和）"
+          },
+          "group": {
+            "type": "object",
+            "description": "选课组显式结构：{min_courses, min_credits} 任一非空即按组核算",
+            "properties": {
+              "min_courses": { "type": "integer", "minimum": 1 },
+              "min_credits": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          },
+          "choice_rule": {
+            "type": "object",
+            "description": "板块说明识别出的修读选择约束（plan_audit_adapter 产物）：{text, min_credits, min_courses, pick_from}",
+            "properties": {
+              "text": { "type": "string" },
+              "min_credits": { "type": ["number", "null"] },
+              "min_courses": { "type": ["integer", "null"], "minimum": 1 },
+              "pick_from": { "type": ["integer", "null"], "minimum": 2 }
+            }
+          },
+          "count_rule": {
+            "type": "boolean",
+            "description": "为 true 时 required_credits 的数字是「要求门数」不是学分；audit 按 N 门最便宜课程折算，绝不把门数当学分"
+          },
+          "plan_credits_unit": {
+            "enum": ["学分", "门"],
+            "description": "板块标注学分数量单位（'门' 同 count_rule 语义）"
+          }
         }
       }
     },

@@ -1,6 +1,6 @@
 /// 课舟 App 主入口：底部导航四页签（学业/方案/选课/设置；审计并入方案页，原「工具」页签并入学业页）。
 /// 数据流：设置页选源运行 → 状态持有 courses/report/practice/choosed/timetable → 各页消费。
-/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（出厂默认公益免费端点）。
+/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（出厂默认关闭，悬浮入口点击时引导开启）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
 library;
 
@@ -202,6 +202,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   AuditEngine? _engine;
   late final Future<void> _assetsReady; // 启动资产加载完成信号（运行审计前等待）
   int _tabIndex = tabScholar;
+  // 2026-10-18 需求 #9：底栏元素排序 + 启动默认首页。规范索引固定
+  // 0=学业 1=方案 2=选课 3=设置；_tabOrder 存"显示第 k 位放哪个规范索引"。
+  String _tabOrder = '0,1,2,3';
+  int _defaultTab = tabScholar;
+  bool _userNavigated = false; // 用户点过底栏后，启动默认页不再抢占当前页
+  int _teacherTab = 0; // 选课指导模式内页签：0=指导 1=设置（需求 #13：可进设置）
+  // 需求 #5：外语类等级（学生自选折算口径）。null=未选择（引擎按方案原要求算，
+  // trace 注明）；'L1'/'L2'/'L3' → 要求学分封顶 6/4.5/3。持久化在 ui.cfg。
+  String? _foreignLevel;
+  Map<String, dynamic>? _lastRecord; // 最近一次审计的完整 record（改等级后重算用）
 
   DataMode _mode = DataMode.sample;
   String _major = 'computer_science'; // 始终为内置 key（下拉框合法值）
@@ -226,7 +236,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Map<String, dynamic>? _auditPlan; // 当前审计所用方案（选课页做缺口/先修/开课季匹配用）
   MatchedPlanInfo? _matchedPlan; // 本次数据匹配命中的本人培养方案（设置页展示）
   Map<String, dynamic>? _selectionSummary; // 选课页上抛的脱敏候选摘要（全局 AI 用）
-  AiConfig _aiConfig = const AiConfig(); // AI 解读配置（出厂无存档时默认公益端点，见 initState）
+  AiConfig _aiConfig = const AiConfig(); // AI 解读配置（出厂默认关闭；悬浮入口点击时弹窗引导开启，见 _openAiChat）
   bool _closeToTray = true; // 桌面端：关闭窗口是否收起到托盘（设置页开关镜像）
   int _aiSessionReset = 0; // 一键清除时自增：通知选课页清掉 AI 问答历史等会话态
   bool _teacherMode = false; // 导师审阅模式（只读审阅学生分享包；不登录教务）
@@ -280,15 +290,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _mode = DataMode.zju;
       });
     }
-    // AI 解读配置：出厂从未存过配置 → 默认「公益免费」端点（开箱即用，诉求 #4：
-    // 免 Key、有限额）；用户显式保存过（含选「关闭」）后完全尊重其选择。
-    // 缺失/损坏回落 none 同样按未存过处理（下次开机仍是免费端点）。
+    // AI 解读配置（2026-10-18 需求）：出厂默认「关闭」——首次安装不再预启用任何
+    // 端点；悬浮 AI 入口首次点击时会弹窗引导开启公益免费模型（见 _openAiChat）。
+    // 用户显式保存过（含选「关闭」或自填 Key 的自有服务）后一切按存档走；
+    // 缺失/损坏回落 none 同样视为关闭，绝不猜提供方。
     final aiCfg = await _store.loadAiConfig();
-    final firstRun =
-        aiCfg.provider == AiProvider.none && !await _store.hasStoredAiConfig();
+    if (mounted) setState(() => _aiConfig = aiCfg);
+    // 底栏排序与启动默认首页（2026-10-18 需求 #9）：损坏/缺省回落 '0,1,2,3'/学业。
+    final tabOrder = await _store.loadTabOrder();
+    final defaultTab = await _store.loadDefaultTab();
+    // 外语等级（需求 #5）：缺省 null（未选择，按方案原要求核算）。
+    final foreignLevel = await _store.loadForeignLevel();
     if (mounted) {
-      setState(() => _aiConfig =
-          firstRun ? AiConfig.preset(AiProvider.pollinations) : aiCfg);
+      setState(() {
+        _tabOrder = tabOrder;
+        _defaultTab = defaultTab;
+        _foreignLevel = foreignLevel;
+        // 仅在用户还没手动切页时应用启动默认页，避免异步加载覆盖正在浏览的页。
+        if (!_userNavigated) _tabIndex = defaultTab;
+      });
     }
     // 桌面端："关闭收起到托盘"偏好（默认开）——main() 已按存档设置关闭拦截，
     // 这里把同一值同步到设置页开关，避免两处状态不一致。
@@ -425,10 +445,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }));
   }
 
-  /// 「分享给导师」导出（诉求：导师模式 P1）：当前审计数据 → 脱敏分享包。
+  /// 「分享给指导教师」导出（导师模式 P1 + 需求 #12）：当前审计数据 → 脱敏分享包。
   /// 剪贴板 + 沙箱 share/ 双通道；实名选项默认关（alias 保持匿名）。
+  /// [aiAdvice] 为选课页「导出给指导教师」传来的 AI 咨询问答（自愿附带）。
   /// 返回提示文本（行数/路径），失败返回原因——设置页直接展示。
-  Future<String> _exportSharePack({bool realName = false}) async {
+  Future<String> _exportSharePack(
+      {bool realName = false, List<Map<String, String>>? aiAdvice}) async {
     if (_courses.isEmpty || _report == null) {
       return '尚未完成学业审计：先在设置页运行一次审计（登录教务或样例均可）';
     }
@@ -446,6 +468,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       student: student,
       courses: _courses,
       plan: _auditPlan,
+      aiAdvice: aiAdvice,
     );
     await Clipboard.setData(ClipboardData(text: packed.jsonText));
     String pathNote;
@@ -491,7 +514,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() => _notice = '培养方案尚未加载完成，请稍候重试');
       return;
     }
-    final out = engine.main(record);
+    final out = engine.main(record, action: _auditAction());
     if (out.containsKey('error')) {
       setState(() => _notice = out['error'].toString());
       return;
@@ -513,6 +536,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       }
     }
     setState(() {
+      _lastRecord = record;
       _report = out['report'] as Map<String, dynamic>;
       _lastStudent = (record['student'] as Map?)?.cast<String, dynamic>();
       _courses = (record['courses'] as List).cast<Map<String, dynamic>>();
@@ -750,6 +774,56 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (mounted) setState(() => _aiConfig = cfg);
   }
 
+  /// 全局 AI 入口统一开闸（2026-10-18 需求）：AI 未启用时先弹窗询问「是否开启
+  /// AI 解读？」，同意则写入公益免费端点并存档后再唤起对话；已启用（含用户在
+  /// 设置里自填 Key 的自有服务）一律按当前存档直开抽屉，不弹任何窗——
+  /// 「我目前选的是什么就是什么」。取消开启时不写入配置，仍打开抽屉：里面是
+  /// 「去设置」引导空态，用户可自行配置后进入。
+  ///
+  /// 发送范围提示复用 ai_prompts 的全局口径常量 [kAiChatSendNotice]，不另写文案
+  /// （刻意不用选课页一次性解读的 kAiSendNotice：那份口径写着「不发送成绩」，
+  /// 而全局助手按仓库约定会读取已修课程成绩，用它反而是合规误述）。
+  ///
+  /// 刻意不收 BuildContext 参数：两个调用点（悬浮帆/导师审阅）都在本 State 的
+  /// build 闭包里，直接用 State.context + mounted 守卫，避免跨 async gap 用
+  /// 外来 context 触发 use_build_context_synchronously。
+  Future<void> _openAiChat({
+    String? contextSummary,
+    String? Function()? contextProvider,
+    VoidCallback? onGoSettings,
+  }) async {
+    if (!_aiConfig.enabled) {
+      final enable = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('是否开启 AI 解读？'),
+          content: const Text(kAiChatSendNotice),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('开启（公益免费模型）')),
+          ],
+        ),
+      );
+      if (enable == true && mounted) {
+        await _setAiConfig(AiConfig.preset(AiProvider.pollinations));
+      }
+      if (!mounted) return;
+    }
+    unawaited(showAiChat(
+      context,
+      controller: _aiCtrl,
+      config: _aiConfig,
+      onGoSettings:
+          onGoSettings ?? () => setState(() => _tabIndex = tabSettings),
+      contextSummary: contextSummary,
+      contextProvider: contextProvider,
+    ));
+  }
+
   /// AI 连接测试：最小请求验证密钥/地址（不携带任何教务数据）。
   /// 全 catch 兜底：AiClient 有意只捕 Exception（Error 属编程缺陷）；但测试按钮
   /// 不能因此软锁死，任何意外都要回落成可读文案（评审实测：漏写 scheme 会抛 Error）。
@@ -808,6 +882,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await _store.deleteCredentials();
     await _store.deleteUiPrefs(); // 窗口偏好也属本地数据；下面恢复出厂默认（收起到托盘）
     await _store.deleteAiConfig(); // AI 密钥属"全部本地数据"，必须一并删除（合规承诺）
+    await _store.deleteNavPrefs(); // 底栏排序/默认首页同属本地偏好（需求 #9）
     await _store.clearCache();
     _store.clearMemory();
     _client.disposeClient();
@@ -856,77 +931,169 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (_) {/* 插件缺失（非桌面）时无事可做 */}
   }
 
+  /// 设置页（学生态 / 选课指导模式共用；需求 #13：指导模式也能进设置）。
+  /// 底栏排序与启动默认首页的状态在此接线（需求 #9）。
+  Widget _settingsPage() {
+    return SettingsPage(
+      mode: _mode,
+      onModeChange: (m) => setState(() => _mode = m),
+      major: _major,
+      onMajorChange: (v) => setState(() => _major = v ?? _major),
+      current: _current,
+      onCurrentChange: (v) => setState(() => _current = v ?? _current),
+      majors: majors,
+      userCtl: _userCtl,
+      passCtl: _passCtl,
+      pasteCtl: _pasteCtl,
+      busy: _busy,
+      onRun: switch (_mode) {
+        DataMode.sample => _fromSample,
+        DataMode.paste => _fromPaste,
+        DataMode.zju => () => _fromZju(),
+      },
+      notice: _notice,
+      loggedInAs: _loggedInAs,
+      lastDataAt: _lastDataAt,
+      onClearData: _clearData,
+      aiConfig: _aiConfig,
+      onAiConfigChange: _setAiConfig,
+      onTestAi: _testAi,
+      onListAiModels: _listAiModels,
+      courses: _courses,
+      choosed: _choosed,
+      matchedPlan: _matchedPlan,
+      planNote: _planQuality,
+      onGoPlan: () => setState(() => _tabIndex = tabPlan),
+      closeToTray: _closeToTray,
+      onCloseToTrayChange: _supportsTray ? _setCloseToTray : null,
+      onQuit: _isDesktopWindowed ? _quitApp : null,
+      onExportSharePack: ({bool realName = false}) =>
+          _exportSharePack(realName: realName),
+      onEnterTeacherMode: () {
+        setState(() {
+          _teacherMode = true;
+          _teacherTab = 0;
+        });
+        unawaited(_saveSession());
+      },
+      tabOrder: _tabOrder,
+      onTabOrderChange: (o) {
+        setState(() => _tabOrder = o);
+        unawaited(_store.saveTabOrder(o));
+      },
+      defaultTab: _defaultTab,
+      onDefaultTabChange: (i) {
+        setState(() {
+          _defaultTab = i;
+          // 用户在本会话已手动切过页则不抢当前页；未切过则立即生效所见即所得。
+          if (!_userNavigated) _tabIndex = i;
+        });
+        unawaited(_store.saveDefaultTab(i));
+      },
+      teacherMode: _teacherMode,
+      foreignLevel: _foreignLevel,
+      onForeignLevelChange: (v) {
+        setState(() => _foreignLevel = v);
+        unawaited(_store.saveForeignLevel(v));
+        unawaited(_recomputeAudit());
+      },
+    );
+  }
+
+  /// 审计动作参数（需求 #5）：仅在学生选定了外语等级时传入；null → 引擎按方案原要求。
+  Map<String, dynamic>? _auditAction() =>
+      _foreignLevel == null ? null : {'foreign_lang_level': _foreignLevel};
+
+  /// 外语等级变更后用同一份记录重算审计（无记录则跳过——首次审计自然带新值）。
+  Future<void> _recomputeAudit() async {
+    final rec = _lastRecord;
+    if (rec == null) return;
+    await _runAudit(rec);
+  }
+
   @override
   Widget build(BuildContext context) {
-    // 导师审阅模式：整页审阅台形态——无四页签、无 AI 悬浮帆、不建教务会话。
-    // 退出入口固定在顶部条（防"进去出不来"）；学生数据与审阅包数据完全隔离。
+    // 显示位 ↔ 规范索引映射（需求 #9）：_tabOrder[k] = 规范索引；
+    // IndexedStack 永远按规范索引排，NavigationBar 按显示位排，点击时反查。
+    final order = _tabOrder.split(',').map(int.parse).toList();
+    final displayIndex = order.indexOf(_tabIndex);
+
+    // 选课指导模式（原导师审阅，需求 #3/#13）：不再是"整页弹窗"式孤岛——
+    // 独立底栏（指导/设置/返回学生），审阅台可用 AI 入口（点击未启用时
+    // 同样走 _openAiChat 开闸弹窗）。学生数据与审阅包数据依旧完全隔离。
     if (_teacherMode) {
       return Scaffold(
         body: SafeArea(
           top: true,
-          bottom: true,
-          child: Column(
+          bottom: false,
+          child: IndexedStack(
+            index: _teacherTab,
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                child: Row(
-                  children: [
-                    const Text('导师审阅模式',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: () {
-                        setState(() => _teacherMode = false);
-                        unawaited(_saveSession());
-                      },
-                      icon: const Icon(Icons.exit_to_app_outlined, size: 18),
-                      label: const Text('返回学生模式'),
-                    ),
-                  ],
-                ),
+              TeacherReviewPage(
+                onAudit: (record) {
+                  final engine = _engine;
+                  if (engine == null) {
+                    return {'error': '培养方案引擎尚未加载，请稍候重试'};
+                  }
+                  return engine.main(record);
+                },
+                onRegisterPlan: (major, plan) =>
+                    _engine?.registerRuntimePlan(major, plan),
+                saveCache: _store.saveCache,
+                readCache: _store.readCache,
+                // #13：AI 常开可达——未启用时 _openAiChat 弹窗引导，不再隐藏入口。
+                onAskAi: (report) {
+                  final sub = auditSubsetOf(report);
+                  unawaited(_openAiChat(
+                    contextSummary: sub == null
+                        ? null
+                        : const JsonEncoder.withIndent('  ').convert(sub),
+                    onGoSettings: () => setState(() => _teacherTab = 1),
+                  ));
+                },
+                listPacks: () async {
+                  final dir = await _store.sandboxDirPath();
+                  return listSharePackFiles(dir);
+                },
+                readPackFile: (path) async {
+                  try {
+                    return await File(path).readAsString();
+                  } catch (_) {
+                    return null;
+                  }
+                },
               ),
-              Expanded(
-                child: TeacherReviewPage(
-                  onAudit: (record) {
-                    final engine = _engine;
-                    if (engine == null) {
-                      return {'error': '培养方案引擎尚未加载，请稍候重试'};
-                    }
-                    return engine.main(record);
-                  },
-                  onRegisterPlan: (major, plan) =>
-                      _engine?.registerRuntimePlan(major, plan),
-                  saveCache: _store.saveCache,
-                  readCache: _store.readCache,
-                  onAskAi: _aiConfig.enabled
-                      ? (report) {
-                          final sub = auditSubsetOf(report);
-                          showAiChat(
-                            context,
-                            controller: _aiCtrl,
-                            config: _aiConfig,
-                            onGoSettings: () {},
-                            contextSummary: sub == null
-                                ? null
-                                : const JsonEncoder.withIndent('  ').convert(sub),
-                          );
-                        }
-                      : null,
-                  listPacks: () async {
-                    final dir = await _store.sandboxDirPath();
-                    return listSharePackFiles(dir);
-                  },
-                  readPackFile: (path) async {
-                    try {
-                      return await File(path).readAsString();
-                    } catch (_) {
-                      return null;
-                    }
-                  },
-                ),
-              ),
+              _settingsPage(),
             ],
           ),
+        ),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _teacherTab,
+          onDestinationSelected: (i) {
+            if (i == 2) {
+              setState(() {
+                _teacherMode = false;
+                _teacherTab = 0;
+              });
+              unawaited(_saveSession());
+              return;
+            }
+            setState(() => _teacherTab = i);
+          },
+          destinations: const [
+            NavigationDestination(
+                icon: Icon(Icons.groups_outlined),
+                selectedIcon: Icon(Icons.groups),
+                label: '指导'),
+            NavigationDestination(
+                icon: Icon(Icons.settings_outlined),
+                selectedIcon: Icon(Icons.settings),
+                label: '设置'),
+            NavigationDestination(
+                icon: Icon(Icons.exit_to_app_outlined),
+                selectedIcon: Icon(Icons.exit_to_app),
+                label: '返回学生'),
+          ],
         ),
       );
     }
@@ -986,58 +1153,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             resetToken: _aiSessionReset,
             onGoSettings: () => setState(() => _tabIndex = tabSettings),
             onAiContext: (s) => _selectionSummary = s,
-          ),
-          SettingsPage(
-            mode: _mode,
-            onModeChange: (m) => setState(() => _mode = m),
-            major: _major,
-            onMajorChange: (v) => setState(() => _major = v ?? _major),
-            current: _current,
-            onCurrentChange: (v) => setState(() => _current = v ?? _current),
-            majors: majors,
-            userCtl: _userCtl,
-            passCtl: _passCtl,
-            pasteCtl: _pasteCtl,
-            busy: _busy,
-            onRun: switch (_mode) {
-              DataMode.sample => _fromSample,
-              DataMode.paste => _fromPaste,
-              DataMode.zju => () => _fromZju(),
-            },
-            notice: _notice,
-            loggedInAs: _loggedInAs,
-            lastDataAt: _lastDataAt,
-            onClearData: _clearData,
-            aiConfig: _aiConfig,
-            onAiConfigChange: _setAiConfig,
-            onTestAi: _testAi,
-            onListAiModels: _listAiModels,
-            courses: _courses,
-            choosed: _choosed,
-            matchedPlan: _matchedPlan,
-            planNote: _planQuality,
-            onGoPlan: () => setState(() => _tabIndex = tabPlan),
-            closeToTray: _closeToTray,
-            onCloseToTrayChange: _supportsTray ? _setCloseToTray : null,
-            onQuit: _isDesktopWindowed ? _quitApp : null,
-            onExportSharePack: ({bool realName = false}) =>
-                _exportSharePack(realName: realName),
-            onEnterTeacherMode: () {
-              setState(() => _teacherMode = true);
-              unawaited(_saveSession());
+            // 需求 #12：选课页「导出给指导教师」→ 当前审计 + AI 问答合并成分享包。
+            onExportAdvice: (advice) async {
+              final messenger = ScaffoldMessenger.of(context); // await 前先捕获
+              final msg = await _exportSharePack(aiAdvice: advice);
+              if (mounted) {
+                setState(() => _notice = msg);
+                messenger.showSnackBar(
+                    SnackBar(content: Text(msg), duration: const Duration(seconds: 4)));
+              }
             },
           ),
+          _settingsPage(),
         ],
         ),
       ),
       // 全局 AI 对话悬浮入口（诉求 #9）。上下文摘要由 buildAiContextJson 汇总
       // 学业/方案/审计/选课的脱敏子集（不含姓名/学号/凭证），只进 system 消息。
+      // 未启用时入口先弹「是否开启 AI 解读」弹窗（_openAiChat 统一开闸）。
       floatingActionButton: FloatingActionButton(
-        onPressed: () => showAiChat(
-          context,
-          controller: _aiCtrl,
-          config: _aiConfig,
-          onGoSettings: () => setState(() => _tabIndex = tabSettings),
+        onPressed: () => _openAiChat(
           // 每一轮发送前重新生成，聊天过程中数据更新后 AI 也能读到最新值。
           contextProvider: _aiContextSummary,
         ),
@@ -1045,25 +1180,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         child: const BoatIcon(size: 26),
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _tabIndex,
-        onDestinationSelected: (i) => setState(() => _tabIndex = i),
-        destinations: const [
-          NavigationDestination(
-              icon: Icon(Icons.dashboard_outlined),
-              selectedIcon: Icon(Icons.dashboard),
-              label: '学业'),
-          NavigationDestination(
-              icon: Icon(CurriculumPlanPage.tabIcon),
-              selectedIcon: Icon(CurriculumPlanPage.tabIconSelected),
-              label: CurriculumPlanPage.tabLabel),
-          NavigationDestination(
-              icon: Icon(CourseSelectPage.tabIcon),
-              selectedIcon: Icon(CourseSelectPage.tabIconSelected),
-              label: CourseSelectPage.tabLabel),
-          NavigationDestination(
-              icon: Icon(Icons.settings_outlined),
-              selectedIcon: Icon(Icons.settings),
-              label: '设置'),
+        selectedIndex: displayIndex < 0 ? 0 : displayIndex,
+        onDestinationSelected: (i) => setState(() {
+          _tabIndex = order[i];
+          _userNavigated = true;
+        }),
+        // 需求 #9：底栏元素顺序按 _tabOrder 重排（内容/图标仍属规范索引）。
+        destinations: [
+          for (final canon in order)
+            switch (canon) {
+              1 => NavigationDestination(
+                  icon: const Icon(CurriculumPlanPage.tabIcon),
+                  selectedIcon: const Icon(CurriculumPlanPage.tabIconSelected),
+                  label: CurriculumPlanPage.tabLabel),
+              2 => NavigationDestination(
+                  icon: const Icon(CourseSelectPage.tabIcon),
+                  selectedIcon: const Icon(CourseSelectPage.tabIconSelected),
+                  label: CourseSelectPage.tabLabel),
+              3 => NavigationDestination(
+                  icon: const Icon(Icons.settings_outlined),
+                  selectedIcon: const Icon(Icons.settings),
+                  label: '设置'),
+              _ => NavigationDestination(
+                  icon: const Icon(Icons.dashboard_outlined),
+                  selectedIcon: const Icon(Icons.dashboard),
+                  label: '学业'),
+            },
         ],
       ),
     );

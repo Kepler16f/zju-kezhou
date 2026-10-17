@@ -54,7 +54,6 @@ class TeacherReviewPage extends StatefulWidget {
 
 class _TeacherReviewPageState extends State<TeacherReviewPage> {
   static const _cacheKey = 'review_last_pack';
-
   final TextEditingController _pasteCtl = TextEditingController();
   Map<String, dynamic>? _pack; // 当前审阅的包（已 parse 通过）
   Map<String, dynamic>? _report; // 审计结果
@@ -231,7 +230,7 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
                   children: [
                     const Icon(Icons.school_outlined, size: 20),
                     const SizedBox(width: 8),
-                    const Text('导师审阅模式',
+                    const Text('选课指导模式',
                         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
                     const Spacer(),
                     Text(pack == null ? '待导入' : '审阅中',
@@ -330,6 +329,32 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
           const SizedBox(height: 8),
           const SectionTitle('学业达成审计'),
           ReportSection(report: report),
+          // 需求 #12：学生随包自愿附带的 AI 选课咨询问答（只展示文本，不重算）。
+          if (sharePackAdvice(pack) != null) ...[
+            const SizedBox(height: 8),
+            const SectionTitle('学生附带的 AI 选课咨询'),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('以下内容由学生自愿导出；AI 生成，仅作沟通参考，'
+                        '选课与学业认定以教务系统和你本人判断为准。',
+                        style: TextStyle(fontSize: 11, color: Colors.grey)),
+                    const SizedBox(height: 6),
+                    for (final (i, x) in sharePackAdvice(pack)!.indexed) ...[
+                      if (i > 0) const Divider(height: 16),
+                      Text('问：${x['q']}', style: const TextStyle(fontSize: 12)),
+                      const SizedBox(height: 4),
+                      SelectableText('${x['a']}',
+                          style: const TextStyle(fontSize: 13, height: 1.5)),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 8),
           // 审阅意见导出 + AI 助手（可选注入）
           Card(
@@ -378,7 +403,7 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
                       style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 6),
                   const Text(
-                    '请学生：打开课舟 → 完成学业审计 → 设置页「分享给导师」→ 复制/发送文件；'
+                    '请学生：打开课舟 → 完成学业审计 → 设置页「分享给指导教师」→ 复制/发送文件；'
                     '你在此粘贴内容或点「从剪贴板导入」即可审阅。\n'
                     '分享包不含学号、分数、绩点与任何教务凭证（见包内 privacy_notice）。',
                     style: TextStyle(fontSize: 12, color: Colors.grey, height: 1.6),

@@ -29,6 +29,7 @@ class GradeDetailPage extends StatefulWidget {
 
 class _GradeDetailPageState extends State<GradeDetailPage> {
   late Map<String, Map<String, bool>> _marks = Map.of(widget.marks);
+  String? _selectedSem; // 学期子标签选中项（诉求 #8）；null = 全部学期平铺
 
   @override
   void didUpdateWidget(GradeDetailPage old) {
@@ -72,12 +73,18 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
                       style:
                           const TextStyle(fontSize: 11, color: Colors.grey)),
                 ),
+                // 学期子标签（诉求 #8）：等宽 chips，点选过滤学期分组。
+                if (semesters.length > 1) _semesterChips(context, semesters),
                 if (widget.choosed != null)
                   _choosedCard(context, widget.choosed!),
               ],
             );
           }
           final sem = semesters[i - 1];
+          // 诉求 #8：选中某学期时只展示该分组；「全部」恢复平铺。
+          if (_selectedSem != null && sem != _selectedSem) {
+            return const SizedBox.shrink();
+          }
           final bucket = courses
               .where((c) => (c['semester'] as String? ?? 'unknown') == sem)
               .toList()
@@ -116,6 +123,49 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
           );
         },
       ),
+    );
+  }
+
+  /// 学期子标签（诉求 #8）：全部 Tab/Chip 固定等宽——LayoutBuilder 量宽后按
+  /// [semesterChipColumns] 均分每行宽度，放不下自动换行（移动端不挤）。
+  /// 点选某学期只显示该分组；「全部」恢复平铺。
+  Widget _semesterChips(BuildContext context, List<String> semesters) {
+    final chips = <MapEntry<String?, String>>[
+      const MapEntry(null, '全部'),
+      for (final s in semesters) MapEntry(s, termCodeLabel(s)),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 6, 4, 2),
+      child: LayoutBuilder(builder: (context, cons) {
+        const gap = 6.0;
+        final perRow = semesterChipColumns(cons.maxWidth);
+        final chipW = (cons.maxWidth - gap * (perRow - 1)) / perRow;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: [
+            for (final c in chips)
+              SizedBox(
+                width: chipW,
+                child: ChoiceChip(
+                  label: SizedBox(
+                    width: double.infinity,
+                    child: Text(c.value,
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12)),
+                  ),
+                  selected: _selectedSem == c.key,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  onSelected: (_) => setState(() => _selectedSem = c.key),
+                ),
+              ),
+          ],
+        );
+      }),
     );
   }
 
@@ -272,4 +322,14 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
     // "2023-A" → "2023秋冬"；"2023-B" → "2024春夏"（诉求 #8：日历标签）
     return termCodeLabel(sem);
   }
+}
+
+/// 学期子标签每行列数（诉求 #8 等宽，纯函数，测试锁定于 test/match_normalize_test.dart）：
+/// 尽量保证每枚 chip ≥96px（容纳「2023秋冬」6 字标签），窄屏自动减列换行，
+/// 宽屏封顶 8 列防标签过散。非法/零宽输入按 1 列处理。
+int semesterChipColumns(double maxWidth) {
+  if (maxWidth <= 0) return 1;
+  final n = (maxWidth / 96).floor();
+  if (n < 1) return 1;
+  return n > 8 ? 8 : n;
 }

@@ -11,6 +11,7 @@
       "notes": [],
       "required": 34.0,
       "earned": 32.0,
+      "selected_no_credit": 0,
       "gap": 2.0,
       "remaining_future": 2.0,
       "color": "yellow",
@@ -385,6 +386,7 @@
       "notes": [],
       "required": 39.0,
       "earned": 23.0,
+      "selected_no_credit": 4,
       "gap": 16.0,
       "remaining_future": 16.0,
       "color": "yellow",
@@ -719,6 +721,7 @@
       "notes": [],
       "required": 8.0,
       "earned": 3.0,
+      "selected_no_credit": 2,
       "gap": 5.0,
       "remaining_future": 7.0,
       "color": "yellow",
@@ -897,6 +900,7 @@
       "notes": [],
       "required": 18.0,
       "earned": 0.0,
+      "selected_no_credit": 0,
       "gap": 18.0,
       "remaining_future": 16.0,
       "color": "red",
@@ -1094,6 +1098,7 @@
       "notes": [],
       "required": 4.0,
       "earned": 0.0,
+      "selected_no_credit": 0,
       "gap": 4.0,
       "remaining_future": 2.0,
       "color": "red",
@@ -1351,9 +1356,14 @@
     "earned": 58.0,
     "gap": 45.0
   },
+  "caliber_notes": [
+    "earned=已获学分：仅统计已通过且计入学分的课程，同一门课重修/补考只计一次；弃修/待录/缓考/无效不计入。",
+    "selected_no_credit=已选未获学分：本模块内已修未通过（含在修未出分、弃修/待录/缓考/无效）或已列入计划选课、尚未取得学分的课程门数（按方案课程去重），与 earned 分开呈现，请勿相加当作总进度。"
+  ],
   "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
   "trace": {
     "plan": "2023级计算机专业本科培养方案（合成演示样例） 2023级（核验日 2026-10-13）",
-    "engine": "v1.2"
+    "engine": "v1.3",
+    "notes": []
   }
 }

@@ -319,10 +319,15 @@ XkIndexParseResult parseXkIndexHtml(String html) {
   // 锚点示例：<a class="category" data-dl="EA" data-lx="bl"
   //   onclick="categroyClick(this,'EA','bl')">思政类</a>
   // 不再假设属性顺序/引号类型/无嵌套标签：逐 <a> 解析，属性顺序任意。
-  final zjuAnchors =
-      RegExp(r'<a\b[^>]*categroyClick[^>]*>.*?</a>',
-              caseSensitive: false, dotAll: true)
-          .allMatches(html);
+  // #10（认定型课程不显示）：同一 dl 可挂多个 lx 子入口（docs §1.1 实测 lx=bl/zl；
+  // 认定型子入口的 lx 取值/独立端点待探针确认），去重键必须带 lx——按 dl 单键去重
+  // 会把「必修/认定」类子入口整类吞掉。锚点也可能只带 data-dl/data-lx 而无
+  // categroyClick（认定页标记变体），故两条正则并集，onclick 有值时优先。
+  final zjuAnchorRe = RegExp(
+      r'<a\b[^>]*(?:categroyClick|data-dl)[^>]*>.*?</a>',
+      caseSensitive: false,
+      dotAll: true);
+  final zjuAnchors = zjuAnchorRe.allMatches(html);
   final zjuByDl = <String, ({String dl, String lx, String label})>{};
   for (final m in zjuAnchors) {
     final anchor = m.group(0)!;
@@ -342,12 +347,13 @@ XkIndexParseResult parseXkIndexHtml(String html) {
             inner.replaceAll(RegExp(r'<[^>]+>'), '').replaceAll(RegExp(r'\s+'), ' ').trim())
         .trim();
     if (dl.isEmpty) continue;
-    final existing = zjuByDl[dl];
-    // 同一 dl 出现多个锚点时，优先保留 lx 非空的那一个（子节点通常才挂课程）。
+    final key = '$dl\u0000$lx'; // 同 dl 跨 lx 子入口不去重（#10），同 dl 同 lx 才合并
+    final existing = zjuByDl[key];
+    // 同一 (dl,lx) 出现多个锚点时，优先保留 lx 非空的那一个（子节点通常才挂课程）。
     if (existing == null ||
         (existing.lx.isEmpty && lx.isNotEmpty) ||
         (existing.label.isEmpty && label.isNotEmpty)) {
-      zjuByDl[dl] = (dl: dl, lx: lx, label: label.isEmpty ? dl : label);
+      zjuByDl[key] = (dl: dl, lx: lx, label: label.isEmpty ? dl : label);
     }
   }
   if (zjuByDl.isNotEmpty) {
@@ -575,8 +581,11 @@ XkListParseResult parseXkCourseList(String body,
     }
     final tags = _collectTags(m);
     final categoryLabel = label.trim();
+    // 类别入口身份（诉求 #11）：categories 是结构化类别列表（单行来自一个入口）；
+    // tags 仍兼容混排入口名（建议卡类别推断等读取点未迁移，勿只删不加）。
+    final categories = <String>[if (categoryLabel.isNotEmpty) categoryLabel];
     if (categoryLabel.isNotEmpty && !tags.contains(categoryLabel)) {
-      tags.add(categoryLabel); // 类别入口身份随课程保留，供建议卡/方案类别对照
+      tags.add(categoryLabel);
     }
     final sksj = _pick(m, const ['sksj', 'skTime', 'time']).trim();
     var slots = <Map<String, dynamic>>[];
@@ -600,6 +609,7 @@ XkListParseResult parseXkCourseList(String body,
       xqjmc: _pick(m, const ['xqjmc', 'campus']).trim(),
       subTerm: _pick(m, const ['xxq']),
       tags: tags,
+      categories: categories,
       cap: _int(_pick(m, const ['jxbrl', 'capacity'])),
       selected: _int(_pick(m, const ['yxzrs', 'selected_number', 'yxrs'])),
       slots: slots,

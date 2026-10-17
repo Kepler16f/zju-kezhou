@@ -46,6 +46,9 @@ class XkCourse {
   final int? selected; // 已选人数（未知 → null）
   final List<Map<String, dynamic>> slots; // 解析后时隙（对齐 Timeline.slotsConflict 消费 schema）
   final List<String> tags; // 课程标签/性质（如 通识核心课/专业选修/思政…；来自教务课程性质字段）
+  final List<String> categories; // 观测来源类别入口名（诉求 #11：单行来自一个入口，仍用列表
+                                 // 承载；跨入口合并见 XkMergedCourse.categories。与 tags 分开：
+                                 // tags 兼容保留入口名混排，读取点不动）
   final String xkkzId; // 来源入口
   final String? xklc;
   final Map<String, dynamic> raw; // 原始行（诊断/展开详情用；不含任何凭证）
@@ -66,6 +69,7 @@ class XkCourse {
     this.selected,
     this.slots = const [],
     this.tags = const [],
+    this.categories = const [],
     this.xkkzId = '',
     this.xklc,
     this.raw = const {},
@@ -131,7 +135,10 @@ class XkMergedCourse {
   final Map<String, XkObservation> byRound; // xkkzId -> 观测
   final List<String> roundOrder; // 入口出现顺序（保持拉取顺序）
   final List<String> notes; // 本条留痕
-  final List<String> tags; // 跨入口标签并集（课程性质/类别入口）
+  final List<String> tags; // 跨入口标签并集（课程性质/类别入口；兼容字段，读取点未迁移）
+  final List<String> categories; // 跨入口类别列表（诉求 #11）：合并各观测来源的类别，
+                                 // 去重保序——同一门课可属于多个类别标签（跨轮/跨入口），
+                                 // UI 逐标签出 Chip，不再只认单个来源入口
   final List<Map<String, dynamic>> slots; // 跨入口时隙并集（冲突检测）
   const XkMergedCourse({
     required this.base,
@@ -139,6 +146,7 @@ class XkMergedCourse {
     required this.roundOrder,
     this.notes = const [],
     this.tags = const [],
+    this.categories = const [],
     this.slots = const [],
   });
 
@@ -287,6 +295,14 @@ XkMergeResult mergeXkCourses(List<XkCourse> all) {
       cNotes.add('同一入口存在多行记录，容量/已选为最后一行的快照。');
     }
     final mergedTags = <String>{for (final c in list) ...c.tags};
+    // 类别合并（诉求 #11）：按观测顺序并集、去重保序——先到的来源类别排前面，
+    // 同一类别跨入口重复观测只保留一个。tags 仍是并集兼容口径，两者不互相改写。
+    final seenCats = <String>{};
+    final mergedCategories = <String>[
+      for (final c in list)
+        for (final t in c.categories)
+          if (seenCats.add(t)) t,
+    ];
     final mergedSlots = <Map<String, dynamic>>[
       for (final c in list) ...c.slots,
     ];
@@ -296,6 +312,7 @@ XkMergeResult mergeXkCourses(List<XkCourse> all) {
       roundOrder: roundOrder,
       notes: cNotes,
       tags: mergedTags.toList(),
+      categories: mergedCategories,
       slots: mergedSlots,
     ));
   }
@@ -320,6 +337,7 @@ int _fieldCount(XkCourse c) {
   if (c.selected != null) n++;
   // 标签/时隙也是展示与冲突判断的关键字段：带标签的观测更应成为 base。
   if (c.tags.isNotEmpty) n += 2;
+  if (c.categories.isNotEmpty) n++;
   if (c.slots.isNotEmpty) n++;
   if (c.subTerm.isNotEmpty) n++;
   return n;

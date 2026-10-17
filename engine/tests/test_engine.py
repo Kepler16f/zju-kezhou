@@ -228,5 +228,129 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(mc["color"], "yellow")  # 缺6，SE3002/SE3003 可补
 
 
+class GroupRuleTest(unittest.TestCase):
+    """需求 #5（v1.3）：选课组「四选一」按至少 N 门折算，不再全量和。"""
+
+    @staticmethod
+    def _plan(required=8.0):
+        return {
+            "meta": {"major": "group_test", "source_doc": "d.pdf",
+                     "grade": "2023", "verified_at": "2026-01-01"},
+            "modules": [{"module_id": "wr", "module_path": "通识必修·大学写作（四选一）",
+                         "title": "大学写作", "level": 1, "category": "选修",
+                         "required_credits": required, "plan_credits_raw": None,
+                         "plan_credits_unit": None, "notes": []}],
+            "courses": [
+                {"course_id": "W%d" % i, "name": "写作%d" % i, "credits": 2.0, "module_id": "wr",
+                 "offered": ["秋", "春"], "offered_years": None, "prereq": [],
+                 "source": {"page": 2}} for i in range(1, 5)
+            ],
+        }
+
+    def test_four_pick_one_not_full_sum(self):
+        r = audit.build(rec(courses=[cr("W1", "写作1", 2.0)]), self._plan())
+        m = r["summary"][0]
+        self.assertEqual(m["required"], 2.0)   # 1 门最便宜，不再 8 分
+        self.assertEqual(m["gap"], 0.0)
+        self.assertEqual(m["color"], "green")
+        self.assertTrue(any("选课组口径" in n for n in r["caliber_notes"]))
+
+    def test_correct_annotation_untouched(self):
+        r = audit.build(rec(courses=[cr("W1", "写作1", 2.0)]), self._plan(required=2.0))
+        self.assertEqual(r["summary"][0]["required"], 2.0)  # 要求 < 全组和：不动
+        self.assertFalse(any("选课组口径" in n for n in r["caliber_notes"]))
+
+    def test_n_select_field_group(self):
+        plan = self._plan()
+        plan["modules"][0]["n_select"] = 1
+        plan["modules"][0]["module_path"] = "通识选修"  # 去"四选一"字样，验证结构化字段
+        r = audit.build(rec(courses=[cr("W1", "写作1", 2.0)]), plan)
+        self.assertEqual(r["summary"][0]["required"], 2.0)
+
+    def test_multi_label_course_counted_once(self):
+        # 同名课重复行（多标签）：组内学分去重，只计一次
+        plan = self._plan(required=2.0)
+        c2 = dict(plan["courses"][0])
+        c2["source"] = {"page": 3}
+        plan["courses"].append(c2)
+        r = audit.build(rec(courses=[cr("W1", "写作1", 2.0)]), plan)
+        self.assertEqual(r["summary"][0]["earned"], 2.0)
+
+    def test_selected_no_credit(self):
+        plan = self._plan(required=2.0)
+        # 在修未出分：selected_no_credit 计 1，earned 0
+        r1 = audit.build(rec(courses=[{"course_id": "W2", "name": "写作2", "credits": 2.0,
+                                       "grade": None, "passed": False, "semester": "2025-A"}]), plan)
+        self.assertEqual(r1["summary"][0]["selected_no_credit"], 1)
+        self.assertEqual(r1["summary"][0]["earned"], 0.0)
+        # 计划选课（无成绩）同样计入
+        r2 = audit.build(rec(planned=[{"course_id": "W3", "name": "写作3", "credits": 2.0}]), plan)
+        self.assertEqual(r2["summary"][0]["selected_no_credit"], 1)
+
+    def test_engine_trace_v13_and_caliber_notes(self):
+        r = audit.build(rec(), PLANS["computer_science"])
+        self.assertEqual(r["trace"]["engine"], "v1.3")
+        self.assertIn("caliber_notes", r)
+        self.assertTrue(any("earned=已获学分" in n for n in r["caliber_notes"]))
+        self.assertTrue(any("selected_no_credit=已选未获学分" in n for n in r["caliber_notes"]))
+        for m in r["summary"]:
+            self.assertIn("selected_no_credit", m)
+
+
+class ForeignLangLevelTest(unittest.TestCase):
+    """需求 #5：外语模块要求学分按 L1=6 / L2=4.5 / L3=3 封顶；缺省不假设。"""
+
+    @staticmethod
+    def _plan(required=12.0):
+        return {
+            "meta": {"major": "fl_test", "source_doc": "d.pdf",
+                     "grade": "2023", "verified_at": "2026-01-01"},
+            "modules": [{"module_id": "fl", "module_path": "外语类", "title": "大学英语",
+                         "level": 1, "category": "必修", "required_credits": required,
+                         "plan_credits_raw": None, "plan_credits_unit": None, "notes": []}],
+            "courses": [
+                {"course_id": "FL%02d" % i, "name": "大学英语%d" % i, "credits": 3.0,
+                 "module_id": "fl", "offered": ["秋", "春"], "offered_years": None,
+                 "prereq": [], "source": {"page": 1}} for i in range(1, 5)
+            ],
+        }
+
+    def _rec(self, n=2):
+        return rec(courses=[cr("FL%02d" % i, "大学英语%d" % i, 3.0) for i in range(1, n + 1)])
+
+    def test_default_untouched(self):
+        r = audit.build(self._rec(), self._plan())
+        self.assertEqual(r["summary"][0]["required"], 12.0)
+        self.assertTrue(any("外语等级未选择" in n for n in r["trace"]["notes"]))
+        self.assertTrue(any("外语口径" in n for n in r["caliber_notes"]))
+
+    def test_caps(self):
+        for level, cap in (("L1", 6.0), ("L2", 4.5), ("L3", 3.0)):
+            r = audit.build(self._rec(4), self._plan(), action={"foreign_lang_level": level})
+            m = r["summary"][0]
+            self.assertEqual(m["required"], cap, level)
+            self.assertEqual(m["earned"], 12.0, level)  # 已获不变（封顶只降要求）
+            self.assertEqual(m["gap"], 0.0, level)
+            self.assertTrue(any("外语等级" in n for n in r["trace"]["notes"]), level)
+
+    def test_cap_never_raises(self):
+        # 要求 4 < L1 封顶 6：只降不升
+        r = audit.build(self._rec(), self._plan(required=4.0), action={"foreign_lang_level": "L1"})
+        self.assertEqual(r["summary"][0]["required"], 4.0)
+
+    def test_invalid_level(self):
+        with self.assertRaises(ValueError):
+            audit.build(self._rec(), self._plan(), action={"foreign_lang_level": "L9"})
+
+    def test_invalid_level_main_error_shape(self):
+        out = audit.main(json.dumps(self._rec()), action={"foreign_lang_level": "X1"})
+        self.assertIn("error", out)
+
+    def test_no_foreign_module(self):
+        r = audit.build(rec(), PLANS["computer_science"], action={"foreign_lang_level": "L1"})
+        self.assertTrue(any("未生效" in n for n in r["trace"]["notes"]))
+        self.assertFalse(any("外语口径" in n for n in r["caliber_notes"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
