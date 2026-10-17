@@ -129,6 +129,20 @@ class AiFailure extends AiOutcome {
   int maxTokens,
 ) {
   switch (config.provider) {
+    case AiProvider.pollinations:
+      // 公益端点（OpenAI 兼容）：无 Authorization 头、body 压到最小形状
+      //（该网关对多余采样参数偶发 400，实测 model+messages 最稳）；
+      // 端点是 /openai 本体而非 /v1/chat/completions。
+      final url = '${AiConfig.normalizeBaseUrl(config.baseUrl)}/openai';
+      final body = jsonEncode(<String, Object?>{
+        'model': config.model.isEmpty ? kFreeAiModel : config.model,
+        'messages': <Map<String, String>>[
+          <String, String>{'role': 'system', 'content': system},
+          ..._plainMessages(messages),
+        ],
+      });
+      return (url, {'Content-Type': 'application/json'}, body);
+
     case AiProvider.openai:
       final url =
           '${AiConfig.normalizeBaseUrl(config.baseUrl)}/chat/completions';

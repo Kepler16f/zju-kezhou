@@ -13,9 +13,15 @@
 library;
 
 /// 支持的 AI 服务提供方。
-/// none：未启用（默认值）；openai：OpenAI 兼容接口（本项目预设指向 DeepSeek）；
+/// none：未启用（默认值）；pollinations：免费公益端点（无需 Key，见下）；
+/// openai：OpenAI 兼容接口（本项目预设指向 DeepSeek）；
 /// anthropic：Anthropic Messages API；dify：Dify 应用 API。
-enum AiProvider { none, openai, anthropic, dify }
+enum AiProvider { none, pollinations, openai, anthropic, dify }
+
+/// Pollinations 公益端点（OpenAI 兼容 /chat/completions 形状，匿名可用、无需 Key）。
+/// 免费通道有时限流/排队；把它接进 App 的前提是"发送内容已脱敏"这一红线不变。
+const String kFreeAiBaseUrl = 'https://text.pollinations.ai';
+const String kFreeAiModel = 'openai';
 
 /// AI 配置值对象（不可变，改配置用 [copyWith]）。
 ///
@@ -38,10 +44,14 @@ class AiConfig {
   /// 地址必须带 http(s):// 协议头：漏写 scheme（如只填 api.deepseek.com）会在发送时
   /// 抛 ArgumentError（Error 类，客户端有意只捕 Exception）——在入口直接判为未配置，
   /// 把"永久忙态软锁死"变成清晰的配置提示（评审实测过的故障形态）。
-  bool get enabled =>
-      provider != AiProvider.none &&
-      apiKey.isNotEmpty &&
-      (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'));
+  /// pollinations 是公益端点：无需 Key 即开箱可用（enabled 恒真，地址固定内置）。
+  bool get enabled => switch (provider) {
+        AiProvider.none => false,
+        AiProvider.pollinations => true,
+        _ =>
+          apiKey.isNotEmpty &&
+              (baseUrl.startsWith('http://') || baseUrl.startsWith('https://')),
+      };
 
   AiConfig copyWith({
     AiProvider? provider,
@@ -100,6 +110,12 @@ class AiConfig {
   /// 有意不含 apiKey —— 预设本身不构成 enabled，避免「看起来配好了其实没钥匙」。
   static AiConfig preset(AiProvider p) {
     switch (p) {
+      case AiProvider.pollinations:
+        return const AiConfig(
+          provider: AiProvider.pollinations,
+          baseUrl: kFreeAiBaseUrl,
+          model: kFreeAiModel,
+        );
       case AiProvider.openai:
         return const AiConfig(
           provider: AiProvider.openai,

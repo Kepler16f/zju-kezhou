@@ -175,9 +175,11 @@ void main() {
     expect(find.text('建议卡（本机确定性计算）'), findsOneWidget);
     expect(find.textContaining('与课表冲突 1'), findsOneWidget);
     expect(find.textContaining('与当前课表重叠：周一 第3-4节（第1-16周）'), findsOneWidget);
-    // 无 AI 配置 → 面板显示未启用（默认关闭，无需 AI 也可用）。
-    // 注意 IndexedStack 全页构建：设置页 AI 卡也有同一标题 → findsWidgets 而非 findsOneWidget
+    // 诉求 #4：出厂预置公益免费端点（无已存配置即默认 enabled），
+    // 故选课页 AI 面板直接给出发送范围说明，不再出现「去设置」引导
+    //（仅显式关闭/未配置自有服务时才有）。
+    // 注意 IndexedStack 全页构建：设置页 AI 卡也有同一标题 → findsWidgets。
     expect(find.textContaining('AI 解读（可选）'), findsWidgets);
-    expect(find.text('去设置'), findsOneWidget);
+    expect(find.textContaining('开启后仅发送'), findsWidgets);
   });
 }

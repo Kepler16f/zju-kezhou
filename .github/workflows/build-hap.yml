@@ -63,8 +63,16 @@ jobs:
           [ -d ohos ] || flutter create --platforms ohos .
           sed -i 's/bundleName": ".*"/bundleName": "edu.zju.compass"/' ohos/AppScope/app.json5 || true
 
-      - name: 应用名改「课舟」（AppScope 与 entry 两级 string.json）
-        run: python3 ../packaging/set_ohos_app_name.py ohos
+      - name: 应用名改「课舟」（AppScope + entry 全部语言目录，en_US 用 KeZhou）
+        run: |
+          python3 ../packaging/set_ohos_app_name.py ohos
+          # 防回归：桌面标签（module.json5 → $string:EntryAbility_label）按设备语言
+          # 从 base/zh_CN/en_US 覆盖目录取词；任何一处漏改都会让装上仍显示 compass_app。
+          if grep -rl '"compass_app"' ohos/AppScope/resources ohos/entry/src/main/resources 2>/dev/null; then
+            echo "::error::仍有 string.json 携带 compass_app 显示名（见上列表）"
+            exit 1
+          fi
+          echo "桌面显示名已确认无 compass_app 残留"
 
       - name: 注入应用图标（分层：圆角矩形 + 圆形裁切安全区）
         run: |

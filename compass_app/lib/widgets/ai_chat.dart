@@ -28,6 +28,11 @@ import 'package:flutter/material.dart';
 import '../data/ai_client.dart';
 import '../data/ai_config.dart';
 import '../data/ai_prompts.dart';
+import '../data/screen_ocr.dart';
+
+/// 屏幕文字识别的注入缝：默认真机截屏（Windows 内置 OCR）；
+/// 测试注入假实现，避免 widget test 起 powershell 子进程扫真实桌面。
+typedef ScreenTextCapture = Future<ScreenOcrResult> Function();
 
 /// 历史截断上限（消息条数，user/assistant 各算一条）。
 const int kAiChatHistoryLimit = 12;
@@ -80,11 +85,15 @@ class AiChatController {
   /// 最近一次失败的中文可读文案（AiClient 已保证不含密钥；null 表示无错误）。
   String? lastError;
 
+  /// 本次会话是否已确认发送范围（公益免费端点默认开启后，首次发送仍需确认一次）。
+  bool consented = false;
+
   /// 清空会话（抽屉标题行的「清空」按钮调用）。忙碌中清空不安全，先判 busy。
   void clear() {
     if (busy) return;
     history.clear();
     lastError = null;
+    consented = false; // 会话重置：发送范围确认也重来（与清除历史同语义）
   }
 
   /// 发送一轮对话：trimHistory(history) + 本轮 user 一起提交。
@@ -172,10 +181,14 @@ class AiChatSheet extends StatefulWidget {
     required this.config,
     this.onGoSettings,
     this.contextSummary,
+    this.capture = captureScreenText,
   });
 
   final AiChatController controller;
   final AiConfig config;
+
+  /// 屏幕识别注入缝（默认真机截屏；测试传假实现，不起 powershell）。
+  final ScreenTextCapture capture;
 
   /// 未配置时「去设置页开启 AI」按钮的回调；由接线层实现跳转。
   final VoidCallback? onGoSettings;
@@ -199,6 +212,9 @@ class _AiChatSheetState extends State<AiChatSheet> {
   /// 在途请求对应的 user 气泡文本（历史里成功才有，失败即撤，与 lastError 呼应）。
   String? _pendingUserText;
 
+  /// 屏幕识别进行中（按钮转圈 + 禁用），完成后把文字填进输入框待用户确认。
+  bool _capturing = false;
+
   @override
   void dispose() {
     _input.dispose();
@@ -208,6 +224,32 @@ class _AiChatSheetState extends State<AiChatSheet> {
 
   bool get _configured => widget.config.enabled;
   bool get _busy => widget.controller.busy;
+
+  /// 识别屏幕文字 → 填入输入框（用户可编辑/清空后再发送，绝不自动外发）。
+  /// 屏幕内容可能含密码/个人信息，发送确认权始终在用户手里（文件头红线）。
+  Future<void> _captureOcr() async {
+    if (_capturing || _busy) return;
+    setState(() => _capturing = true);
+    final r = await widget.capture();
+    if (!mounted) return;
+    setState(() {
+      _capturing = false;
+      if (r.isSuccess) {
+        final t = r.text.trim();
+        if (t.isEmpty) {
+          widget.controller.lastError = '屏幕上没识别到文字';
+        } else {
+          _input.text = _input.text.trim().isEmpty
+              ? '[屏幕内容]\n$t'
+              : '${_input.text}\n\n[屏幕内容]\n$t';
+          _input.selection =
+              TextSelection.collapsed(offset: _input.text.length);
+        }
+      } else {
+        widget.controller.lastError = r.error;
+      }
+    });
+  }
 
   /// 滚到底部（放在帧尾，等 ListView 完成布局）。
   void _scrollToBottom() {
@@ -223,6 +265,27 @@ class _AiChatSheetState extends State<AiChatSheet> {
     if (ctrl.busy || !_configured) return;
     final raw = _input.text.trim();
     if (raw.isEmpty) return;
+    // 首次发送前确认发送范围（会话内一次；与选课页 _aiPanel 同口径——
+    // 公益免费端点出厂即启用后，合规上仍要保证"用户知道发出去的是什么"）。
+    if (!ctrl.consented) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('发送范围确认'),
+          content: const Text(kAiSendNotice),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('同意并发送')),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+      ctrl.consented = true;
+    }
     final firstRound = ctrl.history.isEmpty;
     _pendingUserText = raw;
     setState(() {}); // 立刻渲染 user 气泡 + 转圈
@@ -346,7 +409,21 @@ class _AiChatSheetState extends State<AiChatSheet> {
   Widget _inputRow(ThemeData theme) => Padding(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            IconButton(
+              tooltip: '识别屏幕文字填入（Windows 内置离线 OCR，不上传；'
+                  '识别结果需你确认后再发送）',
+              onPressed: (_configured && !_busy && !_capturing)
+                  ? _captureOcr
+                  : null,
+              icon: _capturing
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.crop_free),
+            ),
             Expanded(
               child: TextField(
                 key: const Key('aiChatInput'),

@@ -242,6 +242,17 @@ class CredentialStore {
     } catch (_) {/* 沙箱不可用（测试环境等）：静默 */}
   }
 
+  /// 是否存过 AI 配置（ai.cfg 存在与否）。主界面据此区分
+  /// 「出厂从未配置（默认给公益免费端点，开箱即用）」与
+  /// 「用户显式配置过（含选过关闭）→ 完全尊重用户选择」。
+  Future<bool> hasStoredAiConfig() async {
+    try {
+      return await File(p.join((await _dirGet()).path, 'ai.cfg')).exists();
+    } catch (_) {
+      return false; // 沙箱不可用：按未存过处理（等价出厂态）
+    }
+  }
+
   /// 读取 AI 配置：缺文件/坏内容/未知提供方一律回落未配置（none），绝不抛异常
   /// ——启动早期读配置抛错会把整个 App 拖崩。
   Future<AiConfig> loadAiConfig() async {
