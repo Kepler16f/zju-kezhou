@@ -6,17 +6,18 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData, rootBundle;
 
 import 'data/ai_client.dart';
 import 'data/ai_config.dart';
 import 'data/ai_prompts.dart';
 import 'data/credential_store.dart';
 import 'data/diagnostic_log.dart';
+import 'data/share_pack.dart';
 import 'data/xk_parse.dart' show TimetableParseResult, XkListParseResult;
 import 'data/zju_client.dart';
 import 'data/zju_parse.dart';
@@ -31,6 +32,7 @@ import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
+import 'pages/teacher_review_page.dart';
 import 'widgets/ai_chat.dart';
 import 'widgets/boat_icon.dart';
 
@@ -188,6 +190,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Map<String, dynamic>? _auditPlan; // 当前审计所用方案（选课页做缺口/先修/开课季匹配用）
   AiConfig _aiConfig = const AiConfig(); // AI 解读配置（出厂无存档时默认公益端点，见 initState）
   int _aiSessionReset = 0; // 一键清除时自增：通知选课页清掉 AI 问答历史等会话态
+  bool _teacherMode = false; // 导师审阅模式（只读审阅学生分享包；不登录教务）
+  Map<String, dynamic>? _lastStudent; // 最近一次审计的 student 段（分享包导出复用其 grade/学期）
+  String? _studentName; // 教务档案姓名（仅实名导出时使用，默认匿名路径不碰它）
 
   static const majors = {
     'computer_science': '计算机科学与技术（样例方案）',
@@ -257,6 +262,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         final s = json.decode(cached) as Map<String, dynamic>;
         setState(() {
           _report = s['report'] as Map<String, dynamic>?;
+          _lastStudent = (s['student'] as Map?)?.cast<String, dynamic>();
+          _teacherMode = s['teacher_mode'] as bool? ?? false;
           _courses = (s['courses'] as List? ?? const [])
               .cast<Map<String, dynamic>>();
           _practice = (s['practice'] as Map? ?? const {})
@@ -306,8 +313,47 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       'practice': _practice,
       'plan_quality': _planQuality,
       'source_label': _recordSourceLabel,
+      'teacher_mode': _teacherMode,
+      'student': _lastStudent,
       'saved_at': DateTime.now().toIso8601String(),
     }));
+  }
+
+  /// 「分享给导师」导出（诉求：导师模式 P1）：当前审计数据 → 脱敏分享包。
+  /// 剪贴板 + 沙箱 share/ 双通道；实名选项默认关（alias 保持匿名）。
+  /// 返回提示文本（行数/路径），失败返回原因——设置页直接展示。
+  Future<String> _exportSharePack({bool realName = false}) async {
+    if (_courses.isEmpty || _report == null) {
+      return '尚未完成学业审计：先在设置页运行一次审计（登录教务或样例均可）';
+    }
+    final prev = _lastStudent ?? const <String, dynamic>{};
+    final student = <String, dynamic>{
+      'alias': realName ? (_studentName ?? '本人') : '匿名同学',
+      'major': prev['major']?.toString() ??
+          (_auditPlan != null
+              ? (_auditPlan!['meta']?['major'] ?? _major).toString()
+              : _major),
+      'grade': prev['grade']?.toString() ?? _current.substring(0, 4),
+      'current_semester': prev['current_semester']?.toString() ?? _current,
+    };
+    final packed = buildSharePack(
+      student: student,
+      courses: _courses,
+      plan: _auditPlan,
+    );
+    await Clipboard.setData(ClipboardData(text: packed.jsonText));
+    String pathNote;
+    try {
+      final dir = await _store.sandboxDirPath();
+      pathNote = '文件：${await writeSharePack(dir, packed.jsonText)}';
+    } catch (e) {
+      pathNote = '文件落盘失败（$e），内容已在剪贴板';
+    }
+    DiagnosticLog.instance.record('分享导出',
+        detail: '${packed.coursesCount} 门课程随包导出'
+            '（${realName ? '实名' : '匿名'}，${packed.droppedRows} 行因缺字段未入包）');
+    final drop = packed.droppedRows > 0 ? '（${packed.droppedRows} 行缺关键字段未入包）' : '';
+    return '分享包已复制（${packed.coursesCount} 门课程$drop）——粘贴发送给学生/导师即可。$pathNote';
   }
 
   /// 学业视图用的课程列表：原始记录 + 本地排除标记。
@@ -362,6 +408,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
     setState(() {
       _report = out['report'] as Map<String, dynamic>;
+      _lastStudent = (record['student'] as Map?)?.cast<String, dynamic>();
       _courses = (record['courses'] as List).cast<Map<String, dynamic>>();
       _auditPlan = auditPlan;
       _notice = null;
@@ -470,6 +517,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         final builtinKey = matchPlanKey(majorName, majors.keys.toList());
         try {
           final profile = await _client.fetchStudentProfile();
+          if (profile.name.isNotEmpty) {
+            // 姓名仅本机留存，供「实名导出」选项使用；匿名路径绝不触碰。
+            _studentName = profile.name;
+          }
           final resolved = await _client.resolveAuditPlan(
               majorName: majorName,
               grade: profile.grade ??
@@ -620,6 +671,78 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    // 导师审阅模式：整页审阅台形态——无四页签、无 AI 悬浮帆、不建教务会话。
+    // 退出入口固定在顶部条（防"进去出不来"）；学生数据与审阅包数据完全隔离。
+    if (_teacherMode) {
+      return Scaffold(
+        body: SafeArea(
+          top: true,
+          bottom: true,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                child: Row(
+                  children: [
+                    const Text('导师审阅模式',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() => _teacherMode = false);
+                        unawaited(_saveSession());
+                      },
+                      icon: const Icon(Icons.exit_to_app_outlined, size: 18),
+                      label: const Text('返回学生模式'),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: TeacherReviewPage(
+                  onAudit: (record) {
+                    final engine = _engine;
+                    if (engine == null) {
+                      return {'error': '培养方案引擎尚未加载，请稍候重试'};
+                    }
+                    return engine.main(record);
+                  },
+                  onRegisterPlan: (major, plan) =>
+                      _engine?.registerRuntimePlan(major, plan),
+                  saveCache: _store.saveCache,
+                  readCache: _store.readCache,
+                  onAskAi: _aiConfig.enabled
+                      ? (report) {
+                          final sub = auditSubsetOf(report);
+                          showAiChat(
+                            context,
+                            controller: _aiCtrl,
+                            config: _aiConfig,
+                            onGoSettings: () {},
+                            contextSummary: sub == null
+                                ? null
+                                : const JsonEncoder.withIndent('  ').convert(sub),
+                          );
+                        }
+                      : null,
+                  listPacks: () async {
+                    final dir = await _store.sandboxDirPath();
+                    return listSharePackFiles(dir);
+                  },
+                  readPackFile: (path) async {
+                    try {
+                      return await File(path).readAsString();
+                    } catch (_) {
+                      return null;
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Scaffold(
       // 无 AppBar：手机上不包 SafeArea 会把首屏内容画进状态栏（遮挡修复 #3）。
       // bottom=false，底部由 NavigationBar 自行占位。
@@ -694,6 +817,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             aiConfig: _aiConfig,
             onAiConfigChange: _setAiConfig,
             onTestAi: _testAi,
+            onExportSharePack: ({bool realName = false}) =>
+                _exportSharePack(realName: realName),
+            onEnterTeacherMode: () {
+              setState(() => _teacherMode = true);
+              unawaited(_saveSession());
+            },
           ),
         ],
         ),

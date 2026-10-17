@@ -37,6 +37,13 @@ class SettingsPage extends StatefulWidget {
   final Future<void> Function(AiConfig config) onAiConfigChange;
   final Future<String> Function(AiConfig config) onTestAi;
 
+  /// 分享给导师：导出脱敏学业分享包（realName 可选实名，默认匿名）。
+  /// 返回导出结果提示文本（含课程数与落盘路径），失败返回原因。
+  final Future<String> Function({bool realName})? onExportSharePack;
+
+  /// 切换到导师审阅模式（审阅学生分享的包；本页签/教务会话保持不变，仅切视图）。
+  final VoidCallback? onEnterTeacherMode;
+
   const SettingsPage(
       {super.key, required this.mode, required this.onModeChange,
       required this.major, required this.onMajorChange,
@@ -45,7 +52,7 @@ class SettingsPage extends StatefulWidget {
       required this.pasteCtl, required this.busy, required this.onRun,
       this.notice, this.loggedInAs, this.lastDataAt, required this.onClearData,
       required this.aiConfig, required this.onAiConfigChange,
-      required this.onTestAi});
+      required this.onTestAi, this.onExportSharePack, this.onEnterTeacherMode});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -61,6 +68,28 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 诊断/日志类信息默认折叠（任务 11）：登录卡里只留一行开关，
   /// 点开才见上次取数时间等运行信息（_showCreds 同款 bool 模式）。
   bool _diagOpen = false;
+
+  /// 「分享给导师」：实名导出选项 + 上次导出结果提示（本机内存态，不落盘）。
+  bool _shareRealName = false;
+  String? _shareHint;
+  bool _shareBusy = false;
+
+  Future<void> _doExportShare() async {
+    final fn = widget.onExportSharePack;
+    if (fn == null) return;
+    setState(() {
+      _shareBusy = true;
+      _shareHint = null;
+    });
+    try {
+      final msg = await fn(realName: _shareRealName);
+      if (mounted) setState(() => _shareHint = msg);
+    } catch (e) {
+      if (mounted) setState(() => _shareHint = '导出失败：$e');
+    } finally {
+      if (mounted) setState(() => _shareBusy = false);
+    }
+  }
 
   static const _semesters = [
     '2023-A','2023-B','2024-A','2024-B','2025-A','2025-B',
@@ -278,6 +307,60 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         _groupHeader('AI 解读'),
         _AiCard(config: aiConfig, onSave: onAiConfigChange, onTest: onTestAi),
+        _groupHeader('分享给导师'),
+        Card(
+          child: Column(
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 10, 16, 4),
+                child: Text('把当前审计结果导出为「学业档案分享包」（JSON）：'
+                    '自动脱敏——不含学号、分数、绩点与教务凭证，默认匿名。'
+                    '发送方式：复制后粘贴到聊天工具即可。',
+                    style: TextStyle(fontSize: 12, color: Colors.grey, height: 1.5)),
+              ),
+              CheckboxListTile(
+                dense: true,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _shareRealName,
+                onChanged: (v) => setState(() => _shareRealName = v ?? false),
+                title: const Text('实名导出（默认匿名同学）',
+                    style: TextStyle(fontSize: 13)),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Row(
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: _shareBusy || widget.onExportSharePack == null
+                          ? null
+                          : _doExportShare,
+                      icon: _shareBusy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.share_outlined, size: 18),
+                      label: const Text('导出到剪贴板'),
+                    ),
+                    const SizedBox(width: 8),
+                    if (widget.onEnterTeacherMode != null)
+                      OutlinedButton.icon(
+                        onPressed: widget.onEnterTeacherMode,
+                        icon: const Icon(Icons.school_outlined, size: 18),
+                        label: const Text('导师审阅模式'),
+                      ),
+                  ],
+                ),
+              ),
+              if (_shareHint != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Text(_shareHint!,
+                      style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                ),
+            ],
+          ),
+        ),
         _groupHeader('关于'),
         // 通用组已解散（任务 11）：「数据与合规」「登录诊断日志」两个入口
         // 并入关于组，标题保持原名（main.dart 崩溃引导文案指名「登录诊断日志」）。

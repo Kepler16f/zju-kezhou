@@ -4,8 +4,6 @@
 /// CustomPainter 零图片依赖、任意尺寸清晰、随主题色。
 library;
 
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 class BoatIcon extends StatelessWidget {

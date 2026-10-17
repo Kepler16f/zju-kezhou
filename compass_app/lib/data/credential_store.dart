@@ -184,6 +184,9 @@ class CredentialStore {
     } catch (_) {}
   }
 
+  /// 沙箱根目录路径（分享包等用户可见文件通道的落盘位置；失败抛异常由调用方兜底）。
+  Future<String> sandboxDirPath() async => (await _dirGet()).path;
+
   Future<String?> readCache(String name) async {
     try {
       final f = File(p.join((await _dirGet()).path, 'cache_$name.json'));
