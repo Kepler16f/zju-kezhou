@@ -1,5 +1,7 @@
 # iOS 构建（单一平台文件，供 build.yml 分发器按需调用）：
-# 真机 arm64 .ipa（无签名导出；上架需挂开发者证书）。
+# 真机 arm64 .ipa（无签名导出；上架/侧载需挂开发者证书）。
+# 注：Flutter 3.47 的 `--no-codesign` 只产出 xcarchive、跳过 ipa（"skipping IPA"），
+#     故本 job 在构建后从 xcarchive 手工组装未签名 ipa。
 name: Build iOS
 
 on:
@@ -16,9 +18,18 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build ipa --release --no-codesign
+      - name: 从 xcarchive 组装未签名 ipa
+        run: |
+          set -euo pipefail
+          APP="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          [ -d "$APP" ] || { echo "未找到 $APP"; find build/ios/archive -maxdepth 4 -name "*.app" || true; exit 1; }
+          mkdir -p build/ios/ipa/Payload
+          cp -R "$APP" build/ios/ipa/Payload/
+          ( cd build/ios/ipa && zip -qry ../../kezhou-unsigned.ipa Payload )
+          echo "ipa 已生成："; ls -la build/kezhou-unsigned.ipa
       - uses: actions/upload-artifact@v7
         with:
           name: kezhou-ios
           archive: false
           if-no-files-found: error
-          path: compass_app/build/ios/ipa/*.ipa
+          path: compass_app/build/kezhou-unsigned.ipa
