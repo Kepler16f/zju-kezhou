@@ -29,6 +29,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'ai_config.dart';
+import 'ai_models.dart';
 
 /// HTTP 发送器契约：默认是后台 isolate 实现，单测可换成假发送器。
 typedef AiHttpSender = Future<AiHttpReply> Function(AiHttpRequest req);
@@ -59,6 +60,36 @@ class AiHttpReply {
   final int status;
   final String body;
 }
+
+/// 流式传输事件（后台 isolate → 主 isolate）。
+/// 不直接传异常对象：跨 isolate 传输异常上下文既不可靠，也可能带出请求头。
+sealed class AiStreamEvent {
+  const AiStreamEvent();
+}
+
+/// 响应头已到达（状态码）。
+class AiStreamMeta extends AiStreamEvent {
+  const AiStreamMeta(this.status);
+
+  final int status;
+}
+
+/// 一行响应正文（SSE 的 data: 行，或非流式 JSON 的一行）。
+class AiStreamLine extends AiStreamEvent {
+  const AiStreamLine(this.line);
+
+  final String line;
+}
+
+/// 传输失败（已转成可读文本，不含密钥）。
+class AiStreamError extends AiStreamEvent {
+  const AiStreamError(this.message);
+
+  final String message;
+}
+
+/// 流式发送器契约：默认实现把收发放进后台 isolate；单测可注入同步流。
+typedef AiStreamSender = Stream<AiStreamEvent> Function(AiHttpRequest req);
 
 /// 失败分类：决定 UI 该提示「改配置」「稍后再试」还是「重试按钮」。
 enum AiFailKind {
@@ -126,22 +157,33 @@ class AiFailure extends AiOutcome {
   AiConfig config,
   String system,
   List<Map<String, String>> messages,
-  int maxTokens,
-) {
+  int maxTokens, {
+  bool stream = false,
+}) {
   switch (config.provider) {
     case AiProvider.pollinations:
       // 公益端点（OpenAI 兼容）：无 Authorization 头、body 压到最小形状
       //（该网关对多余采样参数偶发 400，实测 model+messages 最稳）；
       // 端点是 /openai 本体而非 /v1/chat/completions。
-      final url = '${AiConfig.normalizeBaseUrl(config.baseUrl)}/openai';
+      final base = AiConfig.normalizeBaseUrl(config.baseUrl);
+      final url = '${base.isEmpty ? kFreeAiBaseUrl : base}/openai';
       final body = jsonEncode(<String, Object?>{
         'model': config.model.isEmpty ? kFreeAiModel : config.model,
         'messages': <Map<String, String>>[
           <String, String>{'role': 'system', 'content': system},
           ..._plainMessages(messages),
         ],
+        'max_tokens': maxTokens,
+        if (stream) 'stream': true,
       });
-      return (url, {'Content-Type': 'application/json'}, body);
+      return (
+        url,
+        <String, String>{
+          'Content-Type': 'application/json',
+          if (stream) 'Accept': 'text/event-stream',
+        },
+        body,
+      );
 
     case AiProvider.openai:
       final url =
@@ -149,6 +191,7 @@ class AiFailure extends AiOutcome {
       final headers = <String, String>{
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ${config.apiKey}',
+        if (stream) 'Accept': 'text/event-stream',
       };
       final body = jsonEncode(<String, Object?>{
         'model': config.model,
@@ -158,7 +201,7 @@ class AiFailure extends AiOutcome {
         ],
         'temperature': 0.3,
         'max_tokens': maxTokens,
-        'stream': false,
+        'stream': stream,
       });
       return (url, headers, body);
 
@@ -171,12 +214,14 @@ class AiFailure extends AiOutcome {
         'content-type': 'application/json',
         'x-api-key': config.apiKey,
         'anthropic-version': '2023-06-01',
+        if (stream) 'Accept': 'text/event-stream',
       };
       final body = jsonEncode(<String, Object?>{
         'model': config.model,
         'max_tokens': maxTokens,
         'system': system,
         'messages': _plainMessages(messages),
+        if (stream) 'stream': true,
       });
       return (url, headers, body);
 
@@ -185,11 +230,12 @@ class AiFailure extends AiOutcome {
       final headers = <String, String>{
         'Authorization': 'Bearer ${config.apiKey}',
         'content-type': 'application/json',
+        if (stream) 'Accept': 'text/event-stream',
       };
       final body = jsonEncode(<String, Object?>{
         'inputs': <String, Object?>{},
         'query': _difyQuery(system, messages),
-        'response_mode': 'blocking',
+        'response_mode': stream ? 'streaming' : 'blocking',
         'user': 'compass-app',
         'conversation_id': '',
       });
@@ -201,6 +247,43 @@ class AiFailure extends AiOutcome {
       return ('', const <String, String>{}, '');
   }
 }
+
+/// 模型列表请求（GET）。Dify / none 没有等价接口，返回 null。
+(String url, Map<String, String> headers)? buildModelsRequest(AiConfig config) {
+  switch (config.provider) {
+    case AiProvider.pollinations:
+      final base = AiConfig.normalizeBaseUrl(config.baseUrl);
+      return (
+        '${base.isEmpty ? kFreeAiBaseUrl : base}/models',
+        const <String, String>{'Content-Type': 'application/json'},
+      );
+    case AiProvider.openai:
+      return (
+        '${AiConfig.normalizeBaseUrl(config.baseUrl)}/models',
+        <String, String>{
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${config.apiKey}',
+        },
+      );
+    case AiProvider.anthropic:
+      final base = AiConfig.normalizeBaseUrl(config.baseUrl);
+      final url = base.endsWith('/v1')
+          ? '$base/models?limit=1000'
+          : '$base/v1/models?limit=1000';
+      return (
+        url,
+        <String, String>{
+          'content-type': 'application/json',
+          'x-api-key': config.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+      );
+    case AiProvider.dify:
+    case AiProvider.none:
+      return null;
+  }
+}
+
 
 /// 解析响应（纯函数，导出给单测）。
 ///
@@ -278,30 +361,158 @@ Future<AiHttpReply> _sendIsolate(Map<String, dynamic> spec) async {
   }
 }
 
+/// 默认流式发送器：后台 isolate 逐行回传，主 isolate 负责 SSE 解析与 UI 回调。
+/// 仍然遵守红线 3（网络在后台 isolate）；只是把 Isolate.run 换成了
+/// Isolate.spawn + SendPort，以便在响应未结束时就能把增量送回来。
+Stream<AiStreamEvent> defaultAiStreamSender(AiHttpRequest req) {
+  final controller = StreamController<AiStreamEvent>();
+  final receive = ReceivePort();
+  Isolate? isolate;
+  var closed = false;
+  var canceled = false;
+
+  void close() {
+    if (closed) return;
+    closed = true;
+    receive.close();
+    controller.close();
+  }
+
+  receive.listen((message) {
+    if (message is! Map) return;
+    switch ('${message['type']}') {
+      case 'meta':
+        final status = message['status'];
+        if (status is int && !closed) controller.add(AiStreamMeta(status));
+        break;
+      case 'line':
+        final line = message['line'];
+        if (line is String && !closed) controller.add(AiStreamLine(line));
+        break;
+      case 'error':
+        final msg = '${message['error'] ?? '网络请求异常'}';
+        if (!closed) controller.add(AiStreamError(msg));
+        close();
+        break;
+      case 'done':
+        close();
+        break;
+    }
+  });
+
+  final spec = <String, dynamic>{
+    'url': req.url,
+    'method': req.method,
+    'headers': Map<String, String>.from(req.headers),
+    'body': req.body,
+    'timeoutMs': req.timeout.inMilliseconds,
+  };
+  unawaited(Isolate.spawn(_streamIsolateEntry, <Object?>[spec, receive.sendPort])
+      .then<void>((iso) {
+    isolate = iso;
+    if (canceled) iso.kill(priority: Isolate.immediate);
+  }).catchError((Object e, StackTrace _) {
+    if (!closed) {
+      controller.add(AiStreamError('$e'));
+      close();
+    }
+  }));
+
+  controller.onCancel = () {
+    canceled = true;
+    isolate?.kill(priority: Isolate.immediate);
+    close();
+  };
+  return controller.stream;
+}
+
+/// isolate 入口（同步签名，避免个别平台对 Future 返回值的入口推断差异）。
+void _streamIsolateEntry(List<Object?> args) {
+  unawaited(_streamIsolateMain(args));
+}
+
+/// 顶层函数：真正的流式收发，运行在后台 isolate 内。
+Future<void> _streamIsolateMain(List<Object?> args) async {
+  final spec = (args[0] as Map).cast<String, dynamic>();
+  final port = args[1] as SendPort;
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+  final deadline =
+      Duration(milliseconds: (spec['timeoutMs'] as int?) ?? 60000);
+  try {
+    final uri = Uri.parse(spec['url'] as String? ?? '');
+    final request = (spec['method'] as String? ?? 'POST') == 'GET'
+        ? await client.getUrl(uri)
+        : await client.postUrl(uri);
+    final headers = spec['headers'];
+    if (headers is Map) {
+      headers.forEach((k, v) => request.headers.set('$k', '$v'));
+    }
+    request.add(utf8.encode(spec['body'] as String? ?? ''));
+    final resp = await request.close().timeout(deadline);
+    port.send(<String, Object?>{'type': 'meta', 'status': resp.statusCode});
+    // 手动按换行切分，避免依赖 LineSplitter 的 Converter 泛型细节；
+    // 同时兼容 SSE 的 \r\n 与 \n。
+    var pending = '';
+    await for (final chunk in resp.transform(utf8.decoder).timeout(deadline)) {
+      pending += chunk;
+      final parts = pending.split('\n');
+      pending = parts.removeLast();
+      for (final part in parts) {
+        port.send(<String, Object?>{
+          'type': 'line',
+          'line': part.endsWith('\r')
+              ? part.substring(0, part.length - 1)
+              : part,
+        });
+      }
+    }
+    if (pending.isNotEmpty) {
+      port.send(<String, Object?>{'type': 'line', 'line': pending});
+    }
+    port.send(const <String, Object?>{'type': 'done'});
+  } catch (e) {
+    port.send(<String, Object?>{'type': 'error', 'error': '$e'});
+  } finally {
+    client.close(force: true);
+  }
+}
+
 /// 可切换的 AI 客户端。config 变化时直接新建实例即可（无内部状态、无连接池）。
 class AiClient {
-  AiClient(this.config, {AiHttpSender? sender})
-      : _sender = sender ?? defaultAiSender;
+  AiClient(this.config, {AiHttpSender? sender, AiStreamSender? streamSender})
+      : _sender = sender ?? defaultAiSender,
+        _streamSender = streamSender ?? defaultAiStreamSender;
 
   final AiConfig config;
   final AiHttpSender _sender;
+  final AiStreamSender _streamSender;
 
   /// 重试前的冷却：给对端一次喘息，也避开瞬时抖动。1s 足以覆盖绝大多数瞬断。
   static const Duration _retryDelay = Duration(seconds: 1);
 
   /// 发起一次对话。messages 元素形状：{'role': 'user'|'assistant', 'content': '...'}。
-  /// 只重试 1 次（总计最多 2 次请求）：重试太多会放大计费与风控，得不偿失。
+  ///
+  /// [onDelta] 非空时走流式请求：模型每吐出一段文字就回调一次；最终仍返回完整
+  /// AiOutcome（调用方据此决定写入历史还是展示错误）。流式失败若已经吐过字，
+  /// 不再重试——重试会在 UI 上产生重复/拼接错乱的半截回答。
   Future<AiOutcome> chat({
     required String system,
     required List<Map<String, String>> messages,
     int maxTokens = 8192,
+    void Function(String delta)? onDelta,
   }) async {
     if (!config.enabled) {
       return const AiFailure(AiFailKind.notConfigured,
           '尚未配置 AI 服务：请在设置中填写提供方、以 http(s):// 开头的接口地址与 API Key');
     }
-    final (url, headers, bodyJson) = buildRequest(config, system, messages, maxTokens);
+    final deltaSink = onDelta;
+    final streaming = deltaSink != null;
+    final (url, headers, bodyJson) =
+        buildRequest(config, system, messages, maxTokens, stream: streaming);
     final req = AiHttpRequest(url: url, headers: headers, body: bodyJson);
+    if (deltaSink != null) {
+      return _chatStreaming(req, deltaSink);
+    }
     var attempt = 1;
     while (true) {
       // 结构性脱敏兜底：失败文案里凡出现完整 apiKey 一律替换（不依赖网关排版猜测；
@@ -316,6 +527,194 @@ class AiClient {
     }
   }
 
+  /// 拉取服务商模型列表（自定义 Key 场景）。不触网条件与 chat 相同。
+  /// 只做一次重试：模型列表是用户手动触发的辅助操作，不值得反复轰炸。
+  Future<AiModelsResult> listModels() async {
+    if (!config.enabled) {
+      return AiModelsResult.failure(
+          '尚未配置 AI 服务：请先填写提供方、以 http(s):// 开头的接口地址与 API Key');
+    }
+    final reqInfo = buildModelsRequest(config);
+    if (reqInfo == null) {
+      return AiModelsResult.failure('当前提供方没有模型列表接口，请手动填写模型名');
+    }
+    final (url, headers) = reqInfo;
+    final req = AiHttpRequest(
+      url: url,
+      method: 'GET',
+      headers: headers,
+      timeout: const Duration(seconds: 30),
+    );
+    var attempt = 1;
+    while (true) {
+      try {
+        final reply = await _sender(req);
+        final result = _scrubModels(
+            parseModelsReply(reply.status, reply.body,
+                provider: config.provider),
+            config.apiKey);
+        final retriable = reply.status >= 500;
+        if (!retriable || attempt >= 2) return result;
+      } on Exception catch (e) {
+        final failure = _failureFromError(e);
+        if (!_isRetriable(failure.kind) || attempt >= 2) {
+          return AiModelsResult.failure(failure.message);
+        }
+      }
+      attempt++;
+      await Future<void>.delayed(_retryDelay);
+    }
+  }
+
+  /// 流式对话：SSE 增量解析 + 完整结果汇总。
+  Future<AiOutcome> _chatStreaming(
+    AiHttpRequest req,
+    void Function(String delta) onDelta,
+  ) async {
+    var attempt = 1;
+    while (true) {
+      final text = StringBuffer();
+      final raw = StringBuffer();
+      var emitted = false;
+      var status = 0;
+      var model = '';
+      var refused = false;
+      String? streamError;
+
+      void emit(String delta) {
+        if (delta.isEmpty) return;
+        text.write(delta);
+        emitted = true;
+        onDelta(delta);
+      }
+
+      try {
+        await for (final event in _streamSender(req)) {
+          if (event is AiStreamMeta) {
+            status = event.status;
+            continue;
+          }
+          if (event is AiStreamError) {
+            streamError = redactAiSecrets(event.message);
+            break;
+          }
+          if (event is! AiStreamLine) continue;
+          final line = event.line;
+          raw.writeln(line);
+          final trimmed = line.trimLeft();
+          if (!trimmed.startsWith('data:')) continue;
+          final data = trimmed.substring(5).trim();
+          if (data.isEmpty || data == '[DONE]') continue;
+          final decoded = _tryDecode(data);
+          if (decoded is! Map) continue;
+          final map = decoded.cast<String, Object?>();
+          final type = '${map['type'] ?? ''}';
+
+          // Anthropic 事件
+          if (type == 'content_block_delta') {
+            final delta = map['delta'];
+            if (delta is Map &&
+                delta['type'] == 'text_delta' &&
+                delta['text'] is String) {
+              emit(delta['text'] as String);
+            }
+            continue;
+          }
+          if (type == 'message_start') {
+            final message = map['message'];
+            if (message is Map && message['model'] is String) {
+              model = message['model'] as String;
+            }
+            continue;
+          }
+          if (type == 'message_delta') {
+            final delta = map['delta'];
+            if (delta is Map && '${delta['stop_reason']}' == 'refusal') {
+              refused = true;
+            }
+            continue;
+          }
+          if (type == 'error' || type == 'overloaded_error') {
+            final err = map['error'];
+            streamError = err is Map
+                ? redactAiSecrets('${err['message'] ?? err}')
+                : redactAiSecrets('$err');
+            continue;
+          }
+          if (type == 'message_stop') continue;
+
+          // Dify 事件
+          final difyEvent = map['event'];
+          if (difyEvent is String) {
+            if (difyEvent == 'message' ||
+                difyEvent == 'agent_message' ||
+                difyEvent == 'message_replace') {
+              final answer = map['answer'];
+              if (answer is String) emit(answer);
+            } else if (difyEvent == 'error') {
+              streamError = redactAiSecrets('${map['message'] ?? '模型返回错误'}');
+            }
+            continue;
+          }
+
+          // OpenAI 兼容事件（含 Pollinations）
+          final choices = map['choices'];
+          if (choices is List && choices.isNotEmpty) {
+            final first = choices.first;
+            if (first is Map) {
+              final modelName = map['model'];
+              if (modelName is String && modelName.isNotEmpty) model = modelName;
+              final delta = first['delta'];
+              if (delta is Map && delta['content'] is String) {
+                emit(delta['content'] as String);
+              }
+              final message = first['message'];
+              if (message is Map && message['content'] is String) {
+                emit(message['content'] as String);
+              }
+            }
+            continue;
+          }
+
+          // 少数网关直接回 {"answer": "..."} / {"content": "..."}。
+          final answer = map['answer'] ?? map['content'];
+          if (answer is String) emit(answer);
+        }
+      } on Exception catch (e) {
+        streamError ??= redactAiSecrets(_failureFromError(e).message);
+      }
+
+      AiOutcome outcome;
+      if (streamError != null) {
+        outcome = AiFailure(AiFailKind.network, '网络连接中断：$streamError');
+      } else if (status >= 300) {
+        outcome = _failureForStatus(status, raw.toString());
+      } else if (refused) {
+        outcome = const AiFailure(
+            AiFailKind.refused, '模型拒绝回答本次请求，请调整提问内容后重试');
+      } else if (text.isEmpty) {
+        // 服务端忽略了 stream 参数、直接返回整段 JSON 的兜底。
+        final fallback = parseReply(status == 0 ? 200 : status, raw.toString());
+        if (fallback is AiReply) {
+          emitted = true;
+          onDelta(fallback.text);
+          outcome = fallback;
+        } else {
+          outcome = fallback;
+        }
+      } else {
+        outcome = AiReply(text.toString().trim(), model);
+      }
+
+      final scrubbed = _scrubKey(outcome, config.apiKey);
+      final retriable = scrubbed is AiFailure && _isRetriable(scrubbed.kind);
+      // 已经吐过字就绝不重试：否则 UI 会收到重叠的两段回答。
+      if (!retriable || emitted || attempt >= 2) return scrubbed;
+      attempt++;
+      await Future<void>.delayed(_retryDelay);
+    }
+  }
+
   /// 把失败文案中的完整密钥替换为 ***（密钥长度 >= 6 才做，避免误伤短串）。
   static AiOutcome _scrubKey(AiOutcome outcome, String apiKey) {
     if (outcome is AiFailure &&
@@ -324,6 +723,14 @@ class AiClient {
       return AiFailure(outcome.kind, outcome.message.replaceAll(apiKey, '***'));
     }
     return outcome;
+  }
+
+  static AiModelsResult _scrubModels(AiModelsResult result, String apiKey) {
+    final error = result.error;
+    if (error != null && apiKey.length >= 6 && error.contains(apiKey)) {
+      return AiModelsResult.failure(error.replaceAll(apiKey, '***'));
+    }
+    return result;
   }
 
   /// 单次尝试：发送 + 解析，并把任何传输层异常翻译成失败分类。
@@ -370,6 +777,11 @@ AiOutcome _failureForStatus(int status, String body) {
   if (status == 401 || status == 403) {
     return AiFailure(AiFailKind.auth,
         'AI 服务认证失败（HTTP $status），请检查 API Key 是否正确、是否有该模型的权限');
+  }
+  if (status == 402) {
+    // 公益端点（Pollinations）免费额度用尽时返回 402 FREE_LIMIT，不是密钥问题。
+    return const AiFailure(AiFailKind.rateLimit,
+        '公益端点免费额度暂时用完（HTTP 402），请等待约 30 秒后重试，或在设置中换用自有 API Key');
   }
   if (status == 429) {
     return const AiFailure(AiFailKind.rateLimit, 'AI 服务限流（HTTP 429），请稍候再试');
@@ -441,23 +853,25 @@ AiOutcome _parseDify(Map<String, Object?> map) {
   return AiReply(text, _modelOf(map));
 }
 
-/// dify 没有独立 system 通道，只能把系统提示塞进 query，
+/// dify 没有独立 system 通道，只能把系统提示与历史塞进 query，
 /// 用分隔线与真正的用户问题隔开（若 system 为空则不加分隔符，避免前导空行）。
+/// 必须带全量历史：Dify 的 conversation_id 固定为空，不带历史就等于每轮失忆。
 String _difyQuery(String system, List<Map<String, String>> messages) {
-  var lastUser = '';
-  for (var i = messages.length - 1; i >= 0; i--) {
-    if ((messages[i]['role'] ?? '') == 'user') {
-      lastUser = messages[i]['content'] ?? '';
-      break;
-    }
+  final buf = StringBuffer();
+  final sys = system.trim();
+  if (sys.isNotEmpty) buf.write(sys);
+  final turns = <String>[];
+  for (final m in messages) {
+    final content = (m['content'] ?? '').trim();
+    if (content.isEmpty) continue;
+    final role = (m['role'] ?? '') == 'assistant' ? '助手' : '用户';
+    turns.add('$role：$content');
   }
-  if (system.trim().isEmpty) {
-    return lastUser;
+  if (turns.isNotEmpty) {
+    if (buf.isNotEmpty) buf.write('\n\n---\n\n');
+    buf.write(turns.join('\n'));
   }
-  if (lastUser.isEmpty) {
-    return system;
-  }
-  return '$system\n\n---\n\n$lastUser';
+  return buf.toString().trim();
 }
 
 /// 归一化消息角色/正文：非字符串（调用方手抖传了 null）按空串处理，

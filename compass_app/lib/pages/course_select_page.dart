@@ -37,9 +37,15 @@ class CourseSelectPage extends StatefulWidget {
   final List<Map<String, dynamic>> transcript;
   final Map<String, dynamic>? plan; // 当前审计所用方案（runtime 或内置 golden）
   final Map<String, dynamic>? report; // 最近一次审计报告（AI 解读的缺口数字来源）
+  final XkListParseResult? choosed; // 本学期已选（在修，未出成绩）
+  final TimetableParseResult? timetable; // 本学期课表（主状态缓存）
   final AiConfig aiConfig;
   final int resetToken; // 父级"一键清除"自增令牌：变化即清空本页 AI 会话态
   final VoidCallback onGoSettings;
+
+  /// 把本页已合并的选课候选发布给全局 AI 助手（脱敏摘要，不含个人信息）。
+  /// 全局助手由 main.dart 的悬浮按钮呼出，拿不到本页局部状态，故用回调上抛。
+  final ValueChanged<Map<String, dynamic>?>? onAiContext;
 
   const CourseSelectPage({
     super.key,
@@ -51,9 +57,12 @@ class CourseSelectPage extends StatefulWidget {
     required this.transcript,
     required this.plan,
     required this.report,
+    this.choosed,
+    this.timetable,
     required this.aiConfig,
     required this.resetToken,
     required this.onGoSettings,
+    this.onAiContext,
   });
 
   static const String tabLabel = '选课';
@@ -96,6 +105,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   bool _aiBusy = false;
   String? _aiError;
   bool _sendNoticeAck = false;
+  String? _aiStreaming; // 流式回复的已收到片段
+  String? _aiPendingQuestion; // 在途提问（用于渲染流式气泡）
 
   @override
   void initState() {
@@ -113,6 +124,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       _aiCtl.clear();
       _aiError = null;
       _sendNoticeAck = false;
+      _aiStreaming = null;
+      _aiPendingQuestion = null;
     }
     if (!widget.loggedIn && old.loggedIn) {
       // 登出：清空教务相关状态 + AI 会话态（AI 配置本身不动）
@@ -129,7 +142,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         _aiCtl.clear();
         _aiError = null;
         _sendNoticeAck = false;
+        _aiStreaming = null;
+        _aiPendingQuestion = null;
       });
+      widget.onAiContext?.call(null); // 全局助手不得继续持有上一账号的选课数据
     }
   }
 
@@ -201,6 +217,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           );
         }
       });
+      _publishAiContext();
     } catch (e) {
       if (mounted) setState(() => _error = '演示数据加载失败：$e');
     }
@@ -239,6 +256,13 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           _timetableError = null;
           _demoLoaded = false;
         }
+        // 显式刷新：丢掉空结果/缓存结果，强制重新请求（否则旧 empty 会一直粘住）。
+        if (refresh) {
+          _lists.removeWhere(
+              (_, value) => value.state == 'empty' || value.fromCache);
+          _roundErrors.clear();
+          _listsVersion++;
+        }
         // 换批次/换学期后，修剪已不在新入口列表中的旧列表缓存（失败记账一并清理）
         final validIds = r.rounds.map((x) => x.xkkzId).toSet();
         final removed = _lists.keys.where((k) => !validIds.contains(k)).toList();
@@ -254,12 +278,18 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       });
       // 默认拉一次首入口的列表（单次请求）；课表时隙后台拉取（冲突检测用）
       final first = _index?.rounds.isNotEmpty == true ? _index!.rounds.first : null;
-      if (first != null && !_lists.containsKey(first.xkkzId)) {
-        await _loadRound(first);
+      final firstCached = first == null ? null : _lists[first.xkkzId];
+      if (first != null &&
+          (firstCached == null ||
+              refresh ||
+              firstCached.state == 'empty' ||
+              firstCached.fromCache)) {
+        await _loadRound(first, refresh: refresh || firstCached != null);
       }
       if (_timetable == null && !_loadingTimetable) {
         _loadTimetable();
       }
+      _publishAiContext(); // 入口刷新/清理后同步给全局助手
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -288,6 +318,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           _timetableError = null;
         }
       });
+      _publishAiContext();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -329,6 +360,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         }
         _listsVersion++;
       });
+      _publishAiContext();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -365,9 +397,17 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       if (_cancelAggregate || !mounted) break;
       if (gen != _listGeneration) break; // 刷新换代：中止本轮（避免旧轮配新参数写回）
       if (_softBlocked) break; // 已触发软封禁：继续逐入口拉取只会延长封锁（网页正常、App 看不到），停手等冷却
-      if (!_lists.containsKey(r.xkkzId)) {
+      final existing = _lists[r.xkkzId];
+      if (existing == null ||
+          existing.state == 'empty' ||
+          existing.fromCache) {
         final res = await widget.client.fetchXkCourses(
-            round: r, hiddenFields: hf, xkxnm: xnm, xkxqm: xqm, zjuGhb: zhb);
+            round: r,
+            hiddenFields: hf,
+            xkxnm: xnm,
+            xkxqm: xqm,
+            zjuGhb: zhb,
+            refresh: existing != null);
         if (!mounted) break;
         if (res.blocked && res.state == 'unavailable') _softBlocked = true;
         if (gen == _listGeneration) {
@@ -396,6 +436,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         _aggregating = false;
         if (!_cancelAggregate) _view = _View.merged; // 取消时不强制换视图
       });
+      _publishAiContext();
     }
   }
 
@@ -434,6 +475,22 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
 
   bool get _anyCacheFromLocal =>
       (_index?.fromCache ?? false) || _lists.values.any((r) => r.fromCache);
+
+  /// 把本页选课数据（已脱敏）发布给全局 AI 助手。
+  /// 只发课程名/学分/教师/时间/容量等公开字段；不含学号、成绩、Cookie。
+  void _publishAiContext() {
+    final cb = widget.onAiContext;
+    if (cb == null) return;
+    try {
+      final data = selectionCandidatesSubsetOf(_merged) ??
+          <String, dynamic>{};
+      final tt = _timetable;
+      if (tt != null) data['课表'] = timetableSubsetOf(tt);
+      cb(data.isEmpty ? null : data);
+    } catch (_) {
+      cb(null); // 摘要构造失败绝不能影响选课主流程
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -548,8 +605,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
 
   Widget _viewSwitch() => SegmentedButton<_View>(
         segments: const [
-          ButtonSegment(value: _View.rounds, label: Text('轮次入口')),
-          ButtonSegment(value: _View.merged, label: Text('跨轮汇总')),
+          ButtonSegment(value: _View.rounds, label: Text('分类视图')),
+          ButtonSegment(value: _View.merged, label: Text('所有课程')),
           ButtonSegment(value: _View.advice, label: Text('建议卡')),
         ],
         selected: {_view},
@@ -607,9 +664,14 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                 onSelected: _aggregating
                     ? null
                     : (_) {
+                        final existing = _lists[r.xkkzId];
                         setState(() => _selectedRoundId = r.xkkzId);
-                        if (!_lists.containsKey(r.xkkzId)) {
-                          _loadRound(r);
+                        if (existing == null ||
+                            existing.state == 'empty' ||
+                            existing.fromCache) {
+                          _loadRound(r,
+                              refresh: existing != null ||
+                                  _roundErrors.containsKey(r.xkkzId));
                         }
                       },
               ),
@@ -622,7 +684,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             child: Center(child: Text('加载课程列表…')),
           ),
         if (list != null) ...[
-          _stateBanner(list, selected),
+          _stateBanner(list, selected, loading: loadingThis),
           const SizedBox(height: 4),
           ..._courseCards(list.courses),
         ] else if (roundError != null) ...[
@@ -639,16 +701,21 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     );
   }
 
-  Widget _stateBanner(XkListParseResult list, XkRound round) {
+  Widget _stateBanner(XkListParseResult list, XkRound round,
+      {bool loading = false}) {
     final (text, color) = switch (list.state) {
       'data' => (
-          '该入口共 ${list.courses.length} 条课程（只读查询快照）'
-              '${list.fromCache ? '｜读取自缓存（可能过期）' : ''}',
+          '该分类共 ${list.courses.length} 条课程（只读查询快照）'
+              '${list.fromCache ? '｜读取自缓存（可能过期，请刷新）' : ''}',
           Colors.grey
         ),
-      'empty' => ('该入口已开放，当前查询结果为空（可能无面向你的课程）', Colors.grey),
+      'empty' => (
+          '该分类当前查询结果为空（可能是真无课、未开放或参数缺失；'
+              '空结果只缓存 5 分钟，可手动刷新）',
+          Colors.grey
+        ),
       _ => (
-          '该入口状态未知（未开放/会话受限/接口未返回数据），不代表没有课程',
+          '该分类状态未知（未开放/会话受限/接口未返回数据），不代表没有课程',
           Colors.orange
         ),
     };
@@ -659,6 +726,11 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         if (list.issues.isNotEmpty)
           Text(list.issues.first,
               style: const TextStyle(fontSize: 11, color: Colors.orange)),
+        TextButton.icon(
+          onPressed: loading ? null : () => _loadRound(round, refresh: true),
+          icon: const Icon(Icons.refresh, size: 16),
+          label: const Text('刷新该分类'),
+        ),
       ],
     );
   }
@@ -681,7 +753,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
               children: [
                 Text(
                   '已拉取 $fetched/$total 个入口'
-                  '${failed > 0 ? '（$failed 个暂不可用，可在「轮次入口」里重试）' : ''}'
+                  '${failed > 0 ? '（$failed 个暂不可用，可在「分类视图」里重试）' : ''}'
                   '${_aggregating ? '（正在汇总 $_aggregateDone/$total…）' : ''}',
                   style: const TextStyle(fontSize: 12),
                 ),
@@ -718,7 +790,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           controller: _searchCtl,
           onChanged: (_) => setState(() {}),
           decoration: const InputDecoration(
-            labelText: '搜索课程（按课程名/课程号，跨轮次查找）',
+            labelText: '搜索课程（按课程名/课程号，跨分类查找）',
             border: OutlineInputBorder(),
             isDense: true,
           ),
@@ -762,12 +834,30 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     final sorted = [...filtered]
       ..sort((a, b) => (a.base.kch.isEmpty ? a.base.kcmc : a.base.kch)
           .compareTo(b.base.kch.isEmpty ? b.base.kcmc : b.base.kch));
-    final shown = sorted.take(120).toList(); // 与轮次视图同款截断策略（评审L1 性能）
+    final selectedKeys = _selectedCourseKeys();
+    final ttSlots = (_timetable ?? widget.timetable)?.slots ?? const [];
     return [
-      for (final m in shown) _mergedCard(m),
-      if (sorted.length > shown.length)
-        Text('仅显示前 120 条（共 ${sorted.length} 条，请用搜索缩小范围）',
-            style: const TextStyle(fontSize: 11, color: Colors.grey)),
+      LayoutBuilder(builder: (context, cons) {
+        final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
+        return Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final m in sorted)
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxW),
+                child: CourseBubble(
+                  course: m.base,
+                  conflict: ttSlots.isNotEmpty &&
+                      Timeline.slotsConflict(m.slots, ttSlots) != null,
+                  selected: _isCourseSelected(m.base, selectedKeys),
+                  extraTags: m.tags,
+                  extraDetails: _mergedDetails(m),
+                ),
+              ),
+          ],
+        );
+      }),
       if (filtered.length != merged.length)
         Padding(
           padding: const EdgeInsets.only(top: 4),
@@ -777,54 +867,24 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     ];
   }
 
-  Widget _mergedCard(XkMergedCourse m) {
+  String? _mergedDetails(XkMergedCourse m) {
     final b = m.base;
-    final obs = m.byRound.values.where((o) => o.cap != null || o.selected != null).toList();
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text('${b.kcmc}${b.jxbmc.isEmpty ? '' : '（${b.jxbmc}）'}',
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.bold)),
-                ),
-                if (m.roundOrder.length > 1)
-                  _tag('出现在 ${m.roundOrder.length} 个入口', Colors.blue),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              [
-                if (b.kch.isNotEmpty) '课程号 ${b.kch}',
-                if (b.teacher.isNotEmpty) '教师 ${b.teacher}',
-                if (b.xf != null) '学分 ${b.xf}',
-                if (b.sksj.isNotEmpty) '时间 ${b.sksj}',
-                if (b.cdmc.isNotEmpty) '地点 ${b.cdmc}',
-              ].join('｜'),
-              style: const TextStyle(fontSize: 12),
-            ),
-            if (obs.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                '容量/已选（快照）：${obs.map((o) => '${o.cap ?? '-'}/${o.selected ?? '-'}').join('  →  ')}',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-            ],
-            for (final n in [...m.notes, if (b.identityTier == 3) '该条目缺少教学班标识，无法区分平行班'])
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(n,
-                    style: const TextStyle(fontSize: 11, color: Colors.orange)),
-              ),
-          ],
-        ),
-      ),
-    );
+    final obs = m.byRound.values
+        .where((o) => o.cap != null || o.selected != null)
+        .toList();
+    final lines = <String>[
+      if (m.roundOrder.length > 1) '出现在 ${m.roundOrder.length} 个分类入口',
+      if (b.kch.isNotEmpty) '课程号 ${b.kch}',
+      if (b.xf != null) '学分 ${b.xf}',
+      if (b.teacher.isNotEmpty) '教师 ${b.teacher}',
+      if (b.sksj.isNotEmpty) '时间 ${b.sksj}',
+      if (b.cdmc.isNotEmpty) '地点 ${b.cdmc}',
+      if (obs.isNotEmpty)
+        '容量/已选快照：${obs.map((o) => '${o.cap ?? '-'}/${o.selected ?? '-'}').join(' → ')}',
+      ...m.notes,
+      if (b.identityTier == 3) '该条目缺少教学班标识，无法区分平行班',
+    ];
+    return lines.isEmpty ? null : lines.join('\n');
   }
 
   // ── 建议卡视图 ──────────────────────────────────────────────
@@ -841,20 +901,38 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         .toList();
     // 方案未加载（重启后未跑审计的常态）时如实标注：绝不把分类缺失渲染成"全部方案外"
     final planMissing = planCourses.isEmpty;
+    final timetable = _timetable ?? widget.timetable;
+    final selectedRows = selectedRowsOf(widget.choosed);
+    final selectedSlots = <Map<String, dynamic>>[
+      for (final c in widget.choosed?.courses ?? const <XkCourse>[])
+        ...c.slots,
+    ];
+    final timetableSlots = <Map<String, dynamic>>[
+      ...(timetable?.slots ?? const <Map<String, dynamic>>[]),
+      ...selectedSlots,
+    ];
     final advice = buildSelectionAdvice(SelectionRequest(
       candidates: merged,
       transcript: widget.transcript,
       planCourses: planCourses,
       planModules: planModules,
       currentSemester: widget.currentSemester,
-      currentTimetableSlots: _timetable?.slots ?? const [],
-      currentTimetableKnown: _timetable != null && _timetable!.slots.isNotEmpty,
+      currentTimetableSlots: timetableSlots,
+      currentTimetableKnown: (timetable?.slots.isNotEmpty ?? false) ||
+          selectedSlots.isNotEmpty,
+      selectedCourses: selectedRows,
     ));
+    // 诉求 #9：建议卡只显示“可选取且满足培养方案要求”的课程；
+    // 方案未加载时保留全量（否则无法分类，页面会显示明确提示）。
+    final visibleCandidates = planMissing
+        ? advice.candidates
+        : advice.candidates.where(isSelectableForPlan).toList();
+    final hiddenCount = advice.candidates.length - visibleCandidates.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (merged.isEmpty)
-          _emptyCard('暂无可分析的候选课程', '请先在「跨轮汇总」拉取课程数据。'),
+          _emptyCard('暂无可分析的候选课程', '请先在「所有课程」拉取课程数据。'),
         if (merged.isNotEmpty) ...[
           Card(
             child: Padding(
@@ -866,11 +944,22 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                       style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
                   Text(
-                    '缺口课程 ${advice.counts['gap'] ?? 0}｜已修 ${advice.counts['passed'] ?? 0}'
+                    '缺口课程 ${advice.counts['gap'] ?? 0}'
+                    '｜已取得 ${advice.counts['passed'] ?? 0}'
+                    '｜本学期已选 ${advice.counts['selected'] ?? 0}'
                     '｜方案外 ${advice.counts['extra'] ?? 0}'
                     '｜与课表冲突 ${advice.counts['conflict'] ?? 0}',
                     style: const TextStyle(fontSize: 12),
                   ),
+                  if (!planMissing)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        '可选取且符合方案 ${visibleCandidates.length} 门'
+                        '${hiddenCount > 0 ? '（未显示 $hiddenCount 门：已取得/已选/方案外/冲突/先修未完成/已满）' : ''}',
+                        style: const TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                    ),
                   if (planMissing)
                     const Text('培养方案未加载：缺口/已修分类暂不可用，以上按“未匹配”统计；'
                         '请先在设置页完成一次教务拉取或样例审计。',
@@ -889,7 +978,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             ),
           ),
           const SizedBox(height: 8),
-          ..._candidateCards(advice.candidates),
+          ..._candidateCards(visibleCandidates),
+          if (visibleCandidates.isEmpty && !planMissing)
+            _emptyCard('没有可选取且符合培养方案的课程',
+                '已取得、本学期已选、方案外、时间冲突、先修未完成或已满的课程未显示。'),
         ],
         const SizedBox(height: 8),
         _aiPanel(advice),
@@ -925,7 +1017,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     final b = a.course.base;
     final roleText = switch (a.role) {
       'gap' => '培养方案缺口课程',
-      'passed' => '已修读',
+      'passed' => '已取得',
+      'selected' => '本学期已选',
       'extra' => '方案外课程',
       _ => '匹配状态未知',
     };
@@ -955,8 +1048,13 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                   ),
                 ),
                 const SizedBox(width: 4),
-                _tag(roleText,
-                    a.role == 'gap' ? Colors.blue : Colors.grey),
+                _tag(
+                    roleText,
+                    a.role == 'gap'
+                        ? Colors.blue
+                        : a.role == 'selected'
+                            ? Colors.deepPurple
+                            : Colors.grey),
               ],
             ),
             const SizedBox(height: 2),
@@ -1107,6 +1205,16 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                   child: Text(_aiError!,
                       style: const TextStyle(fontSize: 12, color: Colors.red)),
                 ),
+              // 流式回复：先显示在途提问与已收到的片段，成功后移入 _aiHistory。
+              if (_aiBusy && _aiPendingQuestion != null) ...[
+                const Divider(height: 20),
+                Text('问：$_aiPendingQuestion',
+                    style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 4),
+                SelectableText(
+                    sanitizeAiOutput(_aiStreaming ?? '正在思考…'),
+                    style: const TextStyle(fontSize: 13, height: 1.5)),
+              ],
               for (final (q, a) in _aiHistory) ...[
                 const Divider(height: 20),
                 Text('问：$q', style: const TextStyle(fontSize: 12)),
@@ -1173,25 +1281,43 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       if (ok != true) return;
       _sendNoticeAck = true;
     }
+    // 数据放 system、历史问答放 messages：多轮追问不再每轮重复整段数据，
+    // 且模型能真正看到上一轮的问答（此前只发当前一句 → 追问失忆）。
+    final system =
+        '${buildGuidanceSystemPrompt()}\n\n[结构化数据（已脱敏）]\n'
+        '${buildSelectionDataPayload(advice: advice, auditReport: widget.report)}';
+    final messages = <Map<String, String>>[];
+    for (final (pq, pa) in _aiHistory) {
+      messages
+        ..add(<String, String>{'role': 'user', 'content': pq})
+        ..add(<String, String>{'role': 'assistant', 'content': pa});
+    }
+    if (messages.length > 12) {
+      messages.removeRange(0, messages.length - 12);
+    }
+    messages.add(<String, String>{'role': 'user', 'content': q});
+
     setState(() {
       _aiBusy = true;
       _aiError = null;
+      _aiPendingQuestion = q;
+      _aiStreaming = '';
     });
     try {
       final client = AiClient(widget.aiConfig);
       final out = await client.chat(
-        system: buildGuidanceSystemPrompt(),
-        messages: [
-          {
-            'role': 'user',
-            'content': buildUserPayload(
-                advice: advice, auditReport: widget.report, question: q),
-          }
-        ],
+        system: system,
+        messages: messages,
+        onDelta: (delta) {
+          if (!mounted) return;
+          setState(() => _aiStreaming = '${_aiStreaming ?? ''}$delta');
+        },
       );
       if (!mounted) return;
       setState(() {
         _aiBusy = false;
+        _aiPendingQuestion = null;
+        _aiStreaming = null;
         switch (out) {
           case AiReply(:final text):
             // 输出侧第二道防线（评审定稿）：命中禁用倾向词/组合句式即整段回退边界文案
@@ -1207,6 +1333,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       if (mounted) {
         setState(() {
           _aiBusy = false;
+          _aiPendingQuestion = null;
+          _aiStreaming = null;
           _aiError = '请求异常（请检查接口地址等配置后重试）';
         });
       }
@@ -1228,43 +1356,50 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         ),
       );
 
-  /// 课程列表：响应式多列网格（任务3），不再一节课一整行。
-  /// 列数按可用宽算（gridColumns：每列目标最小 260px、最多 3 列、窄屏退一列），
-  /// 卡间距 6；数据源与截断策略（前 120 条）不变，冲突标签复用 Timeline.slotsConflict
-  /// （仅当课表时隙已知时才判定，宁缺勿猜）。
+  /// 课程列表：全部展示，每门课一个按名称自适应宽度的气泡，Wrap 排列节省空间。
+  /// 冲突/已满/余量/已选/课程性质标签全部附在气泡上（详情在 Tooltip）。
   List<Widget> _courseCards(List<XkCourse> courses) {
     if (courses.isEmpty) return const [];
-    final ttSlots = _timetable?.slots ?? const [];
-    bool conflictsWithTimetable(XkCourse c) =>
-        ttSlots.isNotEmpty && Timeline.slotsConflict(c.slots, ttSlots) != null;
+    final ttSlots = (_timetable ?? widget.timetable)?.slots ?? const [];
+    final selectedKeys = _selectedCourseKeys();
     return [
       LayoutBuilder(
         builder: (context, cons) {
           final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
-          final cols = gridColumns(maxW);
-          const gap = 6.0;
-          final cardW = (maxW - gap * (cols - 1)) / cols;
           return Wrap(
-            spacing: gap,
-            runSpacing: gap,
+            spacing: 6,
+            runSpacing: 6,
             children: [
-              for (final c in courses.take(120))
-                SizedBox(
-                  width: cardW,
-                  child: CourseMiniCard(
+              for (final c in courses)
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxW),
+                  child: CourseBubble(
                     course: c,
-                    conflict: conflictsWithTimetable(c),
+                    conflict: ttSlots.isNotEmpty &&
+                        Timeline.slotsConflict(c.slots, ttSlots) != null,
+                    selected: _isCourseSelected(c, selectedKeys),
                   ),
                 ),
             ],
           );
         },
       ),
-      if (courses.length > 120)
-        Text('仅显示前 120 条（共 ${courses.length} 条，请用搜索与汇总视图查看）',
-            style: const TextStyle(fontSize: 11, color: Colors.grey)),
     ];
   }
+
+  Set<String> _selectedCourseKeys() {
+    final keys = <String>{};
+    for (final c in widget.choosed?.courses ?? const <XkCourse>[]) {
+      if (c.kch.isNotEmpty) keys.add('k:${c.kch}');
+      final name = c.kcmc.trim();
+      if (name.isNotEmpty) keys.add('n:$name');
+    }
+    return keys;
+  }
+
+  bool _isCourseSelected(XkCourse c, Set<String> keys) =>
+      (c.kch.isNotEmpty && keys.contains('k:${c.kch}')) ||
+      keys.contains('n:${c.kcmc.trim()}');
 }
 
 // ───────────────────────── 课程网格（任务3：响应式多列） ─────────────────────────
@@ -1274,6 +1409,102 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
 int gridColumns(double availableWidth) {
   final n = availableWidth ~/ 260;
   return n < 1 ? 1 : (n > 3 ? 3 : n);
+}
+
+/// 课程气泡：宽度随课程名自适应，Wrap 排列；标签在第二行，详情在 Tooltip。
+/// 所有抓到的课程都要展示，因此不再有 120 条上限。
+class CourseBubble extends StatelessWidget {
+  final XkCourse course;
+  final bool conflict;
+  final bool selected;
+  final List<String> extraTags;
+  final String? extraDetails;
+
+  const CourseBubble({
+    super.key,
+    required this.course,
+    this.conflict = false,
+    this.selected = false,
+    this.extraTags = const [],
+    this.extraDetails,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = course;
+    final isFull =
+        c.cap != null && c.selected != null && c.selected! >= c.cap!;
+    final left =
+        c.cap != null && c.selected != null ? c.cap! - c.selected! : null;
+    final allTags = <String>{...c.tags, ...extraTags};
+    final tags = <Widget>[
+      if (c.jxbmc.isNotEmpty) _miniTag(c.jxbmc, Colors.blueGrey),
+      if (conflict) _miniTag('冲突', Colors.red),
+      if (selected) _miniTag('本学期已选', Colors.blue),
+      if (isFull)
+        _miniTag('已满', Colors.orange)
+      else if (left != null)
+        _miniTag('余 $left', Colors.teal),
+      for (final t in allTags) _miniTag(t, Colors.teal),
+    ];
+    final details = <String>[
+      if (c.kch.isNotEmpty) '课程号 ${c.kch}',
+      if (c.xf != null) '学分 ${c.xf}',
+      if (c.teacher.isNotEmpty) '教师 ${c.teacher}',
+      if (c.sksj.isNotEmpty) '时间 ${c.sksj}',
+      if (c.cdmc.isNotEmpty) '地点 ${c.cdmc}',
+      if (c.cap != null || c.selected != null)
+        '容量 ${c.cap ?? '-'}/已选 ${c.selected ?? '-'}',
+      if (extraDetails != null && extraDetails!.trim().isNotEmpty)
+        extraDetails!.trim(),
+    ].join('\n');
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: details,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: selected
+              ? scheme.tertiaryContainer
+              : scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: conflict ? Colors.red : scheme.outlineVariant,
+            width: conflict ? 1.2 : 0.8,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(c.kcmc,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.bold)),
+            if (tags.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Wrap(
+                  spacing: 3,
+                  runSpacing: 2,
+                  children: tags,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _miniTag(String text, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(text, style: TextStyle(fontSize: 9.5, color: color)),
+      );
 }
 
 /// 选课课程紧凑小卡（响应式网格单元，任务3）：

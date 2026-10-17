@@ -47,6 +47,51 @@ void main() {
     expect(payload.contains('成绩'), isFalse, reason: '整条载荷不得出现成绩字样');
   });
 
+  test('buildAiContextJson：学业/方案/选课三块都在，且不含身份字段', () {
+    final json = buildAiContextJson(
+      transcript: [
+        {
+          'name': '高等数学',
+          'credits': 5.0,
+          'grade': 90,
+          'five_point': 4.8,
+          'semester': '2025-A',
+          'passed': true,
+          'category': '数理',
+          'student_id': '3260009999',
+          'name_of_student': '张三',
+        }
+      ],
+      report: failedReport(),
+      plan: {
+        'meta': {'major': '计算机科学与技术', 'total_credits': 160},
+        'modules': [
+          {'module_path': '专业核心', 'required_credits': 40}
+        ],
+        'courses': [
+          {
+            'name': '数据结构',
+            'credits': 4,
+            'module_id': 'major_core',
+            'nature': '必修'
+          }
+        ],
+      },
+      selection: {
+        '候选课程数': 1,
+        '候选课程': [
+          {'name': '编译原理'}
+        ],
+      },
+    );
+    expect(json, contains('高等数学'));
+    expect(json, contains('数据结构'));
+    expect(json, contains('编译原理'));
+    expect(json, contains('专业核心'));
+    expect(json, isNot(contains('3260009999')));
+    expect(json, isNot(contains('张三')));
+  });
+
   test('findBoundaryTriggers：空格拆分/变体不得绕过；正常问题不误拦', () {
     expect(findBoundaryTriggers('帮 我 选'), isNotEmpty);
     expect(findBoundaryTriggers('排一下课表'), isNotEmpty);

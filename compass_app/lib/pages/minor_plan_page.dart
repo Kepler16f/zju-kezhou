@@ -16,6 +16,7 @@ import '../data/pdf_text_extractor.dart';
 import '../data/plan_models.dart';
 import '../data/plan_pdf_parse.dart';
 import '../data/semester.dart';
+import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
 
 /// 从板块全集中挑出「微辅修」相关板块（纯函数、不抛异常，可单测）。
@@ -54,6 +55,9 @@ class MinorPlanPage extends StatefulWidget {
   /// 已修课程（成绩单），用于把微辅修课程标亮为已修
   /// （口径同培养方案页：取 transcript 里课程 name trim 成 Set）。
   final List<Map<String, dynamic>> transcript;
+
+  /// 本学期已选（在修，未出成绩）：微辅修课程同样标“在修”。
+  final XkListParseResult? choosed;
   final VoidCallback onGoSettings;
 
   const MinorPlanPage({
@@ -63,6 +67,7 @@ class MinorPlanPage extends StatefulWidget {
     required this.loggedIn,
     required this.onGoSettings,
     required this.transcript,
+    this.choosed,
   });
 
   @override
@@ -110,6 +115,12 @@ class _MinorPlanPageState extends State<MinorPlanPage> {
       .map((c) => (c['name'] ?? '').toString().trim())
       .where((n) => n.isNotEmpty)
       .toSet();
+
+  Set<String> get _selectedNames => widget.choosed?.courses
+          .map((c) => c.kcmc.trim())
+          .where((n) => n.isNotEmpty)
+          .toSet() ??
+      const <String>{};
 
   void _snack(String msg) {
     if (!mounted) return;
@@ -477,6 +488,7 @@ class _MinorPlanPageState extends State<MinorPlanPage> {
 
   Widget _courseChips(List<PdfCourseRow> courses) {
     final passed = _passed;
+    final selected = _selectedNames;
     return Wrap(
       spacing: 5,
       runSpacing: 4,
@@ -486,13 +498,16 @@ class _MinorPlanPageState extends State<MinorPlanPage> {
             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(6),
-              color: passed.contains(c.name)
-                  ? Theme.of(context).colorScheme.primaryContainer
-                  : Theme.of(context).colorScheme.surfaceContainerHighest,
+              color: selected.contains(c.name)
+                  ? Theme.of(context).colorScheme.tertiaryContainer
+                  : passed.contains(c.name)
+                      ? Theme.of(context).colorScheme.primaryContainer
+                      : Theme.of(context).colorScheme.surfaceContainerHighest,
             ),
             child: Text(
               '${c.code.isEmpty ? '' : '${c.code} '}'
               '${c.name} ${_num(c.credits)}分'
+              '${selected.contains(c.name) ? '（在修）' : ''}'
               '${c.semester.isEmpty ? '' : ' ${prettySemester(c.semester, gradeYear: _selected?.gradeYear ?? 0)}'}',
               style: const TextStyle(fontSize: 11),
             ),

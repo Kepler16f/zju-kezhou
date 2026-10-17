@@ -24,6 +24,7 @@ import '../data/semester.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
 import '../engine/plan_audit_adapter.dart';
+import '../engine/selection.dart';
 // getCloseMatches 实际定义在 engine/timeline.dart（difflib 移植，纯函数）；
 // engine/matching.dart 只是引用方且未 re-export，引擎文件本任务不可改。
 import '../engine/timeline.dart' show getCloseMatches;
@@ -55,6 +56,12 @@ class CurriculumPlanPage extends StatefulWidget {
   /// 本学期课表（诉求 #16）：非空时页面底部内嵌周视图。
   final TimetableParseResult? timetable;
 
+  /// 当前审计使用的 PlanFile（main 的 _auditPlan）：已选课程映射模块用。
+  final Map<String, dynamic>? plan;
+
+  /// 方案页手动选择后回传主状态（设置页/全局 AI 立即同步）。
+  final ValueChanged<MatchedPlanInfo>? onPlanSelected;
+
   const CurriculumPlanPage({
     super.key,
     required this.client,
@@ -65,6 +72,8 @@ class CurriculumPlanPage extends StatefulWidget {
     this.report,
     this.choosed,
     this.timetable,
+    this.plan,
+    this.onPlanSelected,
   });
 
   @override
@@ -151,6 +160,15 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _notesOpen.clear();
       });
       if (best != null) {
+        final bestMatch = match.best;
+        if (bestMatch != null) {
+          widget.onPlanSelected?.call(MatchedPlanInfo.fromSummary(
+            best,
+            level: bestMatch.level,
+            ambiguous: match.ambiguous,
+            candidateCount: match.candidates.length,
+          ));
+        }
         unawaited(_ensurePdfSections(best)); // 各板块修读要求：自动拉取解析
       }
     } catch (e) {
@@ -200,7 +218,21 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         _searchHits = const [];
         _searchCtl.text = '';
       });
-    await widget.client.selectPlan(plan);
+    final candidate = _match.candidates.firstWhere(
+      (c) => c.plan.id == plan.id || c.plan.jxjhh == plan.jxjhh,
+      orElse: () => PlanCandidate(
+          plan, plan.levelFor(_profile.majorName), false, 0),
+    );
+    await widget.client.selectPlan(plan,
+        level: candidate.level,
+        ambiguous: _match.ambiguous,
+        candidateCount: _match.candidates.length);
+    widget.onPlanSelected?.call(MatchedPlanInfo.fromSummary(
+      plan,
+      level: candidate.level,
+      ambiguous: _match.ambiguous,
+      candidateCount: _match.candidates.length,
+    ));
     unawaited(_ensurePdfSections(plan));
   }
 
@@ -317,11 +349,40 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     );
   }
 
-  /// 学业达成审计区：SectionHeader + 报告本体（totals 卡下带本学期已选计数行）。
-  List<Widget> _auditSection(Map<String, dynamic> report) => [
-        const SectionHeader('学业达成审计'),
-        ReportSection(report: report, belowTotals: _choosedLine()),
-      ];
+  /// 学业达成审计区（诉求 #3/#4）：整体可收起，默认收起，
+  /// 收起时只显示「N 个板块 / M 条风险提示 / 缺口」。
+  List<Widget> _auditSection(Map<String, dynamic> report) {
+    final summary = (report['summary'] as List? ?? const []);
+    final warnings = (report['warnings'] as List? ?? const []);
+    final totals = (report['totals'] as Map? ?? const {});
+    final trace = (report['trace'] as Map?) ?? const {};
+    return [
+      Card(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        child: ExpansionTile(
+          key: PageStorageKey<String>('audit-${trace['plan'] ?? ''}'),
+          initiallyExpanded: false,
+          title: const Text('学业达成审计',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          subtitle: Text(
+            '三色学分达成度：${summary.length} 个板块 · '
+            '风险提示：${warnings.length} 条 · '
+            '缺口 ${totals['gap'] ?? '-'} 分',
+            style: const TextStyle(fontSize: 12),
+          ),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: ReportSection(
+                report: report,
+                belowTotals: _choosedLine(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
 
   /// 审计报告未生成的空态（诉求 #13）：灰字提示 + 去设置按钮。
   Widget _auditEmptyHint() => Card(
@@ -343,33 +404,83 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         ),
       );
 
-  /// 本学期已选（在修未出成绩）计数行（诉求 #8）：仅教务模式拉到已选列表时展示。
+  /// 本学期已选（在修未出成绩）明细（诉求 #8/#10）：
+  /// 默认收起，展开后列出课程与对应方案模块；不计入已取得学分/GPA。
   Widget? _choosedLine() {
     final c = widget.choosed;
-    if (c == null || c.state != 'data') return null;
+    if (c == null) return null;
+    if (c.state == 'unavailable') {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+        child: Text(
+            '本学期已选暂不可用${c.issues.isEmpty ? '' : '：${c.issues.first}'}',
+            style: const TextStyle(fontSize: 11, color: Colors.orange)),
+      );
+    }
+    if (c.state == 'empty' || c.courses.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(4, 4, 4, 0),
+        child: Text('本学期已选：0 门（接口明确返回空）',
+            style: TextStyle(fontSize: 11, color: Colors.grey)),
+      );
+    }
     final xf = c.courses.fold<double>(0, (n, x) => n + (x.xf ?? 0));
+    final selectedRows = selectedRowsOf(c);
+    final byModule = widget.plan == null
+        ? const <String, double>{}
+        : selectedCreditsByModule(selectedRows, widget.plan!);
+    final moduleNames = <String, String>{
+      for (final m in (widget.plan?['modules'] as List? ?? const []))
+        if (m is Map && m['module_id'] != null)
+          '${m['module_id']}': '${m['module_path'] ?? m['module_id']}',
+    };
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 6),
+        initiallyExpanded: false,
+        title: const Text('本学期已选（在修，未出成绩）',
+            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+        subtitle: Text(
+            '${c.courses.length} 门 / ${xf.toStringAsFixed(1)} 学分'
+            ' · 不计入已取得学分 / GPA'),
         children: [
-          Text.rich(
-            TextSpan(
-              text: '本学期已选（在修，未出成绩）',
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
-              children: [
-                TextSpan(
-                  text: '${c.courses.length} 门 / ${xf.toStringAsFixed(1)} 学分',
-                  style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
-                      color: Theme.of(context).colorScheme.onSurface),
-                ),
-              ],
+          for (final x in c.courses)
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.schedule, size: 18),
+              title: Text(x.kcmc, style: const TextStyle(fontSize: 12.5)),
+              subtitle: Text(<String>[
+                if (x.xf != null) '${x.xf} 学分',
+                if (x.teacher.isNotEmpty) x.teacher,
+                if (x.sksj.isNotEmpty) x.sksj,
+                if (x.cdmc.isNotEmpty) x.cdmc,
+              ].join(' · '), style: const TextStyle(fontSize: 11)),
             ),
+          if (byModule.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  for (final e in byModule.entries)
+                    Chip(
+                      visualDensity: VisualDensity.compact,
+                      label: Text(
+                          '${moduleNames[e.key] ?? e.key} 在修 ${_num(e.value)} 分',
+                          style: const TextStyle(fontSize: 10.5)),
+                    ),
+                ],
+              ),
+            ),
+          const Padding(
+            padding: EdgeInsets.only(top: 2),
+            child: Text('已取得学分开自成绩单；已选课程在修、未出成绩，两者分开计。',
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
           ),
-          const Text('已获得学分开自成绩单，两者分开计。',
-              style: TextStyle(fontSize: 11, color: Colors.grey)),
         ],
       ),
     );
@@ -605,6 +716,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                     loggedIn: widget.loggedIn,
                     onGoSettings: widget.onGoSettings,
                     transcript: widget.transcript,
+                    choosed: widget.choosed,
                   ))),
           icon: const Icon(Icons.school_outlined),
           label: const Text('浏览其他专业的微辅修方案'),
@@ -706,7 +818,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                 if (s.creditsRaw.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(left: 8),
-                    child: Text('${s.creditsRaw} 学分',
+                    child: Text(s.isCountRule ? '${s.creditsRaw} 门' : '${s.creditsRaw} 学分',
                         style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
@@ -791,7 +903,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                   if (s.creditsRaw.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(left: 8),
-                      child: Text('${s.creditsRaw} 学分',
+                      child: Text(s.isCountRule ? '${s.creditsRaw} 门' : '${s.creditsRaw} 学分',
                           style: TextStyle(
                               fontSize: 12.5,
                               fontWeight: FontWeight.w700,
@@ -879,26 +991,39 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     ];
   }
 
-  Widget _courseChips(List<PdfCourseRow> courses, Set<String> passed) => Wrap(
-        spacing: 5,
-        runSpacing: 4,
-        children: [
-          for (final c in courses)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(6),
-                color: passed.contains(c.name)
-                    ? Theme.of(context).colorScheme.primaryContainer
-                    : Theme.of(context).colorScheme.surfaceContainerHighest,
-              ),
-              child: Text(
-                  '${c.name} ${_num(c.credits)}分'
-                  '${c.semester.isNotEmpty ? ' ${prettySemester(c.semester, gradeYear: _selected?.gradeYear ?? 0)}' : ''}',
-                  style: const TextStyle(fontSize: 11)),
+  /// 本学期已选课程名集合（在修，未出成绩）。
+  Set<String> _selectedNames() => widget.choosed?.courses
+          .map((c) => c.kcmc.trim())
+          .where((n) => n.isNotEmpty)
+          .toSet() ??
+      const <String>{};
+
+  Widget _courseChips(List<PdfCourseRow> courses, Set<String> passed) {
+    final selected = _selectedNames();
+    return Wrap(
+      spacing: 5,
+      runSpacing: 4,
+      children: [
+        for (final c in courses)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(6),
+              color: selected.contains(c.name)
+                  ? Theme.of(context).colorScheme.tertiaryContainer
+                  : passed.contains(c.name)
+                      ? Theme.of(context).colorScheme.primaryContainer
+                      : Theme.of(context).colorScheme.surfaceContainerHighest,
             ),
-        ],
-      );
+            child: Text(
+                '${c.name} ${_num(c.credits)}分'
+                '${selected.contains(c.name) ? '（在修）' : ''}'
+                '${c.semester.isNotEmpty ? ' ${prettySemester(c.semester, gradeYear: _selected?.gradeYear ?? 0)}' : ''}',
+                style: const TextStyle(fontSize: 11)),
+          ),
+      ],
+    );
+  }
 
   /// 认定类板块（美育/劳育/创新创业/心理健康，#13）在 PDF 里只有说明文字、
   /// 无课程表：把成绩单里同类课程（certifiedCategoryOf 命中该板块类别）显示为
@@ -1173,23 +1298,29 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         ),
       );
 
-  Widget _chips(List<String> names, Set<String> passed) => Wrap(
-        spacing: 6,
-        runSpacing: 6,
-        children: [
-          for (final n in names)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(6),
-                color: passed.contains(n)
-                    ? Theme.of(context).colorScheme.primaryContainer
-                    : Theme.of(context).colorScheme.surfaceContainerHighest,
-              ),
-              child: Text(n, style: const TextStyle(fontSize: 12)),
+  Widget _chips(List<String> names, Set<String> passed) {
+    final selected = _selectedNames();
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final n in names)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(6),
+              color: selected.contains(n)
+                  ? Theme.of(context).colorScheme.tertiaryContainer
+                  : passed.contains(n)
+                      ? Theme.of(context).colorScheme.primaryContainer
+                      : Theme.of(context).colorScheme.surfaceContainerHighest,
             ),
+            child: Text(selected.contains(n) ? '$n（在修）' : n,
+                style: const TextStyle(fontSize: 12)),
+          ),
         ],
       );
+  }
 
   static String _num(double v) => (v - v.roundToDouble()).abs() < 1e-9
       ? v.roundToDouble().toString()

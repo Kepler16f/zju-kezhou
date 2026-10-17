@@ -10,6 +10,7 @@
 library;
 
 import '../data/xk_models.dart';
+import '../data/xk_parse.dart';
 import 'disclaimer.dart';
 import 'matching.dart';
 import 'timeline.dart';
@@ -23,6 +24,7 @@ class SelectionRequest {
   final String currentSemester; // '2026-A'；空 = 未知
   final List<Map<String, dynamic>> currentTimetableSlots; // 当前课表时隙（kbList 解析产物）
   final bool currentTimetableKnown; // 课表是否成功取得（false → 冲突检查降级）
+  final List<Map<String, dynamic>> selectedCourses; // 本学期已选（在修，未出成绩）
   const SelectionRequest({
     required this.candidates,
     this.transcript = const [],
@@ -31,6 +33,7 @@ class SelectionRequest {
     this.currentSemester = '',
     this.currentTimetableSlots = const [],
     this.currentTimetableKnown = false,
+    this.selectedCourses = const [],
   });
 }
 
@@ -65,7 +68,7 @@ String? _tagProbe(String tag) {
 /// 单个候选课程相对培养方案/课表的关系分析。
 class CandidateAnalysis {
   final XkMergedCourse course;
-  final String role; // gap（缺口未修）| passed（已修）| extra（方案外）| unknown
+  final String role; // gap（缺口未修）| passed（已修）| selected（本学期已选）| extra（方案外）| unknown
   final String matchConfidence; // exact | fuzzy | none
   final String? planCourseId;
   final String? planName;
@@ -88,6 +91,62 @@ class CandidateAnalysis {
     this.planCategory,
     this.categoryBasis = 'unknown',
   });
+}
+
+/// 已选课程 → 仅用于方案匹配/展示的行。
+/// 这些行没有 grade/passed/semester，绝不能并入 transcript 参与 GPA/审计计算。
+List<Map<String, dynamic>> selectedRowsOf(XkListParseResult? choosed) {
+  if (choosed == null || choosed.state != 'data') {
+    return const <Map<String, dynamic>>[];
+  }
+  final seen = <String>{};
+  final out = <Map<String, dynamic>>[];
+  for (final c in choosed.courses) {
+    final key = '${c.kch}|${c.kcmc}';
+    if (!seen.add(key)) continue; // 同一课程多行只算一次
+    out.add(<String, dynamic>{
+      'course_id': c.kch.isEmpty ? null : c.kch,
+      'name': c.kcmc,
+      'credits': c.xf,
+      'slots': c.slots,
+    });
+  }
+  return out;
+}
+
+/// 已选课程 → 培养方案模块的在修学分（复用审计同一匹配口径）。
+Map<String, double> selectedCreditsByModule(
+  List<Map<String, dynamic>> selectedRows,
+  Map<String, dynamic> plan,
+) {
+  final out = <String, double>{};
+  if (selectedRows.isEmpty) return out;
+  final planCourses = plan['courses'];
+  if (planCourses is! List) return out;
+  final (matched, _) = matchRecordToPlan(
+      selectedRows, <String, dynamic>{'courses': planCourses});
+  for (final pair in matched) {
+    final row = pair[0] as Map<String, dynamic>;
+    final pc = pair[1] as Map<String, dynamic>;
+    final credit = (row['credits'] as num?)?.toDouble() ??
+        (pc['credits'] as num?)?.toDouble() ??
+        0.0;
+    final mid = '${pc['module_id'] ?? ''}'.trim();
+    if (mid.isEmpty) continue;
+    out.update(mid, (v) => v + credit, ifAbsent: () => credit);
+  }
+  return out;
+}
+
+/// 建议卡“可选取且满足方案”的判定（页面只展示通过这些条件的课程）。
+bool isSelectableForPlan(CandidateAnalysis a) {
+  final b = a.course.base;
+  final isFull = b.cap != null && b.selected != null && b.selected! >= b.cap!;
+  return a.role == 'gap' &&
+      a.offeredMatch != 'no' &&
+      !a.prereqIncomplete &&
+      a.conflictTexts.isEmpty &&
+      !isFull;
 }
 
 /// 建议卡（AI 解读的输入、UI 直接渲染的数据源；数字全部出自本文件）。
@@ -121,6 +180,23 @@ SelectionAdvice buildSelectionAdvice(SelectionRequest req) {
   final planById = <String, Map<String, dynamic>>{
     for (final c in req.planCourses) '${c['course_id']}': c,
   };
+  // 本学期已选（在修，未出成绩）：只用于“已选”判定，不参与 passed/earned 计算。
+  final selectedKeys = <String>{};
+  for (final r in req.selectedCourses) {
+    final id = '${r['course_id'] ?? ''}'.trim();
+    if (id.isNotEmpty) selectedKeys.add('id:$id');
+    final name = '${r['name'] ?? ''}'.trim();
+    if (name.isNotEmpty) selectedKeys.add('name:$name');
+  }
+  final selectedIds = <String>{};
+  if (req.selectedCourses.isNotEmpty) {
+    final (selMatched, _) =
+        matchRecordToPlan(req.selectedCourses, {'courses': req.planCourses});
+    for (final pair in selMatched) {
+      final pid = '${(pair[1] as Map<String, dynamic>)['course_id']}'.trim();
+      if (pid.isNotEmpty) selectedIds.add(pid);
+    }
+  }
 
   // 2) 学期与开课季口径
   int? semIdx;
@@ -145,12 +221,20 @@ SelectionAdvice buildSelectionAdvice(SelectionRequest req) {
 
   // 3) 逐条分析
   final analyses = <CandidateAnalysis>[];
-  final counts = <String, int>{'gap': 0, 'passed': 0, 'extra': 0, 'unknown': 0, 'conflict': 0};
+  final counts = <String, int>{
+    'gap': 0,
+    'passed': 0,
+    'selected': 0,
+    'extra': 0,
+    'unknown': 0,
+    'conflict': 0,
+  };
   // 方案模块对照：module_id → module_path（类别归属以方案为准，诉求 #6）。
   final modulePaths = <String, String>{
     for (final m in req.planModules)
       if (m['module_id'] != null)
-        '${m['module_id']}': '${m['module_path'] ?? m['module_id']}',
+        '${m['module_id']}':
+            '${m['category'] ?? m['module_path'] ?? m['module_id']}',
   };
   for (final mc in req.candidates) {
     final base = mc.base;
@@ -205,7 +289,13 @@ SelectionAdvice buildSelectionAdvice(SelectionRequest req) {
       cNotes.add('未在培养方案中匹配到同名课程（可能为方案外课程或名称差异过大）。');
     } else {
       final pid = '${planCourse['course_id']}';
-      if (passedIds.contains(pid)) {
+      final alreadySelected = selectedIds.contains(pid) ||
+          selectedKeys.contains('id:${base.kch}') ||
+          selectedKeys.contains('name:${base.kcmc}');
+      if (alreadySelected) {
+        role = 'selected';
+        cNotes.add('该课程本学期已选（在修，未出成绩），不建议重复选课。');
+      } else if (passedIds.contains(pid)) {
         role = 'passed';
         cNotes.add('该课程你已修读（重复修读是否计入学分以教务系统为准）。');
       } else {

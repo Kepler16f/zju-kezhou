@@ -10,6 +10,7 @@
 //
 // 断言作用域：IndexedStack 会构建全部子页，跨页共享的文案（如免责声明）必须用
 // find.descendant 限定在目标页内断言，否则新增页面会撞挂既有用例（设计评审B）。
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -67,20 +68,22 @@ void main() {
       await tester.pump();
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
-      // 点"运行样例审计"，轮询直到方案页内嵌审计区报告出现（上限 5s）。
+      // 点"运行样例审计"，轮询直到方案页内嵌审计区出现（上限 5s）。
       await tester.tap(find.text('运行样例审计'));
       for (var i = 0; i < 50; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 100));
         await tester.pump();
-        if (find.textContaining('三色学分达成度').evaluate().isNotEmpty) break;
+        if (find.text('学业达成审计').evaluate().isNotEmpty) break;
       }
 
-      // 自动切到方案页：内嵌「学业达成审计」区出现（限定在本页内断言：
-      // 选课页也含免责声明同款文案）
+      // 审计区默认收起：先展开外层，再断言三色/风险标题与免责声明。
       Finder inPlan(Finder f) =>
           find.descendant(of: find.byType(CurriculumPlanPage), matching: f);
-      expect(inPlan(find.textContaining('三色学分达成度')), findsOneWidget);
-      expect(inPlan(find.textContaining('风险提示')), findsOneWidget);
+      expect(inPlan(find.text('学业达成审计')), findsOneWidget);
+      await tester.tap(inPlan(find.text('学业达成审计')));
+      await tester.pump();
+      expect(inPlan(find.textContaining('三色学分达成度（')), findsOneWidget);
+      expect(inPlan(find.textContaining('风险提示（')), findsOneWidget);
       expect(inPlan(find.textContaining('仅供与导师沟通参考')), findsOneWidget);
     });
 
@@ -159,15 +162,21 @@ void main() {
     // 主体渲染 + 演示数据标记（绝不能冒充教务实时数据）
     expect(find.text('课程选择'), findsOneWidget);
     expect(find.textContaining('演示数据（合成样例'), findsOneWidget);
-    expect(find.text('第一轮（演示）'), findsOneWidget);
+    // 类别名既出现在 chip 上，也作为课程气泡的标签出现。
+    expect(find.text('第一轮（演示）'), findsWidgets);
 
-    // 跨轮汇总：同一教学班跨两轮出现 + 容量/已选快照变化
-    await tester.tap(find.text('跨轮汇总'));
+    // 所有课程：同一教学班跨两轮出现 + 容量/已选快照变化（详情在气泡 Tooltip）
+    await tester.tap(find.text('所有课程'));
     await tester.pump();
     await tester.tap(find.text('汇总全部入口'));
     await tester.pump();
-    expect(find.textContaining('60/45  →  60/52'), findsOneWidget);
-    expect(find.textContaining('出现在 2 个入口'), findsWidgets);
+    final tooltipText = tester
+        .widgetList<Tooltip>(find.byType(Tooltip))
+        .map((t) => t.message ?? '')
+        .join('\n');
+    expect(tooltipText.contains('60/45'), isTrue);
+    expect(tooltipText.contains('60/52'), isTrue);
+    expect(tooltipText.contains('出现在 2 个'), isTrue);
 
     // 建议卡：确定性计数 + 与课表冲突（演示课表 星期一第3-4节 与 J2001A 重叠）
     await tester.tap(find.text('建议卡'));

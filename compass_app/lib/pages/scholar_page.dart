@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../data/semester.dart';
+import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/exam.dart';
 import '../widgets/exam_sprint_card.dart';
@@ -23,6 +24,7 @@ class ScholarPage extends StatefulWidget {
   final List<ExamInfo> exams;
   final Map<String, Map<String, bool>> marks;
   final void Function(String key, String kind, bool value)? onMark;
+  final XkListParseResult? choosed; // 本学期已选（在修，未出成绩）
   final String? sourceLabel;
   final VoidCallback? onGoSettings;
   final Future<void> Function()? onRefresh;
@@ -35,7 +37,7 @@ class ScholarPage extends StatefulWidget {
   const ScholarPage(
       {super.key, required this.courses, required this.practice,
       this.exams = const [], this.marks = const {}, this.onMark,
-      this.sourceLabel, this.onGoSettings, this.onRefresh,
+      this.choosed, this.sourceLabel, this.onGoSettings, this.onRefresh,
       this.onGoPlan, this.onGoTimetable});
 
   @override
@@ -67,6 +69,7 @@ class _ScholarPageState extends State<ScholarPage> {
     final practice = widget.practice;
     final exams = widget.exams;
     final marks = widget.marks;
+    final choosed = widget.choosed;
     final sourceLabel = widget.sourceLabel;
     final onGoSettings = widget.onGoSettings;
     final onRefresh = widget.onRefresh;
@@ -144,7 +147,10 @@ class _ScholarPageState extends State<ScholarPage> {
                   trailing: sourceLabel,
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(
                       builder: (_) => GradeDetailPage(
-                          courses: courses, marks: marks, onMark: widget.onMark))),
+                          courses: courses,
+                          marks: marks,
+                          choosed: choosed,
+                          onMark: widget.onMark))),
                   child: Column(
                     children: [
                       Row(
@@ -175,7 +181,7 @@ class _ScholarPageState extends State<ScholarPage> {
                         children: [
                           Expanded(
                               child: TwoLineCard(
-                                  title: '获得学分',
+                                  title: '已取得学分',
                                   content:
                                       o['earned_credits']!.toStringAsFixed(1),
                                   color: ScholarPalette.peach)),
@@ -189,7 +195,7 @@ class _ScholarPageState extends State<ScholarPage> {
                           const SizedBox(width: 8),
                           Expanded(
                               child: TwoLineCard(
-                                  title: '已修门数',
+                                  title: '已取得门数',
                                   content:
                                       '${courses.where(Analytics.isPassed).length}',
                                   color: ScholarPalette.sand)),
@@ -207,6 +213,7 @@ class _ScholarPageState extends State<ScholarPage> {
                     ],
                   ),
                 ),
+                if (choosed != null) _choosedCard(context, choosed),
                 const SectionHeader('学分看板（按课程性质）'),
                 Card(
                   child: Padding(
@@ -445,6 +452,65 @@ class _ScholarPageState extends State<ScholarPage> {
         ],
       ),
     );
+  }
+
+  /// 本学期已选（在修）摘要卡。默认收起，展开后列出课程明细。
+  /// 这些课程没有成绩，不参与 GPA、已取得学分或三色达成度计算。
+  Widget _choosedCard(BuildContext context, XkListParseResult choosed) {
+    final theme = Theme.of(context);
+    if (choosed.state == 'unavailable') {
+      return Card(
+        child: ListTile(
+          leading: Icon(Icons.info_outline, color: theme.colorScheme.error),
+          title: const Text('本学期已选暂不可用'),
+          subtitle: Text(choosed.issues.isEmpty
+              ? '请到设置页重新拉取教务数据'
+              : choosed.issues.first),
+        ),
+      );
+    }
+    if (choosed.state == 'empty' || choosed.courses.isEmpty) {
+      return const Card(
+        child: ListTile(
+          title: Text('本学期已选'),
+          subtitle: Text('0 门（接口明确返回空）'),
+        ),
+      );
+    }
+    final credits = choosed.courses.fold<double>(
+        0, (sum, c) => sum + (c.xf ?? 0));
+    return Card(
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        leading: Icon(Icons.playlist_add_check_circle_outlined,
+            color: theme.colorScheme.primary),
+        title: const Text('本学期已选（在修，未出成绩）'),
+        subtitle: Text(
+            '${choosed.courses.length} 门 · ${_fmtCredits(credits)} 学分'
+            ' · 不计入 GPA / 已取得学分'),
+        children: [
+          for (final c in choosed.courses)
+            ListTile(
+              dense: true,
+              title: Text(c.kcmc,
+                  style: const TextStyle(fontSize: 13)),
+              subtitle: Text(<String>[
+                if (c.xf != null) '${c.xf} 学分',
+                if (c.teacher.isNotEmpty) c.teacher,
+                if (c.sksj.isNotEmpty) c.sksj,
+                if (c.cdmc.isNotEmpty) c.cdmc,
+              ].join(' · ')),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _fmtCredits(num v) {
+    final d = v.toDouble();
+    return (d - d.roundToDouble()).abs() < 1e-9
+        ? '${d.round()}'
+        : d.toStringAsFixed(1);
   }
 
   double _legacyFour(List<Map<String, dynamic>> courses) {

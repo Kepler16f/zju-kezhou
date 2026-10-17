@@ -65,15 +65,14 @@ void main() {
         {'course_id': 'MARX1005G', 'name': '新时代实践教育', 'credits': 2.0, 'grade': 88},
       ];
       expect(coursesCategoryMap(rows, pdfPlan), {
-        // module_path 末段：'通识课程 · 通识必修课程' → '通识必修课程'
-        '大学生思想文化素养': '通识必修课程',
-        // '通识课程 · 通识必修课程 · 思政类' → '思政类'
+        // 新口径优先用模块 category 字段；两个板块都归属「思政类」。
+        '大学生思想文化素养': '思政类',
         '新时代实践教育': '思政类',
       });
 
       final filled = applyPlanCategories(rows, pdfPlan);
       expect(filled, 2);
-      expect(rows[0]['category'], '通识必修课程');
+      expect(rows[0]['category'], '思政类');
       expect(rows[1]['category'], '思政类');
     });
 
@@ -110,7 +109,7 @@ void main() {
       expect(filled, 2);
       expect(rows[0]['category'], '专业必修'); // 原值保留
       expect(rows[1]['category'], '思政类'); // 「未分类」→ 方案类别
-      expect(rows[2]['category'], '通识必修课程');
+      expect(rows[2]['category'], '思政类');
     });
 
     test('未匹配课程保持无类别；空 plan / 空课程 / 脏数据不抛异常', () {
@@ -215,7 +214,7 @@ void main() {
       ];
       final filled = applyPlanCategories(rows, smallPlan);
       expect(filled, 3);
-      expect(rows[0]['category'], '通识必修课程'); // 方案模块命中（主路径）照旧
+      expect(rows[0]['category'], '思政类'); // 方案模块命中（主路径）用 category 字段
       expect(rows[1]['category'], '心理健康类'); // 认定类兜底
       expect(rows[2].containsKey('category'), isFalse); // 负例不猜
       expect(rows[3]['category'], '心理健康类'); // 「未分类」视同空可补

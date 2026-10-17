@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 自动生成：python engine/build_embed.py ｜ 2026-10-12 14:20 ｜ 专业：computer_science、software_engineering
+# 自动生成：python engine/build_embed.py ｜ 2026-10-17 22:00 ｜ 专业：computer_science、software_engineering
 # 用法：整文件粘贴进 Dify「代码执行(Python3)」节点
 # 输入：record_json(str)  action(str，固定 'audit') ｜ 输出：report_json(str)
 import difflib
@@ -101,7 +101,7 @@ Dify Code 节点用法：PLAN_JSON 常量由 engine/build_embed.py 注入，本�
 
 
 
-ENGINE_VERSION = "1.1"
+ENGINE_VERSION = "1.2"
 GRADUATION_YEARS = 6  # 最长学籍年限（年），自入学学年起算
 PLAN_JSON = r'''{"computer_science": {"meta": {"major": "computer_science", "grade": "2023", "source_doc": "2023级计算机专业本科培养方案（合成演示样例）", "total_credits": 103.0, "extracted_by": "M1 workflow v1", "verified": true, "verified_at": "2026-10-13"}, "modules": [{"module_id": "general_required", "module_path": "通识教育/通识必修", "required_credits": 34.0, "kind": "必修", "course_ids": ["GS1001", "GS1002", "GS1003", "GS1004", "GS1005", "GS1006", "GS1007", "GS1008", "GS1009", "GS1010", "GS1011", "GS1012", "GS1013", "GS1014", "GS1015", "GS1016"]}, {"module_id": "major_core", "module_path": "专业教育/专业核心", "required_credits": 39.0, "kind": "必修", "course_ids": ["CS1001", "CS1002", "CS2001", "CS2002", "CS2003", "CS3001", "CS3002", "CS3003", "CS3004", "CS3005", "CS3006", "CS3007"]}, {"module_id": "major_limited", "module_path": "专业教育/专业限选", "required_credits": 8.0, "kind": "限选", "course_ids": ["CS3101", "CS3102", "CS4101", "CS4102", "CS3103"]}, {"module_id": "intensive_practice", "module_path": "集中实践", "required_credits": 18.0, "kind": "必修", "course_ids": ["PR3001", "PR3002", "PR4001", "PR4002", "PR4003"]}, {"module_id": "free_elective", "module_path": "任意选修", "required_credits": 4.0, "kind": "限选", "course_ids": ["EL001", "EL002", "EL003"]}], "courses": [{"course_id": "GS1001", "name": "思想道德与法治", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 12}}, {"course_id": "GS1002", "name": "英语学术读写", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 13}}, {"course_id": "GS1003", "name": "英语国际交流", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 13}}, {"course_id": "GS1004", "name": "体育（基础）", "credits": 1.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 14}}, {"course_id": "GS1005", "name": "体育（选项）", "credits": 1.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 14}}, {"course_id": "GS1006", "name": "军事理论", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 15}}, {"course_id": "GS1007", "name": "计算机基础", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 16}}, {"course_id": "GS1008", "name": "毛泽东思想和中国特色社会主义理论体系概论", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 17}}, {"course_id": "GS1009", "name": "中国近现代史纲要", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 17}}, {"course_id": "GS1010", "name": "马克思主义基本原理", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 18}}, {"course_id": "GS1011", "name": "形势与政策", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 18}}, {"course_id": "GS1012", "name": "劳动教育", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋", "春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 19}}, {"course_id": "GS1013", "name": "国家安全教育", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 19}}, {"course_id": "GS1014", "name": "创新创业基础", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋", "春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 20}}, {"course_id": "GS1015", "name": "心理与人格发展", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋", "春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 20}}, {"course_id": "GS1016", "name": "人工智能通识", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 21}}, {"course_id": "CS1001", "name": "程序设计基础", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 23}}, {"course_id": "CS1002", "name": "离散数学", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 23}}, {"course_id": "CS2001", "name": "数据结构与算法", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": ["CS1001"], "source": {"page": 24}}, {"course_id": "CS2002", "name": "计算机组成原理", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["CS1001"], "source": {"page": 25}}, {"course_id": "CS2003", "name": "算法设计与分析", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["CS2001"], "source": {"page": 25}, "note": "算法设计与分析仅秋季"}, {"course_id": "CS3001", "name": "操作系统", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["CS2001", "CS2002"], "source": {"page": 26}}, {"course_id": "CS3002", "name": "编译原理", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": ["CS2001"], "source": {"page": 26}}, {"course_id": "CS3003", "name": "计算机网络", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["CS2002"], "source": {"page": 27}}, {"course_id": "CS3004", "name": "数据库系统", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": ["CS1001"], "source": {"page": 27}}, {"course_id": "CS3005", "name": "软件工程导论", "credits": 2.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 28}}, {"course_id": "CS3006", "name": "计算机体系结构", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["CS2002"], "source": {"page": 28}}, {"course_id": "CS3007", "name": "数值分析", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["CS1002"], "source": {"page": 29}}, {"course_id": "CS3101", "name": "人工智能导论", "credits": 3.0, "module_id": "major_limited", "nature": "限选", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 30}}, {"course_id": "CS3102", "name": "信息安全导论", "credits": 2.0, "module_id": "major_limited", "nature": "限选", "offered": ["春"], "grade_cycle": null, "offered_years": [2027], "prereq": [], "source": {"page": 30}}, {"course_id": "CS4101", "name": "机器学习", "credits": 4.0, "module_id": "major_limited", "nature": "限选", "offered": ["秋"], "grade_cycle": null, "offered_years": [2025], "prereq": ["CS2003"], "source": {"page": 31}}, {"course_id": "CS4102", "name": "数据挖掘", "credits": 3.0, "module_id": "major_limited", "nature": "限选", "offered": ["秋"], "grade_cycle": null, "offered_years": [2025, 2026, 2027], "prereq": [], "source": {"page": 31}}, {"course_id": "CS3103", "name": "区块链技术导论", "credits": 2.0, "module_id": "major_limited", "nature": "限选", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 32}}, {"course_id": "PR3001", "name": "课程设计（数据结构）", "credits": 2.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["CS2001"], "source": {"page": 33}}, {"course_id": "PR3002", "name": "科研训练", "credits": 2.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["秋", "春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 33}}, {"course_id": "PR4001", "name": "生产实习", "credits": 2.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["春"], "grade_cycle": null, "offered_years": [2025], "prereq": [], "source": {"page": 34}}, {"course_id": "PR4002", "name": "专业实习", "credits": 4.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["秋", "春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 34}}, {"course_id": "PR4003", "name": "毕业设计（论文）", "credits": 8.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 35}}, {"course_id": "EL001", "name": "创新设计思维", "credits": 2.0, "module_id": "free_elective", "nature": "任选", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 36}}, {"course_id": "EL002", "name": "数据可视化", "credits": 2.0, "module_id": "free_elective", "nature": "任选", "offered": ["春"], "grade_cycle": null, "offered_years": [2024, 2025], "prereq": [], "source": {"page": 36}}, {"course_id": "EL003", "name": "科技伦理", "credits": 2.0, "module_id": "free_elective", "nature": "任选", "offered": ["秋"], "grade_cycle": null, "offered_years": [2024, 2025], "prereq": [], "source": {"page": 36}}]}, "software_engineering": {"meta": {"major": "software_engineering", "grade": "2023", "source_doc": "2023级软件学院本科培养方案（合成样例）", "total_credits": 61.0, "extracted_by": "M1 workflow v1", "verified": true, "verified_at": "2026-10-13"}, "modules": [{"module_id": "general_required", "module_path": "通识教育/通识必修", "required_credits": 21.0, "kind": "必修"}, {"module_id": "major_core", "module_path": "专业教育/专业核心", "required_credits": 19.0, "kind": "必修"}, {"module_id": "major_limited", "module_path": "专业教育/专业限选", "required_credits": 5.0, "kind": "限选"}, {"module_id": "intensive_practice", "module_path": "集中实践", "required_credits": 14.0, "kind": "必修"}, {"module_id": "free_elective", "module_path": "任意选修", "required_credits": 2.0, "kind": "限选"}], "courses": [{"course_id": "GS1001", "name": "思想道德与法治", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 12}}, {"course_id": "GS1002", "name": "英语学术读写", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 13}}, {"course_id": "GS1003", "name": "英语国际交流", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 13}}, {"course_id": "GS1004", "name": "体育（基础）", "credits": 1.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 14}}, {"course_id": "GS1005", "name": "体育（选项）", "credits": 1.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 14}}, {"course_id": "GS1006", "name": "军事理论", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 15}}, {"course_id": "GS1007", "name": "计算机基础", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 16}}, {"course_id": "GS1008", "name": "毛泽东思想和中国特色社会主义理论体系概论", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 17}}, {"course_id": "GS1009", "name": "中国近现代史纲要", "credits": 3.0, "module_id": "general_required", "nature": "通识必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 17}}, {"course_id": "GS1010", "name": "形势与政策", "credits": 2.0, "module_id": "general_required", "nature": "通识必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 18}}, {"course_id": "SE1001", "name": "程序设计基础", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 21}}, {"course_id": "SE2001", "name": "面向对象设计", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": ["SE1001"], "source": {"page": 22}}, {"course_id": "SE2002", "name": "数据结构", "credits": 4.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["SE1001"], "source": {"page": 22}}, {"course_id": "SE3001", "name": "软件需求工程", "credits": 2.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 23}}, {"course_id": "SE3002", "name": "软件测试", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": ["SE2001"], "source": {"page": 23}}, {"course_id": "SE3003", "name": "软件体系结构", "credits": 3.0, "module_id": "major_core", "nature": "必修", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": ["SE2002"], "source": {"page": 24}}, {"course_id": "SE3101", "name": "移动应用开发", "credits": 2.0, "module_id": "major_limited", "nature": "限选", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 25}}, {"course_id": "SE4101", "name": "云原生技术", "credits": 3.0, "module_id": "major_limited", "nature": "限选", "offered": ["春"], "grade_cycle": null, "offered_years": [2026], "prereq": [], "source": {"page": 25}}, {"course_id": "SE4001", "name": "企业实习", "credits": 6.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["春"], "grade_cycle": null, "offered_years": [2026], "prereq": [], "source": {"page": 26}}, {"course_id": "SE4002", "name": "毕业设计（论文）", "credits": 8.0, "module_id": "intensive_practice", "nature": "实践", "offered": ["春"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 26}}, {"course_id": "EL101", "name": "IT项目管理", "credits": 2.0, "module_id": "free_elective", "nature": "任选", "offered": ["秋"], "grade_cycle": null, "offered_years": null, "prereq": [], "source": {"page": 27}}]}}'''
 
@@ -152,10 +152,17 @@ def match(record, plan):
 
 
 def aggregate(matched, plan):
-    """按模块汇总已通过学分。"""
+    """按模块汇总已通过学分。同一门方案课程多条成绩单记录（重修/补考）只计一次学分；
+    credit_included=False（弃修/待录/缓考/无效）不计入已取得学分，但仍视为已通过，
+    避免重复出现在待修列表。"""
     earned = {m["module_id"]: 0.0 for m in plan["modules"]}
+    counted = set()
     for r, c in matched:
-        if _is_passed(r):
+        cid = c["course_id"]
+        if not _is_passed(r) or cid in counted:
+            continue
+        counted.add(cid)
+        if r.get("credit_included") is not False:
             earned[c["module_id"]] += c["credits"]
     return earned
 
@@ -166,6 +173,10 @@ def build(record, plan):
     by_id = {c["course_id"]: c for c in plan["courses"]}
     taken_ids = {c["course_id"] for _, c in matched}
     passed_ids = {c["course_id"] for r, c in matched if _is_passed(r)}
+    # 方案课程 id -> 首条匹配到的成绩单记录（无论是否通过），供 plan_courses 明细回显
+    matched_record_by_plan_id = {}
+    for r, c in matched:
+        matched_record_by_plan_id.setdefault(c["course_id"], r)
 
     cur_idx = sem_idx(record["student"]["current_semester"])
     grade_year = int(record["student"]["grade"])
@@ -198,10 +209,48 @@ def build(record, plan):
                                 "offered_years": c.get("offered_years"),
                                 "terms": [idx_str(i) for i in fi], "closed": not fi,
                                 "page": (c.get("source") or {}).get("page")})
-        summary.append({"module_id": m["module_id"], "module_path": m["module_path"],
-                        "required": req, "earned": got, "gap": gap,
-                        "remaining_future": open_before_grad,
-                        "color": color, "status": status, "missing_courses": missing})
+        # 方案课程全量明细：展开卡片时展示“培养方案详细要求”，不再只有
+        # gap=0 时的「学分已满足」。missing_courses 保留以兼容旧消费者。
+        plan_courses_of_module = []
+        seen_plan_course_ids = set()
+        for c in plan["courses"]:
+            if c["module_id"] != m["module_id"]:
+                continue
+            cid = c["course_id"]
+            if cid in seen_plan_course_ids:
+                continue
+            seen_plan_course_ids.add(cid)
+            fi = future_idx(c)
+            r_hit = matched_record_by_plan_id.get(cid)
+            item = {"course_id": c["course_id"], "name": c["name"],
+                    "credits": c["credits"], "offered": c["offered"],
+                    "offered_years": c.get("offered_years"),
+                    "terms": [idx_str(i) for i in fi], "closed": not fi,
+                    "passed": cid in passed_ids}
+            if r_hit is not None:
+                item["record"] = {"semester": r_hit.get("semester"),
+                                  "grade": r_hit.get("grade")}
+            item["page"] = (c.get("source") or {}).get("page")
+            plan_courses_of_module.append(item)
+        plan_course_stats = {"total": len(plan_courses_of_module),
+                             "passed": sum(1 for x in plan_courses_of_module if x["passed"]),
+                             "pending": sum(1 for x in plan_courses_of_module if not x["passed"]),
+                             "closed": sum(1 for x in plan_courses_of_module if x["closed"])}
+        row = {"module_id": m["module_id"], "module_path": m["module_path"],
+               "title": m.get("title"), "level": m.get("level"), "category": m.get("category"),
+               "plan_credits_raw": m.get("plan_credits_raw"),
+               "plan_credits_unit": m.get("plan_credits_unit"),
+               "notes": m.get("notes") or []}
+        # 模块里带哪些扩展口径字段就透传哪些（教务实时方案可能有，golden 冻结方案没有）
+        for k in ("choice_rule", "alternative", "certified_category", "sub_requirements"):
+            if k in m:
+                row[k] = m[k]
+        row.update({"required": req, "earned": got, "gap": gap,
+                    "remaining_future": open_before_grad,
+                    "color": color, "status": status,
+                    "plan_courses": plan_courses_of_module,
+                    "course_stats": plan_course_stats, "missing_courses": missing})
+        summary.append(row)
 
         if color == "red" and gap > 0:
             closed_courses = [c for c in remaining if not future_idx(c)]
@@ -312,8 +361,10 @@ def build(record, plan):
     return {"summary": summary, "warnings": warnings,
             "extra_courses": unmatched, "totals": totals,
             "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
-            "trace": {"plan": "%s %s级 golden（核验日 %s）" % (
-                plan["meta"]["source_doc"], plan["meta"]["grade"], plan["meta"].get("verified_at", "-")),
+            "trace": {"plan": "%s%s（核验日 %s）" % (
+                plan["meta"]["source_doc"],
+                "" if not str(plan["meta"].get("grade", "")).strip() else " %s级" % plan["meta"]["grade"],
+                plan["meta"].get("verified_at", "-")),
                 "engine": "v%s" % ENGINE_VERSION}}
 
 

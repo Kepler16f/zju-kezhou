@@ -9,7 +9,7 @@ import 'matching.dart';
 import 'timeline.dart';
 
 class AuditEngine {
-  static const engineVersion = '1.1';
+  static const engineVersion = '1.2';
   static const graduationYears = 6;
 
   final Map<String, dynamic> plans; // major -> PlanFile（内置 golden）
@@ -52,12 +52,18 @@ class AuditEngine {
       earned[m['module_id'] as String] = 0.0;
     }
     final passedIds = <String>{};
+    final matchedRecordByPlanId = <String, Map<String, dynamic>>{};
     for (final pair in matched) {
       final r = pair[0] as Map<String, dynamic>, c = pair[1] as Map<String, dynamic>;
-      if (isPassed(r)) {
-        earned[c['module_id'] as String] =
-            earned[c['module_id'] as String]! + (c['credits'] as num).toDouble();
-        passedIds.add(c['course_id'] as String);
+      final cid = '${c['course_id']}';
+      matchedRecordByPlanId.putIfAbsent(cid, () => r);
+      if (isPassed(r) && passedIds.add(cid)) {
+        // 同一门课重修多次只计一次学分；credit_included=false（弃修/待录/
+        // 缓考/无效）不计入已取得学分，但仍视为已通过，避免重复出现在待修。
+        if (r['credit_included'] as bool? ?? true) {
+          earned[c['module_id'] as String] = earned[c['module_id'] as String]! +
+              (c['credits'] as num).toDouble();
+        }
       }
     }
 
@@ -120,15 +126,63 @@ class AuditEngine {
           });
         }
       }
+      // 方案课程全量明细：展开卡片时展示“培养方案详细要求”，不再只有
+      // gap=0 时的「学分已满足」。missing_courses 保留以兼容旧消费者。
+      final planCoursesOfModule = <Map<String, dynamic>>[];
+      final seenPlanCourseIds = <String>{};
+      for (final c in (plan['courses'] as List).cast<Map<String, dynamic>>()) {
+        if (c['module_id'] != mid) continue;
+        final cid = '${c['course_id'] ?? ''}';
+        if (!seenPlanCourseIds.add(cid)) continue;
+        final fi = futureIdx(c);
+        final record = matchedRecordByPlanId[cid];
+        final src = c['source'];
+        planCoursesOfModule.add(<String, dynamic>{
+          'course_id': c['course_id'],
+          'name': c['name'],
+          'credits': c['credits'],
+          'offered': c['offered'],
+          'offered_years': c['offered_years'],
+          'terms': fi.map(Timeline.idxStr).toList(),
+          'closed': fi.isEmpty,
+          'passed': passedIds.contains(cid),
+          if (record != null)
+            'record': <String, dynamic>{
+              'semester': record['semester'],
+              'grade': record['grade'],
+            },
+          'page': src is Map ? src['page'] : null,
+        });
+      }
+      final planCourseStats = <String, int>{
+        'total': planCoursesOfModule.length,
+        'passed': planCoursesOfModule.where((c) => c['passed'] == true).length,
+        'pending': planCoursesOfModule.where((c) => c['passed'] != true).length,
+        'closed': planCoursesOfModule.where((c) => c['closed'] == true).length,
+      };
       summary.add({
         'module_id': mid,
         'module_path': m['module_path'],
+        'title': m['title'],
+        'level': m['level'],
+        'category': m['category'],
+        'plan_credits_raw': m['plan_credits_raw'],
+        'plan_credits_unit': m['plan_credits_unit'],
+        'notes': m['notes'] ?? const [],
+        if (m.containsKey('choice_rule')) 'choice_rule': m['choice_rule'],
+        if (m.containsKey('alternative')) 'alternative': m['alternative'],
+        if (m.containsKey('certified_category'))
+          'certified_category': m['certified_category'],
+        if (m.containsKey('sub_requirements'))
+          'sub_requirements': m['sub_requirements'],
         'required': req,
         'earned': got,
         'gap': gap,
         'remaining_future': openBeforeGrad,
         'color': color,
         'status': status,
+        'plan_courses': planCoursesOfModule,
+        'course_stats': planCourseStats,
         'missing_courses': missing,
       });
 

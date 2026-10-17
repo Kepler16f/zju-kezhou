@@ -151,9 +151,48 @@ double certifiedRequiredCredits(List<String> notes) {
   return m == null ? 0.0 : (double.tryParse(m.group(1)!) ?? 0.0);
 }
 
-/// module_path：parentPath 空则用自身 title，否则用 parentPath（' · ' 连接的上级链）。
-String modulePathOf(PdfModuleSection s) =>
-    s.parentPath.isEmpty ? s.title : s.parentPath;
+/// module_path：培养方案板块的完整路径（含自身标题）。
+/// 关键：必须包含自身 title，否则同一父板块下的「必修课程」「选修课程」会
+/// 得到完全相同的路径，报告里出现看似重复的行（军体类/通识必修的常见现场）。
+String modulePathOf(PdfModuleSection s) => s.label;
+
+const Set<String> _genericSectionTitles = <String>{
+  '必修课程',
+  '选修课程',
+  '选择性必修课程',
+  '限选课程',
+  '任选课程',
+  '必修',
+  '选修',
+  '本类',
+};
+
+bool _isGenericSectionTitle(String title) {
+  final t = title.trim();
+  if (t.isEmpty) return true;
+  if (_genericSectionTitles.contains(t)) return true;
+  if (t.contains('至少修读')) return true;
+  if (RegExp(r'\d+\s*选\s*\d+').hasMatch(t)) return true;
+  if (t.endsWith('门') && t.length <= 40) return true;
+  return false;
+}
+
+/// 模块类别：优先认定类关键词，其次自身标题（level<=3 且非泛化规则），
+/// 最后沿 parentPath 从深到浅找最近的非泛化段。
+/// 这样报告路径可以是完整 `s.label`，学分看板类别仍落在「军体类/思政类」。
+String categoryOfSection(PdfModuleSection s, String? certified) {
+  if (certified != null) return certified;
+  if (s.level <= 3 && !_isGenericSectionTitle(s.title)) return s.title;
+  final segments = s.parentPath
+      .split(' · ')
+      .map((e) => e.trim())
+      .where((e) => e.isNotEmpty)
+      .toList();
+  for (var i = segments.length - 1; i >= 0; i--) {
+    if (!_isGenericSectionTitle(segments[i])) return segments[i];
+  }
+  return s.title;
+}
 
 /// 板块课程性质：标题含「必修」→ 必修；含「选修」或「限选」→ 选修；否则必修。
 String natureFromSectionTitle(String title) {
@@ -410,6 +449,7 @@ Map<String, dynamic> planFileFromPdf(
   final modules = <Map<String, dynamic>>[];
   final courses = <Map<String, dynamic>>[];
   final takenIds = <String>{};
+  final seenCourses = <String>{}; // 同一课程跨板块重复出现时只保留首次归属
   var requiredSum = 0.0; // 与审计 totals.required 同口径（total_credits 兜底）
   final mixedTitles = <String>[]; // 混合父板块（要求改按直属课程和计），如实上报
 
@@ -460,6 +500,8 @@ Map<String, dynamic> planFileFromPdf(
     final moduleId = uniqueSlug(moduleSlug(s.title, i), takenIds);
     final courseIds = <String>[];
     for (final c in ownCourses) {
+      final key = c.code.isNotEmpty ? c.code : c.name.trim();
+      if (key.isNotEmpty && !seenCourses.add(key)) continue;
       courseIds.add(c.code);
       courses.add(<String, dynamic>{
         'course_id': c.code,
@@ -477,20 +519,36 @@ Map<String, dynamic> planFileFromPdf(
 
     final notesJoined = s.notes.join('\n');
     final rule = detectChoiceRule(notesJoined);
-    final alt = detectAlternativeModules(_childrenOf(ps, i), notesJoined);
+    final children = _childrenOf(ps, i);
+    final alt = detectAlternativeModules(children, notesJoined);
+    final subRules = <Map<String, dynamic>>[
+      for (final child in children)
+        if (child.title.trim().isNotEmpty)
+          <String, dynamic>{
+            'title': child.title,
+            'level': child.level,
+            'credits_raw': child.creditsRaw,
+            'credits_unit': child.isCountRule ? '门' : '学分',
+            'notes': child.notes,
+            if (detectChoiceRule(child.notes.join('\n')) != null)
+              'choice_rule':
+                  detectChoiceRule(child.notes.join('\n'))!.toJson(),
+          },
+    ];
     modules.add(<String, dynamic>{
       'module_id': moduleId,
-      // 认定类板块把自身标题纳入路径末段：coursesCategoryMap/学分看板按
-      // module_path 末段取类别，末段必须是类别名（心理健康类）而非桶标题。
-      'module_path': certified == null
-          ? modulePathOf(s)
-          : (s.parentPath.isEmpty ? s.title : '${s.parentPath} · ${s.title}'),
+      // 完整路径含自身标题：兄弟模块不再共享同一行文案。
+      'module_path': modulePathOf(s),
+      'category': categoryOfSection(s, certified),
       'required_credits': requiredCredits,
       'course_ids': courseIds,
       // 展示/后续审计用的附加信息（AuditEngine.build() 不读取，不影响其计算）：
       'title': s.title,
       'level': s.level,
       'notes': s.notes,
+      'plan_credits_raw': s.creditsRaw,
+      'plan_credits_unit': s.isCountRule ? '门' : '学分',
+      if (subRules.isNotEmpty) 'sub_requirements': subRules,
       if (rule != null) 'choice_rule': rule.toJson(),
       if (alt != null) 'alternative': alt.toJson(),
       if (certified != null) 'certified_category': certified,
@@ -528,6 +586,57 @@ Map<String, dynamic> planFileFromPdf(
       'notes': s.notes,
       'count_rule': true,
     });
+  }
+
+  // 全局去重：PDF 两栏排版/辅修段/非相邻重复都会产生相同 module_path 的模块。
+  // 不去重时报告会出现两行同名板块，且 required 被重复计入 totals。
+  final dedupedModules = <Map<String, dynamic>>[];
+  final byPath = <String, Map<String, dynamic>>{};
+  final moduleRemap = <String, String>{};
+  for (final m in modules) {
+    final path = '${m['module_path'] ?? ''}'.trim();
+    final kept = byPath[path];
+    if (kept == null) {
+      byPath[path] = m;
+      dedupedModules.add(m);
+      continue;
+    }
+    final fromId = '${m['module_id']}';
+    final toId = '${kept['module_id']}';
+    if (fromId.isNotEmpty && fromId != toId) moduleRemap[fromId] = toId;
+    final a = (kept['required_credits'] as num?)?.toDouble() ?? 0;
+    final b = (m['required_credits'] as num?)?.toDouble() ?? 0;
+    if (b > a) kept['required_credits'] = b;
+    final keptIds = (kept['course_ids'] as List?)?.cast<String>() ?? <String>[];
+    for (final id in (m['course_ids'] as List? ?? const [])) {
+      final s = '$id';
+      if (s.isNotEmpty && !keptIds.contains(s)) keptIds.add(s);
+    }
+    kept['course_ids'] = keptIds;
+    final keptNotes = (kept['notes'] as List?)?.cast<String>() ?? <String>[];
+    for (final n in (m['notes'] as List? ?? const [])) {
+      final s = '$n';
+      if (s.isNotEmpty && !keptNotes.contains(s)) keptNotes.add(s);
+    }
+    kept['notes'] = keptNotes;
+    final keptSubs =
+        (kept['sub_requirements'] as List?)?.cast<Map<String, dynamic>>() ??
+            <Map<String, dynamic>>[];
+    for (final r in (m['sub_requirements'] as List? ?? const [])) {
+      if (r is Map) keptSubs.add(r.cast<String, dynamic>());
+    }
+    if (keptSubs.isNotEmpty) kept['sub_requirements'] = keptSubs;
+  }
+  if (moduleRemap.isNotEmpty) {
+    for (final c in courses) {
+      final to = moduleRemap['${c['module_id']}'];
+      if (to != null) c['module_id'] = to;
+    }
+    modules
+      ..clear()
+      ..addAll(dedupedModules);
+    requiredSum = modules.fold<double>(
+        0, (sum, m) => sum + (m['required_credits'] as num).toDouble());
   }
 
   // 成绩单归位（#13）：未命中任何方案课程的行，certifiedCategoryOf 命中认定类
@@ -646,11 +755,15 @@ String tailCategory(String path) {
 Map<String, String> coursesCategoryMap(
     List<Map<String, dynamic>> courses, Map<String, dynamic> plan) {
   final pathByModule = <String, String>{};
+  final categoryByModule = <String, String>{};
   final mods = plan['modules'];
   if (mods is List) {
     for (final m in mods) {
       if (m is Map && m['module_id'] != null) {
-        pathByModule['${m['module_id']}'] = '${m['module_path'] ?? ''}';
+        final mid = '${m['module_id']}';
+        pathByModule[mid] = '${m['module_path'] ?? ''}';
+        final cat = '${m['category'] ?? ''}'.trim();
+        if (cat.isNotEmpty) categoryByModule[mid] = cat;
       }
     }
   }
@@ -682,7 +795,10 @@ Map<String, String> coursesCategoryMap(
     final row = pair[0] as Map<String, dynamic>;
     final c = pair[1] as Map<String, dynamic>;
     final mid = c['module_id'];
-    final cat = tailCategory(mid == null ? '' : (pathByModule['$mid'] ?? ''));
+    final category = mid == null ? '' : (categoryByModule['$mid'] ?? '');
+    final cat = category.trim().isNotEmpty
+        ? category
+        : tailCategory(mid == null ? '' : (pathByModule['$mid'] ?? ''));
     final name = '${row['name'] ?? ''}'.trim();
     if (cat.isEmpty || name.isEmpty) continue;
     out.putIfAbsent(name, () => cat);

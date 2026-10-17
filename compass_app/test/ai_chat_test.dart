@@ -2,9 +2,12 @@
 // 消息拼接 / 抽屉冒烟。全程零网络：未配置路径在 AiClient.chat 的 enabled 检查处
 // 即返回 AiFailure(notConfigured)，不触网；配置路径不在此文件覆盖（假 sender
 // 属 ai_client_test 的注入机制，本组件未暴露注入缝，冒烟只验 UI 与状态机）。
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:compass_app/data/ai_client.dart';
 import 'package:compass_app/data/ai_config.dart';
 import 'package:compass_app/widgets/ai_chat.dart';
 
@@ -42,6 +45,88 @@ void main() {
       ctrl.clear();
       expect(ctrl.history, isEmpty);
       expect(ctrl.lastError, isNull);
+    });
+  });
+
+  group('AiChatController：上下文与流式', () {
+    const cfg = AiConfig(
+      provider: AiProvider.openai,
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'k-123456',
+      model: 'm-1',
+    );
+
+    test('contextSummary 只进 system，不写入用户气泡/历史', () async {
+      String? capturedSystem;
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, sender: (req) async {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          final messages = body['messages'] as List;
+          capturedSystem = (messages.first as Map)['content'] as String;
+          return const AiHttpReply(
+              200, '{"choices":[{"message":{"content":"回答"}}]}');
+        }),
+      );
+      final reply = await ctrl.send(cfg, '我的问题',
+          contextSummary: '{"学业":{"绩点":4.2}}');
+      expect(reply, '回答');
+      expect(capturedSystem, contains('"绩点":4.2'));
+      expect(capturedSystem, isNot(contains('我的问题')));
+      expect(ctrl.history.first['content'], '我的问题');
+      expect(ctrl.history.first['content'], isNot(contains('绩点')));
+    });
+
+    test('流式：onDelta 逐段回调，历史写入完整回答', () async {
+      final deltas = <String>[];
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c,
+            streamSender: (req) async* {
+              yield const AiStreamMeta(200);
+              yield const AiStreamLine(
+                  'data: {"choices":[{"delta":{"content":"你"}}]}');
+              yield const AiStreamLine(
+                  'data: {"choices":[{"delta":{"content":"好"}}]}');
+            }),
+      );
+      final reply = await ctrl.send(cfg, '打个招呼', onDelta: deltas.add);
+      expect(reply, '你好');
+      expect(deltas.join(), '你好');
+      expect(ctrl.history.last['content'], '你好');
+    });
+
+    test('screenText 只进 system，不写入用户气泡/历史', () async {
+      String? capturedSystem;
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, sender: (req) async {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          final messages = body['messages'] as List;
+          capturedSystem = (messages.first as Map)['content'] as String;
+          return const AiHttpReply(
+              200, '{"choices":[{"message":{"content":"看到了"}}]}');
+        }),
+      );
+      final reply = await ctrl.send(cfg, '屏幕上这个课是什么',
+          screenText: '课程名：高等数学');
+      expect(reply, '看到了');
+      expect(capturedSystem, contains('课程名：高等数学'));
+      expect(ctrl.history.first['content'], '屏幕上这个课是什么');
+      expect(ctrl.history.first['content'], isNot(contains('高等数学')));
+    });
+  });
+
+  group('looksLikeScreenQuestion', () {
+    test('屏幕/页面/截图等指代命中', () {
+      expect(looksLikeScreenQuestion('屏幕上这个课是什么'), isTrue);
+      expect(looksLikeScreenQuestion('当前页面里的学分怎么算'), isTrue);
+      expect(looksLikeScreenQuestion('帮我看一下这张图'), isTrue);
+      expect(looksLikeScreenQuestion('列表里第三门课'), isTrue);
+    });
+
+    test('普通问题不误判；裸「这个」不收', () {
+      expect(looksLikeScreenQuestion('帮我解释培养方案'), isFalse);
+      expect(looksLikeScreenQuestion('这门课怎么样'), isFalse);
+      expect(looksLikeScreenQuestion('这个课是什么'), isFalse);
+      expect(looksLikeScreenQuestion('   '), isFalse);
     });
   });
 
@@ -144,7 +229,9 @@ void main() {
           ),
         ),
       ));
-      expect(find.textContaining('本次对话附带数据摘要'), findsOneWidget);
+      // 需求：补充上下文不展示给用户（只进 system 消息）。
+      expect(find.textContaining('本次对话附带数据摘要'), findsNothing);
+      expect(find.textContaining('模块A 缺口 3 分'), findsNothing);
       expect(find.text('发送'), findsOneWidget);
     });
   });

@@ -131,11 +131,15 @@ class XkMergedCourse {
   final Map<String, XkObservation> byRound; // xkkzId -> 观测
   final List<String> roundOrder; // 入口出现顺序（保持拉取顺序）
   final List<String> notes; // 本条留痕
+  final List<String> tags; // 跨入口标签并集（课程性质/类别入口）
+  final List<Map<String, dynamic>> slots; // 跨入口时隙并集（冲突检测）
   const XkMergedCourse({
     required this.base,
     required this.byRound,
     required this.roundOrder,
     this.notes = const [],
+    this.tags = const [],
+    this.slots = const [],
   });
 
   int get tier => base.identityTier;
@@ -282,7 +286,18 @@ XkMergeResult mergeXkCourses(List<XkCourse> all) {
     if (byRound.values.any((o) => o.count > 1)) {
       cNotes.add('同一入口存在多行记录，容量/已选为最后一行的快照。');
     }
-    merged.add(XkMergedCourse(base: base, byRound: byRound, roundOrder: roundOrder, notes: cNotes));
+    final mergedTags = <String>{for (final c in list) ...c.tags};
+    final mergedSlots = <Map<String, dynamic>>[
+      for (final c in list) ...c.slots,
+    ];
+    merged.add(XkMergedCourse(
+      base: base,
+      byRound: byRound,
+      roundOrder: roundOrder,
+      notes: cNotes,
+      tags: mergedTags.toList(),
+      slots: mergedSlots,
+    ));
   }
   if (tier3Groups > 0) {
     notes.add('$tier3Groups 个条目缺少教学班标识，仅按课程聚合，无法区分平行班，请以教务系统为准。');
@@ -303,6 +318,10 @@ int _fieldCount(XkCourse c) {
   if (c.xf != null) n++;
   if (c.cap != null) n++;
   if (c.selected != null) n++;
+  // 标签/时隙也是展示与冲突判断的关键字段：带标签的观测更应成为 base。
+  if (c.tags.isNotEmpty) n += 2;
+  if (c.slots.isNotEmpty) n++;
+  if (c.subTerm.isNotEmpty) n++;
   return n;
 }
 

@@ -281,7 +281,7 @@ void main() {
       final c = r.courses.single;
       expect(c.xf, 5.0); // 学分从 kcxx 中段取
       expect(c.subTerm, '秋冬');
-      expect(c.tags, ['通识']);
+      expect(c.tags, containsAll(['通识', '本类(专业)']));
       expect(c.kch, 'MATH1135G');
       expect(c.raw['xkkh'], 'T(2026-2027-1)-MATH1135G');
     });
@@ -318,7 +318,8 @@ void main() {
                   '<html>location.href="login_slogin.html"</html>', xkkzId: 'R')
               .blocked,
           isTrue);
-      expect(parseXkCourseList('', xkkzId: 'R').blocked, isTrue); // 空响应也当软封禁
+      // 空响应体不等于风控：只判 unavailable，避免整批类别被中止。
+      expect(parseXkCourseList('', xkkzId: 'R').blocked, isFalse);
       // 非 JSON 且无登录/风控特征 → 结构未知，不置 blocked
       expect(parseXkCourseList('not json at all', xkkzId: 'R').blocked, isFalse);
       // usable:false（权限语义，非反爬）不置 blocked
@@ -329,20 +330,23 @@ void main() {
           isFalse);
     });
 
-    test('三态：无已知信封 / 全行缺课程名 = unavailable', () {
+    test('三态：无已知信封 = unavailable；缺名但有课程号 = 占位保留', () {
       final noEnv = parseXkCourseList('{"foo":1}', xkkzId: 'R');
       expect(noEnv.state, 'unavailable');
-      final noName = parseXkCourseList('{"tmpList":[{"kch":"C1"},{"kch":"C2"}]}', xkkzId: 'R');
-      expect(noName.state, 'unavailable');
-      expect(noName.dropped, 2);
+      final noName = parseXkCourseList(
+          '{"tmpList":[{"kch":"C1"},{"kch":"C2"}]}', xkkzId: 'R');
+      expect(noName.state, 'data');
+      expect(noName.courses.length, 2);
+      expect(noName.courses.first.kcmc, contains('未命名课程'));
+      expect(noName.dropped, 0);
     });
 
-    test('部分行缺名被跳过并计数', () {
+    test('缺名但有课程号的行占位保留并留痕', () {
       final r = parseXkCourseList(
           '{"tmpList":[${_json(fullRow())},{"kch":"X"}]}', xkkzId: 'R');
-      expect(r.courses.length, 1);
-      expect(r.dropped, 1);
-      expect(r.issues.any((i) => i.contains('被跳过')), isTrue);
+      expect(r.courses.length, 2);
+      expect(r.dropped, 0);
+      expect(r.issues.any((i) => i.contains('占位')), isTrue);
     });
 
     test('上课时间解析失败的行仍保留（slots 为空）+ issues', () {

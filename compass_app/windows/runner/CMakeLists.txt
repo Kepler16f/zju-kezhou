@@ -20,6 +20,10 @@ add_executable(${BINARY_NAME} WIN32
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 
+# Sources contain UTF-8 comments; without /utf-8 MSVC reads them as the system
+# ANSI codepage (GBK on zh-CN) and may mis-parse / mangle them.
+target_compile_options(${BINARY_NAME} PRIVATE "/utf-8")
+
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MAJOR=${FLUTTER_VERSION_MAJOR}")
@@ -34,6 +38,9 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+# 托盘图标（Shell_NotifyIcon / TrackPopupMenu）
+target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "user32.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

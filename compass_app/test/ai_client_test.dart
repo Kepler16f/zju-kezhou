@@ -8,6 +8,7 @@ import 'package:test/test.dart';
 
 import 'package:compass_app/data/ai_client.dart';
 import 'package:compass_app/data/ai_config.dart';
+import 'package:compass_app/data/ai_models.dart';
 
 /// 组一份可用配置（sender 注入后不会真的出网）。
 AiConfig _cfg(
@@ -109,7 +110,8 @@ void main() {
       expect(url, 'https://api.dify.ai/v1/chat-messages');
       expect(_header(headers, 'authorization'), 'Bearer k-123');
       final m = _json(body);
-      expect(m['query'], 'sys\n\n---\n\n最后问');
+      // Dify 的 conversation_id 恒为空，必须把历史一起塞进 query，否则追问失忆。
+      expect(m['query'], 'sys\n\n---\n\n用户：第一问\n助手：答\n用户：最后问');
       expect(m['response_mode'], 'blocking');
       expect(m['user'], 'compass-app');
       expect(m['conversation_id'], '');
@@ -221,9 +223,13 @@ void main() {
       expect((parseReply(403, '{}') as AiFailure).kind, AiFailKind.auth);
     });
 
-    test('429 → rateLimit', () {
+    test('429 → rateLimit；402 公益额度 → rateLimit', () {
       expect((parseReply(429, '{"error":"rate limited"}') as AiFailure).kind,
           AiFailKind.rateLimit);
+      final free = parseReply(
+          402, '{"status":402,"error":{"code":"FREE_LIMIT"}}') as AiFailure;
+      expect(free.kind, AiFailKind.rateLimit);
+      expect(free.message, contains('公益'));
     });
 
     test('400/422 → badRequest，可带正文片段但洗掉回显的密钥', () {
@@ -484,6 +490,166 @@ void main() {
       final out = await client.chat(system: 's', messages: const []);
       expect(calls, 1);
       expect((out as AiReply).text, '好的');
+    });
+  });
+
+  group('stream：请求形状与 SSE 增量解析', () {
+    test('openai/anthropic 流式请求带 stream:true', () {
+      final (_, _, openaiBody) = buildRequest(
+        _cfg(AiProvider.openai),
+        's',
+        const [],
+        100,
+        stream: true,
+      );
+      expect(_json(openaiBody)['stream'], isTrue);
+
+      final (_, _, anthropicBody) = buildRequest(
+        _cfg(AiProvider.anthropic),
+        's',
+        const [],
+        100,
+        stream: true,
+      );
+      expect(_json(anthropicBody)['stream'], isTrue);
+    });
+
+    test('OpenAI SSE：逐段回调，最终文本为完整拼接', () async {
+      final deltas = <String>[];
+      final client = AiClient(
+        _cfg(AiProvider.openai),
+        streamSender: (req) async* {
+          yield const AiStreamMeta(200);
+          yield const AiStreamLine(
+              'data: {"model":"m-1","choices":[{"delta":{"content":"你"}}]}');
+          yield const AiStreamLine(
+              'data: {"choices":[{"delta":{"content":"好"}}]}');
+          yield const AiStreamLine('data: [DONE]');
+        },
+      );
+      final out = await client.chat(
+        system: 's',
+        messages: const [
+          {'role': 'user', 'content': 'q'}
+        ],
+        onDelta: deltas.add,
+      );
+      expect((out as AiReply).text, '你好');
+      expect(out.model, 'm-1');
+      expect(deltas.join(), '你好');
+    });
+
+    test('Anthropic SSE：content_block_delta 拼接', () async {
+      final deltas = <String>[];
+      final client = AiClient(
+        _cfg(AiProvider.anthropic),
+        streamSender: (req) async* {
+          yield const AiStreamMeta(200);
+          yield const AiStreamLine(
+              'data: {"type":"message_start","message":{"model":"claude-x"}}');
+          yield const AiStreamLine(
+              'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"第一段"}}');
+          yield const AiStreamLine(
+              'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"第二段"}}');
+        },
+      );
+      final out = await client.chat(
+        system: 's',
+        messages: const [
+          {'role': 'user', 'content': 'q'}
+        ],
+        onDelta: deltas.add,
+      );
+      expect((out as AiReply).text, '第一段第二段');
+      expect(out.model, 'claude-x');
+      expect(deltas.join(), '第一段第二段');
+    });
+
+    test('服务端忽略 stream、返回整段 JSON：兜底解析并回调一次', () async {
+      final deltas = <String>[];
+      final client = AiClient(
+        _cfg(AiProvider.openai),
+        streamSender: (req) async* {
+          yield const AiStreamMeta(200);
+          yield const AiStreamLine(
+              '{"choices":[{"message":{"content":"完整回答"}}]}');
+        },
+      );
+      final out = await client.chat(
+        system: 's',
+        messages: const [
+          {'role': 'user', 'content': 'q'}
+        ],
+        onDelta: deltas.add,
+      );
+      expect((out as AiReply).text, '完整回答');
+      expect(deltas, ['完整回答']);
+    });
+  });
+
+  group('listModels', () {
+    test('OpenAI 兼容：GET /models，解析上下文大小', () async {
+      final client = AiClient(
+        _cfg(AiProvider.openai, base: 'https://api.example.com/v1'),
+        sender: (req) async {
+          expect(req.method, 'GET');
+          expect(req.url, 'https://api.example.com/v1/models');
+          expect(req.headers['Authorization'], 'Bearer k-123');
+          return const AiHttpReply(
+              200,
+              '{"data":[{"id":"m-1","context_length":128000},'
+              '{"id":"m-2","context_window":65536}]}');
+        },
+      );
+      final result = await client.listModels();
+      expect(result.ok, isTrue);
+      expect(result.models, hasLength(2));
+      final m1 = result.models.firstWhere((m) => m.id == 'm-1');
+      expect(m1.contextTokens, 128000);
+      expect(m1.contextLabel, '128K');
+    });
+
+    test('Dify 没有模型列表接口：不发请求', () async {
+      var calls = 0;
+      final client = AiClient(
+        _cfg(AiProvider.dify),
+        sender: (req) async {
+          calls++;
+          return const AiHttpReply(200, '{}');
+        },
+      );
+      final result = await client.listModels();
+      expect(result.ok, isFalse);
+      expect(result.error, contains('没有模型列表接口'));
+      expect(calls, 0);
+    });
+  });
+
+  group('parseModelsReply', () {
+    test('Anthropic 形状 + 内置上下文参考', () {
+      final result = parseModelsReply(
+        200,
+        '{"data":[{"id":"claude-3-5-sonnet-20241022",'
+        '"display_name":"Claude 3.5 Sonnet"}]}',
+        provider: AiProvider.anthropic,
+      );
+      expect(result.ok, isTrue);
+      final m = result.models.single;
+      expect(m.displayName, 'Claude 3.5 Sonnet');
+      expect(m.contextTokens, 200000);
+      expect(m.sourceNote, contains('内置参考'));
+    });
+
+    test('Pollinations 顶层数组 + 字符串数组', () {
+      final result = parseModelsReply(
+        200,
+        '[{"name":"openai","description":"x"},"mistral"]',
+        provider: AiProvider.pollinations,
+      );
+      expect(result.ok, isTrue);
+      expect(result.models.map((m) => m.id), containsAll(['openai', 'mistral']));
+      expect(result.models.first.contextTokens, isNull);
+      expect(result.models.first.contextLabel, '未知');
     });
   });
 }

@@ -251,9 +251,10 @@ void main() {
       expect(modules.map((m) => m['module_id']),
           ['sec2-思政类', 'sec3-通识选修课程', 'sec5-集中实践环节']);
 
-      // module_path：parentPath 优先（「 · 」全路径，UI 对应依赖）；
-      // 顶层无上级时退化为自身 title；父板块不计数但层级仍在子板块路径里
-      expect(moduleOf(plan, 'sec2-思政类')['module_path'], '通识课程 · 通识必修课程');
+      // module_path：完整 label（含自身标题），兄弟板块不再共享同一行；
+      // 顶层无上级时退化为自身 title。
+      expect(moduleOf(plan, 'sec2-思政类')['module_path'],
+          '通识课程 · 通识必修课程 · 思政类');
       expect(moduleOf(plan, 'sec5-集中实践环节')['module_path'], '集中实践环节');
       expect(moduleOf(plan, 'sec2-思政类')['required_credits'], 14.0);
       expect(moduleOf(plan, 'sec3-通识选修课程')['required_credits'], 3.0); // '3-6' 取下限
@@ -280,8 +281,11 @@ void main() {
           0, (a, m) => a + (m['required_credits'] as num).toDouble());
       expect(sumReq, 14.0);
       expect((p['meta'] as Map)['total_credits'], 14.0);
-      // 父板块层级经子板块 module_path（「 · 」全路径）体现；末段即类别（思政类）
-      expect(modules.first['module_path'], '通识课程 · 通识必修课程 · 思政类');
+      // 完整路径含自身标题：两个兄弟子规则不再显示成同一行。
+      expect(modules.first['module_path'],
+          '通识课程 · 通识必修课程 · 思政类 · 必修课程');
+      expect(modules[1]['module_path'],
+          '通识课程 · 通识必修课程 · 思政类 · 选修课程');
     });
 
     test('混合父板块（自身挂课 + 有被保留子板块）：保留、要求按直属课程和计', () {
@@ -361,11 +365,13 @@ void main() {
         ]),
       ]);
       final p = planFileFromPdf(dup, major: 'x', grade: 'y');
-      final ids = (p['modules'] as List)
-          .cast<Map<String, dynamic>>()
-          .map((m) => m['module_id'])
-          .toList();
-      expect(ids, ['sec0-必修课程', 'sec1-必修课程']);
+      final mods = (p['modules'] as List).cast<Map<String, dynamic>>();
+      expect(mods.map((m) => m['module_id']).toList(), ['sec0-必修课程']);
+      // 同路径重复板块合并为一个，课程全部归入该模块，required 取较大声明值。
+      expect(mods.single['required_credits'], 12.0);
+      expect(mods.single['course_ids'], containsAll(['A1001', 'B1002']));
+      expect(courseOf(p, 'A1001')['module_id'], 'sec0-必修课程');
+      expect(courseOf(p, 'B1002')['module_id'], 'sec0-必修课程');
       expect(courseOf(p, 'A1001')['offered'], isNull); // 无学期串
     });
   });

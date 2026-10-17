@@ -1070,6 +1070,7 @@ class ZjuClient {
             ...result.notes,
             '已沿用你上次选定的方案：${picked.plan.zymc} ${picked.plan.synj} 级',
           ],
+          ambiguous: result.ambiguous,
         );
       }
     }
@@ -1077,25 +1078,35 @@ class ZjuClient {
   }
 
   /// 记住用户选定的方案（下次自动沿用；只存非敏感标识与名称）。
-  Future<void> selectPlan(PlanSummary plan) async {
-    await store.saveCache(
-        'plan_selection',
-        json.encode({
-          'jxjhh': plan.jxjhh,
-          'pyfaxx_id': plan.pyfaxxId,
-          'zymc': plan.zymc,
-          'synj': plan.synj,
-          'zydm': plan.zydm,
-          'selected_at': DateTime.now().toIso8601String(),
-        }));
+  /// 额外保存匹配强度/歧义/候选数，供设置页「我的培养方案」展示。
+  Future<void> selectPlan(
+    PlanSummary plan, {
+    PlanMatchLevel level = PlanMatchLevel.none,
+    bool ambiguous = false,
+    int candidateCount = 0,
+  }) async {
+    final info = MatchedPlanInfo.fromSummary(
+      plan,
+      level: level,
+      ambiguous: ambiguous,
+      candidateCount: candidateCount,
+    );
+    final payload = info.toJson();
+    payload['student_id'] = store.memory('student_id') ?? '';
+    payload['selected_at'] = DateTime.now().toIso8601String();
+    await store.saveCache('plan_selection', json.encode(payload));
   }
 
   /// 上次选定的方案 id（教学计划号优先）。
+  /// 带账号校验：缓存属于上一个学号时视为无缓存，避免把别人的方案显示给自己。
   Future<String?> savedPlanId() async {
     final raw = await store.readCache('plan_selection');
     if (raw == null) return null;
     try {
       final m = json.decode(raw) as Map<String, dynamic>;
+      final owner = (m['student_id'] ?? '').toString().trim();
+      final me = store.memory('student_id') ?? '';
+      if (owner.isNotEmpty && me.isNotEmpty && owner != me) return null;
       final id = (m['jxjhh'] ?? m['pyfaxx_id'] ?? '').toString().trim();
       return id.isEmpty ? null : id;
     } catch (_) {
@@ -1364,7 +1375,10 @@ class ZjuClient {
             '已按方案摘要（专业核心课/核心实践课/前沿与荣誉课程）构建');
       }
     }
-    await selectPlan(plan);
+    await selectPlan(plan,
+        level: best.level,
+        ambiguous: result.ambiguous,
+        candidateCount: result.candidates.length);
     _log('培养方案', detail: '${plan.zymc} ${plan.synj} 级'
         '（${plan.id}）｜课程 ${table.length} 门｜学分 ${plan.creditsLabel}');
     return ResolvedPlan(
@@ -1373,6 +1387,9 @@ class ZjuClient {
       courseTable: table,
       notes: notes,
       matched: true,
+      matchLevel: best.level,
+      ambiguous: result.ambiguous,
+      candidateCount: result.candidates.length,
     );
   }
   /// 学生端无课程明细接口时，用官方培养方案 PDF 全文解析构建审计 PlanFile。
@@ -1522,6 +1539,8 @@ class ZjuClient {
       try {
         final obj = json.decode(cached);
         if (obj is! Map) return null;
+        // 缓存 schema 版本：旧版本可能把 zju_ghb/hidden 空值写坏，直接失效重拉。
+        if ((obj['v'] as num?)?.toInt() != 2) return null;
         final rounds = <XkRound>[];
         for (final r in (obj['rounds'] as List? ?? const [])) {
           if (r is Map && '${r['xkkz_id'] ?? ''}'.isNotEmpty) {
@@ -1588,6 +1607,7 @@ class ZjuClient {
         await store.saveCache(
             cacheKey,
             json.encode({
+              'v': 2,
               'fetched_at': DateTime.now().millisecondsSinceEpoch,
               'xkxnm': parsed.xkxnm,
               'xkxqm': parsed.xkxqm,
@@ -1635,6 +1655,10 @@ class ZjuClient {
   /// 有缓存回缓存；窗口过后首个请求自然试探恢复。仅作用于列表链路（选课页），
   /// 成绩/课表等主链路有自己的 throttle/重试纪律，不受影响。
   static const _xkSoftBlockWindow = Duration(seconds: 90);
+
+  /// 空列表缓存 TTL：选课未开放/参数瞬时缺失时接口会回 []，
+  /// 不能像 data 一样永久有效；过期后自动重新请求。
+  static const _xkEmptyCacheTtl = Duration(minutes: 5);
   DateTime? _xkSoftBlockedUntil;
   bool get xkListCoolingDown =>
       _xkSoftBlockedUntil != null && DateTime.now().isBefore(_xkSoftBlockedUntil!);
@@ -1661,7 +1685,9 @@ class ZjuClient {
   }) async {
     final term =
         ((xkxnm ?? '').isNotEmpty && (xkxqm ?? '').isNotEmpty) ? '$xkxnm-$xkxqm' : '';
-    final cacheKey = 'xk_${_cacheToken(term)}_${_cacheToken(round.xkkzId)}';
+    // 缓存键带 kklxdm：同一 dl 的 bl/zl 子入口不能互相覆盖。
+    final cacheKey = 'xk_${_cacheToken(term)}_${_cacheToken(round.xkkzId)}'
+        '_${_cacheToken(round.kklxdm)}';
     Future<XkListParseResult?> fromCache() async {
       final cached = await store.readCache(cacheKey);
       if (cached == null) return null;
@@ -1675,6 +1701,13 @@ class ZjuClient {
             (obj['issues'] as List? ?? const []).map((e) => '$e').toList();
         final storedDropped = (obj['dropped'] as num?)?.toInt() ?? 0;
         if (state == 'empty') {
+          final age = at > 0
+              ? DateTime.now().millisecondsSinceEpoch - at
+              : null;
+          // 空结果只短暂有效；过期视同无缓存，自动重新请求。
+          if (age == null || age > _xkEmptyCacheTtl.inMilliseconds) {
+            return null;
+          }
           return XkListParseResult(
               courses: const [],
               state: 'empty',
@@ -1723,6 +1756,14 @@ class ZjuClient {
                 '也可稍后点「刷新入口」重试。'
               ]);
     }
+    String firstNonEmpty(Iterable<String?> values) {
+      for (final v in values) {
+        final s = (v ?? '').trim();
+        if (s.isNotEmpty) return s;
+      }
+      return '';
+    }
+
     lastXkListFromCache = false;
     try {
       await ensureZdbkSession();
@@ -1730,34 +1771,60 @@ class ZjuClient {
       final String text;
       if (zjuGhb) {
         // 浙大 zzxkGhb：入口=类别 dl，参数来自首页隐藏域（xn/xq/nj/zydm）。
-        // 不在开放期 KcList 返回空数组 → empty（不是 unavailable，如实呈现"本学期该类别暂无可选课程"）。
-        final xn = hiddenFields['xn'] ?? xkxnm ?? '';
-        final xq = hiddenFields['xq'] ?? xkxqm ?? '1';
+        // 空串不是有效值：必须用“第一个非空”回填，否则 xnxq 会变成 (-)-，
+        // 服务端返回 [] 并被误缓存成“该类别无课”。
+        final xn = firstNonEmpty([hiddenFields['xn'], xkxnm]);
+        final xq = firstNonEmpty([hiddenFields['xq'], xkxqm]);
+        final nj = firstNonEmpty([hiddenFields['nj'], hiddenFields['njdm_id']]);
+        final zydm = firstNonEmpty([
+          hiddenFields['zydm'],
+          hiddenFields['zyh_id'],
+          hiddenFields['bh_id'],
+        ]);
+        if (xn.isEmpty || xq.isEmpty) {
+          _log('选课列表', level: 'warn',
+              detail: '${round.label}｜学年/学期隐藏域缺失（xn="$xn", xq="$xq"）');
+          return XkListParseResult(
+            courses: const [],
+            state: 'unavailable',
+            issues: [
+              '选课首页的学年/学期隐藏域缺失，未请求该类别；'
+                  '请点「刷新入口」重新获取选课首页后再试'
+            ],
+          );
+        }
         final uri = Uri.parse('$_zdbk/jwglxt/$_xkGhbListPath')
             .replace(queryParameters: {
           'gnmkdm': _xkGhbMenu,
           if ((_studentId ?? '').isNotEmpty) 'su': _studentId!,
+          'doType': 'query',
           'nd': '$now',
           'time': '0',
         });
-        text = await _postQuery(uri, {
+        final body = <String, String>{
+          // 首页全部隐藏域先带上（rwlx/jg_id/xqh_id/filter_list 等），再覆盖关键项。
+          ...hiddenFields,
           'dl': round.xkkzId,
-          'lx': round.kklxdm,
+          'lx': round.kklxdm.isEmpty ? 'bl' : round.kklxdm,
           'xkmc': '',
           'kcbs': '',
-          'nj': hiddenFields['nj'] ?? '',
+          'nj': nj,
           'xn': xn,
           'xq': xq,
-          'zydm': hiddenFields['zydm'] ?? '',
+          'zydm': zydm,
           'jxjhh': '',
           'xnxq': '($xn-$xq)-',
           'kspage': '1',
-          'jspage': '100',
-        });
+          'jspage': '1000',
+        };
+        text = await _postQuery(uri, body,
+            referer: '$_zdbk/jwglxt/$_xkGhbIndexPath'
+                '?gnmkdm=$_xkGhbMenu&layout=default$_suParam');
       } else {
         final query = <String, String>{
           ...hiddenFields,
           'gnmkdm': _xkMenu,
+          'doType': 'query',
           'xkkz_id': round.xkkzId,
           if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
           if (term.isNotEmpty) 'xkxnm': xkxnm!,
@@ -1770,12 +1837,13 @@ class ZjuClient {
         final uri =
             Uri.parse('$_zdbk/jwglxt/$_xkListPath').replace(queryParameters: query);
         text = await _postQuery(uri, {
+          ...hiddenFields,
           'xkkz_id': round.xkkzId,
           if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
           if (term.isNotEmpty) 'xkxnm': xkxnm!,
           if (term.isNotEmpty) 'xkxqm': xkxqm!,
           'kspage': '1',
-          'jspage': '1',
+          'jspage': '1000',
         });
       }
       final parsed = parseXkCourseList(text,

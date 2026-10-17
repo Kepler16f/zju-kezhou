@@ -299,11 +299,14 @@ XkIndexParseResult parseXkIndexHtml(String html) {
   }
   final hidden = <String, String>{};
   for (final m in RegExp(r'<input\b[^>]*>', caseSensitive: false).allMatches(html)) {
-    if (hidden.length >= 60) break;
     final tag = m.group(0)!;
     final name = _tagAttr(tag, 'name') ?? _tagAttr(tag, 'id');
     if (name == null || name.isEmpty) continue;
-    hidden.putIfAbsent(name, () => _tagAttr(tag, 'value') ?? '');
+    final value = _tagAttr(tag, 'value') ?? '';
+    // 不复用空值：页面里同一 name 可能先出现一个空隐藏域、后面才是真实值。
+    if (!hidden.containsKey(name) || hidden[name]!.isEmpty) {
+      hidden[name] = value;
+    }
   }
   String? pick(String key) {
     // 空串按"未知"处理：空值绝不当作有效默认入口/学期（评审L2：空 firstXkkzId 幻影入口）
@@ -313,20 +316,47 @@ XkIndexParseResult parseXkIndexHtml(String html) {
   }
 
   // ── 浙大自主选课页（zzxkghb）：入口 = 课程类别树（LIVE 取证 2026-10-16）──
-  // 锚点：<a class="category" data-dl="EA" data-lx="bl" onclick="categroyClick(this,'EA','bl')">思政类</a>
-  final zju = RegExp(r"""data-dl="([^"]+)"[^>]*data-lx="([^"]*)"[^>]*"""
-          r"""onclick="categroyClick\(this,'[^']*','[^']*'[^)]*\)">([^<]{1,24})""")
-      .allMatches(html)
-      .toList();
-  if (rounds.isEmpty && zju.isNotEmpty) {
-    final dlSeen = <String>{};
-    for (final m in zju) {
-      final dl = m.group(1)!;
-      final lx = m.group(2)!;
-      final label = _unescape(m.group(3)!.trim());
-      if (!dlSeen.add(dl)) continue; // 同类别码多次出现（下拉子项）只留首个
-      rounds.add(XkRound(xkkzId: dl, kklxdm: lx, label: label));
+  // 锚点示例：<a class="category" data-dl="EA" data-lx="bl"
+  //   onclick="categroyClick(this,'EA','bl')">思政类</a>
+  // 不再假设属性顺序/引号类型/无嵌套标签：逐 <a> 解析，属性顺序任意。
+  final zjuAnchors =
+      RegExp(r'<a\b[^>]*categroyClick[^>]*>.*?</a>',
+              caseSensitive: false, dotAll: true)
+          .allMatches(html);
+  final zjuByDl = <String, ({String dl, String lx, String label})>{};
+  for (final m in zjuAnchors) {
+    final anchor = m.group(0)!;
+    final gt = anchor.indexOf('>');
+    if (gt < 0) continue;
+    final openTag = anchor.substring(0, gt + 1);
+    final innerEnd = anchor.lastIndexOf('</a>');
+    final inner = innerEnd > gt ? anchor.substring(gt + 1, innerEnd) : '';
+    final onclick = _tagAttr(openTag, 'onclick') ?? '';
+    final args = RegExp(
+            r"""categroyClick\s*\(\s*this\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]""",
+            caseSensitive: false)
+        .firstMatch(onclick);
+    final dl = (args?.group(1) ?? _tagAttr(openTag, 'data-dl') ?? '').trim();
+    final lx = (args?.group(2) ?? _tagAttr(openTag, 'data-lx') ?? '').trim();
+    final label = _unescape(
+            inner.replaceAll(RegExp(r'<[^>]+>'), '').replaceAll(RegExp(r'\s+'), ' ').trim())
+        .trim();
+    if (dl.isEmpty) continue;
+    final existing = zjuByDl[dl];
+    // 同一 dl 出现多个锚点时，优先保留 lx 非空的那一个（子节点通常才挂课程）。
+    if (existing == null ||
+        (existing.lx.isEmpty && lx.isNotEmpty) ||
+        (existing.label.isEmpty && label.isNotEmpty)) {
+      zjuByDl[dl] = (dl: dl, lx: lx, label: label.isEmpty ? dl : label);
     }
+  }
+  if (zjuByDl.isNotEmpty) {
+    rounds
+      ..clear()
+      ..addAll([
+        for (final e in zjuByDl.values)
+          XkRound(xkkzId: e.dl, kklxdm: e.lx, label: e.label),
+      ]);
     issues.add('浙大自主选课模式：入口为课程类别（共 ${rounds.length} 类）。');
     return XkIndexParseResult(
       rounds: rounds,
@@ -444,8 +474,13 @@ XkListParseResult parseXkCourseList(String body,
     {required String xkkzId, String? xklc, String label = ''}) {
   final text = body.trim();
   if (text.isEmpty) {
+    // 空响应体不等于“明确无课”，更不等于软封禁：只判 unavailable，
+    // 让上层继续尝试后续类别，绝不缓存成 empty。
     return const XkListParseResult(
-        courses: [], state: 'unavailable', issues: ['响应为空'], blocked: true);
+        courses: [],
+        state: 'unavailable',
+        issues: ['响应为空（未确认无课）'],
+        blocked: false);
   }
   // 风控判定只认特征字段；"验证码"三个字出现在课程名/备注里绝不误杀（评审L2）
   if (text.contains('captcha_error')) {
@@ -461,9 +496,12 @@ XkListParseResult parseXkCourseList(String body,
   } catch (_) {
     // 非 JSON（HTML 页）：此处才允许按关键词识别风控/登录页
     final isCaptcha = text.contains('验证码') || text.contains('captcha');
+    // 裸 <html> 不再算登录页：任意 404/错误页都含它，误判会让整批类别中止。
+    // 只认明确的统一身份认证/登录失效特征。
     final isLogin = text.contains('login_slogin') ||
         text.contains('统一身份认证') ||
-        text.contains('<html');
+        text.contains('登录已失效') ||
+        text.contains('请重新登录');
     return XkListParseResult(
       courses: const [],
       state: 'unavailable',
@@ -478,14 +516,24 @@ XkListParseResult parseXkCourseList(String body,
   }
   List? rows;
   if (decoded is Map) {
-    if (decoded['usable'] == false) {
+    final usable = decoded['usable'];
+    if (usable == false || '${usable ?? ''}'.toLowerCase() == 'false') {
       return const XkListParseResult(
           courses: [], state: 'unavailable', issues: ['接口返回 usable=false（权限或接口未开放）']);
     }
-    final candidate = decoded['tmpList'] ?? decoded['items'] ?? decoded['rows'];
+    final candidate = decoded['tmpList'] ??
+        decoded['items'] ??
+        decoded['rows'] ??
+        decoded['data'] ??
+        decoded['list'] ??
+        decoded['records'] ??
+        decoded['result'] ??
+        decoded['kcList'];
     if (candidate == null) {
       return const XkListParseResult(
-          courses: [], state: 'unavailable', issues: ['未找到课程列表字段（tmpList/items），按状态未知处理']);
+          courses: [],
+          state: 'unavailable',
+          issues: ['未找到课程列表字段（tmpList/items/data 等），按状态未知处理']);
     }
     if (candidate is! List) {
       return const XkListParseResult(
@@ -503,6 +551,7 @@ XkListParseResult parseXkCourseList(String body,
 
   final courses = <XkCourse>[];
   var dropped = 0;
+  var unnamedKept = 0;
   final slotIssues = <String>{};
   for (final r in rows) {
     if (r is! Map) {
@@ -511,10 +560,23 @@ XkListParseResult parseXkCourseList(String body,
     }
     final m = <String, dynamic>{};
     r.forEach((k, v) => m[k.toString()] = v);
-    final kcmc = _pick(m, const ['kcmc', 'courseName', 'kc_name']).trim();
+    var kcmc =
+        _pick(m, const ['kcmc', 'courseName', 'kc_name', 'kcmc_hz', 'kc_mc', 'name'])
+            .trim();
     if (kcmc.isEmpty) {
-      dropped++;
-      continue;
+      // 有课程代码但缺课程名：保留并占位，绝不整行静默丢弃。
+      final code = _pick(m, const ['kch', 'kcdm', 'kch_id', 'courseCode']).trim();
+      if (code.isEmpty) {
+        dropped++;
+        continue;
+      }
+      kcmc = '未命名课程（$code）';
+      unnamedKept++;
+    }
+    final tags = _collectTags(m);
+    final categoryLabel = label.trim();
+    if (categoryLabel.isNotEmpty && !tags.contains(categoryLabel)) {
+      tags.add(categoryLabel); // 类别入口身份随课程保留，供建议卡/方案类别对照
     }
     final sksj = _pick(m, const ['sksj', 'skTime', 'time']).trim();
     var slots = <Map<String, dynamic>>[];
@@ -537,7 +599,7 @@ XkListParseResult parseXkCourseList(String body,
       cdmc: _pick(m, const ['cdmc', 'place']).trim(),
       xqjmc: _pick(m, const ['xqjmc', 'campus']).trim(),
       subTerm: _pick(m, const ['xxq']),
-      tags: _collectTags(m),
+      tags: tags,
       cap: _int(_pick(m, const ['jxbrl', 'capacity'])),
       selected: _int(_pick(m, const ['yxzrs', 'selected_number', 'yxrs'])),
       slots: slots,
@@ -547,7 +609,10 @@ XkListParseResult parseXkCourseList(String body,
     ));
   }
   final issues = <String>[];
-  if (dropped > 0) issues.add('有 $dropped 行缺少课程名被跳过');
+  if (unnamedKept > 0) {
+    issues.add('有 $unnamedKept 行缺课程名，已用课程代码占位保留');
+  }
+  if (dropped > 0) issues.add('有 $dropped 行缺课程名且无课程代码被跳过');
   if (courses.isEmpty) {
     return XkListParseResult(
       courses: const [],
@@ -772,7 +837,8 @@ double? _creditsFromKcxx(Object? v) {
 /// 纯数字（如代码 03）与超长串（>16 字符，多为说明文本）不作为标签。
 List<String> _collectTags(Map<String, dynamic> m) {
   const tagKeys = [
-    'kcxzmc', 'kcxz', 'kclbmc', 'kclb', 'kcbq', 'bq', 'courseType', 'category',
+    'kcxzmc', 'kcxz', 'kclbmc', 'kclb', 'kcbq', 'bq', 'kkxs',
+    'courseType', 'category',
   ];
   final out = <String>[];
   for (final k in tagKeys) {

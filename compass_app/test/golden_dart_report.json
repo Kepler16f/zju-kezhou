@@ -3,12 +3,358 @@
     {
       "module_id": "general_required",
       "module_path": "通识教育/通识必修",
+      "title": null,
+      "level": null,
+      "category": null,
+      "plan_credits_raw": null,
+      "plan_credits_unit": null,
+      "notes": [],
       "required": 34.0,
       "earned": 32.0,
       "gap": 2.0,
       "remaining_future": 2.0,
       "color": "yellow",
       "status": "🟡 待补",
+      "plan_courses": [
+        {
+          "course_id": "GS1001",
+          "name": "思想道德与法治",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-A",
+            "grade": 85
+          },
+          "page": 12
+        },
+        {
+          "course_id": "GS1002",
+          "name": "英语学术读写",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-A",
+            "grade": 78
+          },
+          "page": 13
+        },
+        {
+          "course_id": "GS1003",
+          "name": "英语国际交流",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-B",
+            "grade": 82
+          },
+          "page": 13
+        },
+        {
+          "course_id": "GS1004",
+          "name": "体育（基础）",
+          "credits": 1.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-A",
+            "grade": 90
+          },
+          "page": 14
+        },
+        {
+          "course_id": "GS1005",
+          "name": "体育（选项）",
+          "credits": 1.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2024-B",
+            "grade": 88
+          },
+          "page": 14
+        },
+        {
+          "course_id": "GS1006",
+          "name": "军事理论",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-A",
+            "grade": 88
+          },
+          "page": 15
+        },
+        {
+          "course_id": "GS1007",
+          "name": "计算机基础",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-A",
+            "grade": 92
+          },
+          "page": 16
+        },
+        {
+          "course_id": "GS1008",
+          "name": "毛泽东思想和中国特色社会主义理论体系概论",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2024-A",
+            "grade": 79
+          },
+          "page": 17
+        },
+        {
+          "course_id": "GS1009",
+          "name": "中国近现代史纲要",
+          "credits": 3.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2024-B",
+            "grade": 84
+          },
+          "page": 17
+        },
+        {
+          "course_id": "GS1010",
+          "name": "马克思主义基本原理",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2024-A",
+            "grade": 80
+          },
+          "page": 18
+        },
+        {
+          "course_id": "GS1011",
+          "name": "形势与政策",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2024-A",
+            "grade": 90
+          },
+          "page": 18
+        },
+        {
+          "course_id": "GS1012",
+          "name": "劳动教育",
+          "credits": 2.0,
+          "offered": [
+            "秋",
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-A(秋)",
+            "2027-B(春)",
+            "2028-A(秋)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 87
+          },
+          "page": 19
+        },
+        {
+          "course_id": "GS1013",
+          "name": "国家安全教育",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 91
+          },
+          "page": 19
+        },
+        {
+          "course_id": "GS1014",
+          "name": "创新创业基础",
+          "credits": 2.0,
+          "offered": [
+            "秋",
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-A(秋)",
+            "2027-B(春)",
+            "2028-A(秋)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 83
+          },
+          "page": 20
+        },
+        {
+          "course_id": "GS1015",
+          "name": "心理与人格发展",
+          "credits": 2.0,
+          "offered": [
+            "秋",
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-A(秋)",
+            "2027-B(春)",
+            "2028-A(秋)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-B",
+            "grade": 86
+          },
+          "page": 20
+        },
+        {
+          "course_id": "GS1016",
+          "name": "人工智能通识",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 21
+        }
+      ],
+      "course_stats": {
+        "total": 16,
+        "passed": 15,
+        "pending": 1,
+        "closed": 0
+      },
       "missing_courses": [
         {
           "course_id": "GS1016",
@@ -31,12 +377,257 @@
     {
       "module_id": "major_core",
       "module_path": "专业教育/专业核心",
+      "title": null,
+      "level": null,
+      "category": null,
+      "plan_credits_raw": null,
+      "plan_credits_unit": null,
+      "notes": [],
       "required": 39.0,
       "earned": 23.0,
       "gap": 16.0,
       "remaining_future": 16.0,
       "color": "yellow",
       "status": "🟡 待补",
+      "plan_courses": [
+        {
+          "course_id": "CS1001",
+          "name": "程序设计基础",
+          "credits": 4.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-A",
+            "grade": 91
+          },
+          "page": 23
+        },
+        {
+          "course_id": "CS1002",
+          "name": "离散数学",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2023-A",
+            "grade": 76
+          },
+          "page": 23
+        },
+        {
+          "course_id": "CS2001",
+          "name": "数据结构与算法",
+          "credits": 4.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2024-B",
+            "grade": 83
+          },
+          "page": 24
+        },
+        {
+          "course_id": "CS2002",
+          "name": "计算机组成原理",
+          "credits": 4.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": false,
+          "record": {
+            "semester": "2024-A",
+            "grade": 55
+          },
+          "page": 25
+        },
+        {
+          "course_id": "CS2003",
+          "name": "算法设计与分析",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 25
+        },
+        {
+          "course_id": "CS3001",
+          "name": "操作系统",
+          "credits": 4.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 78
+          },
+          "page": 26
+        },
+        {
+          "course_id": "CS3002",
+          "name": "编译原理",
+          "credits": 3.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 26
+        },
+        {
+          "course_id": "CS3003",
+          "name": "计算机网络",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 80
+          },
+          "page": 27
+        },
+        {
+          "course_id": "CS3004",
+          "name": "数据库系统",
+          "credits": 3.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "record": {
+            "semester": "2025-B",
+            "grade": 58
+          },
+          "page": 27
+        },
+        {
+          "course_id": "CS3005",
+          "name": "软件工程导论",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 85
+          },
+          "page": 28
+        },
+        {
+          "course_id": "CS3006",
+          "name": "计算机体系结构",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 28
+        },
+        {
+          "course_id": "CS3007",
+          "name": "数值分析",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 77
+          },
+          "page": 29
+        }
+      ],
+      "course_stats": {
+        "total": 12,
+        "passed": 7,
+        "pending": 5,
+        "closed": 0
+      },
       "missing_courses": [
         {
           "course_id": "CS2002",
@@ -120,12 +711,114 @@
     {
       "module_id": "major_limited",
       "module_path": "专业教育/专业限选",
+      "title": null,
+      "level": null,
+      "category": null,
+      "plan_credits_raw": null,
+      "plan_credits_unit": null,
+      "notes": [],
       "required": 8.0,
       "earned": 3.0,
       "gap": 5.0,
       "remaining_future": 7.0,
       "color": "yellow",
       "status": "🟡 待补",
+      "plan_courses": [
+        {
+          "course_id": "CS3101",
+          "name": "人工智能导论",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2025-A",
+            "grade": 88
+          },
+          "page": 30
+        },
+        {
+          "course_id": "CS3102",
+          "name": "信息安全导论",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2027
+          ],
+          "terms": [
+            "2027-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 30
+        },
+        {
+          "course_id": "CS4101",
+          "name": "机器学习",
+          "credits": 4.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "passed": false,
+          "page": 31
+        },
+        {
+          "course_id": "CS4102",
+          "name": "数据挖掘",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2025,
+            2026,
+            2027
+          ],
+          "terms": [
+            "2027-A(秋)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 31
+        },
+        {
+          "course_id": "CS3103",
+          "name": "区块链技术导论",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 32
+        }
+      ],
+      "course_stats": {
+        "total": 5,
+        "passed": 1,
+        "pending": 4,
+        "closed": 1
+      },
       "missing_courses": [
         {
           "course_id": "CS4101",
@@ -196,12 +889,114 @@
     {
       "module_id": "intensive_practice",
       "module_path": "集中实践",
+      "title": null,
+      "level": null,
+      "category": null,
+      "plan_credits_raw": null,
+      "plan_credits_unit": null,
+      "notes": [],
       "required": 18.0,
       "earned": 0.0,
       "gap": 18.0,
       "remaining_future": 16.0,
       "color": "red",
       "status": "🔴 学籍年限内无法补足",
+      "plan_courses": [
+        {
+          "course_id": "PR3001",
+          "name": "课程设计（数据结构）",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 33
+        },
+        {
+          "course_id": "PR3002",
+          "name": "科研训练",
+          "credits": 2.0,
+          "offered": [
+            "秋",
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-A(秋)",
+            "2027-B(春)",
+            "2028-A(秋)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 33
+        },
+        {
+          "course_id": "PR4001",
+          "name": "生产实习",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "passed": false,
+          "page": 34
+        },
+        {
+          "course_id": "PR4002",
+          "name": "专业实习",
+          "credits": 4.0,
+          "offered": [
+            "秋",
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-A(秋)",
+            "2027-B(春)",
+            "2028-A(秋)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 34
+        },
+        {
+          "course_id": "PR4003",
+          "name": "毕业设计（论文）",
+          "credits": 8.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 35
+        }
+      ],
+      "course_stats": {
+        "total": 5,
+        "passed": 0,
+        "pending": 5,
+        "closed": 1
+      },
       "missing_courses": [
         {
           "course_id": "PR4003",
@@ -291,12 +1086,74 @@
     {
       "module_id": "free_elective",
       "module_path": "任意选修",
+      "title": null,
+      "level": null,
+      "category": null,
+      "plan_credits_raw": null,
+      "plan_credits_unit": null,
+      "notes": [],
       "required": 4.0,
       "earned": 0.0,
       "gap": 4.0,
       "remaining_future": 2.0,
       "color": "red",
       "status": "🔴 学籍年限内无法补足",
+      "plan_courses": [
+        {
+          "course_id": "EL001",
+          "name": "创新设计思维",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": 36
+        },
+        {
+          "course_id": "EL002",
+          "name": "数据可视化",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2024,
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "passed": false,
+          "page": 36
+        },
+        {
+          "course_id": "EL003",
+          "name": "科技伦理",
+          "credits": 2.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2024,
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "passed": false,
+          "page": 36
+        }
+      ],
+      "course_stats": {
+        "total": 3,
+        "passed": 0,
+        "pending": 3,
+        "closed": 2
+      },
       "missing_courses": [
         {
           "course_id": "EL001",
@@ -497,6 +1354,6 @@
   "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
   "trace": {
     "plan": "2023级计算机专业本科培养方案（合成演示样例） 2023级（核验日 2026-10-13）",
-    "engine": "v1.1"
+    "engine": "v1.2"
   }
 }

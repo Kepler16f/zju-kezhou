@@ -275,6 +275,36 @@ class CredentialStore {
     } catch (_) {}
   }
 
+  /// 桌面端窗口偏好落盘（ui.cfg）：关闭窗口是否收起到托盘。
+  /// 与 ai.cfg 同理不用 cache_ 前缀（清缓存不该重置用户习惯），
+  /// 一键清除全量数据时由 [deleteUiPrefs] 显式删除。
+  Future<void> saveCloseToTray(bool value) async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ui.cfg'));
+      await f.writeAsString(_obfuscate(json.encode({'closeToTray': value})));
+    } catch (_) {/* 沙箱不可用（测试环境等）：静默 */}
+  }
+
+  /// 读取窗口偏好：缺文件/坏内容一律回落默认值（开启收起到托盘），绝不抛异常。
+  Future<bool> loadCloseToTray() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ui.cfg'));
+      if (!await f.exists()) return true;
+      final raw = json.decode(_deobfuscate(await f.readAsString()));
+      if (raw is Map && raw['closeToTray'] is bool) {
+        return raw['closeToTray'] as bool;
+      }
+    } catch (_) {/* 坏文件按默认值处理 */}
+    return true;
+  }
+
+  Future<void> deleteUiPrefs() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ui.cfg'));
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
+  }
+
   // 轻量混淆（非加密）：避免明文出现在文件系统搜索中；真实防护来自 OS 沙箱隔离。
   String _obfuscate(String s) => base64.encode(utf8.encode(s.split('').reversed.join()));
   String _deobfuscate(String s) => utf8.decode(base64.decode(s)).split('').reversed.join();

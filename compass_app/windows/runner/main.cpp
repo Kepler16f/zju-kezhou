@@ -7,6 +7,30 @@
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // 单实例：命名互斥量判定"是否已有本应用在跑"。已有实例时，把它的窗口
+  // 唤回前台（可能正收在托盘里）后直接退出，不再开第二个窗口/进程。
+  // 互斥量句柄故意保留到进程结束：进程一退出，句柄与对象自动释放。
+  HANDLE single_instance_mutex = ::CreateMutexW(
+      nullptr, TRUE, L"Local\\KeZhou.Compass.SingleInstance");
+  const bool already_running = single_instance_mutex != nullptr &&
+                               ::GetLastError() == ERROR_ALREADY_EXISTS;
+  if (already_running) {
+    // 首次启动可能还没建好窗口：短暂等待，避免"第二次双击看起来没反应"。
+    HWND existing_window = nullptr;
+    for (int attempt = 0; attempt < 40 && existing_window == nullptr;
+         ++attempt) {
+      existing_window = ::FindWindowW(kKezhouWindowClassName, nullptr);
+      if (existing_window == nullptr) {
+        ::Sleep(50);  // 最多等约 2 秒
+      }
+    }
+    if (existing_window != nullptr) {
+      ::PostMessageW(existing_window, kKezhouActivateMessage, 0, 0);
+    }
+    ::CloseHandle(single_instance_mutex);
+    return EXIT_SUCCESS;
+  }
+
   // 崩溃自动恢复（兜底）：进程被强杀时由 WER 重启本应用（带 --crashed），
   // Dart 侧据此跳过自动登录防循环、显示恢复提示；会话数据已持久化
   //（last_session），重启即恢复现场。根因排查见
@@ -51,5 +75,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   ::CoUninitialize();
+  if (single_instance_mutex != nullptr) {
+    ::CloseHandle(single_instance_mutex);
+  }
   return EXIT_SUCCESS;
 }

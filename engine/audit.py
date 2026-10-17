@@ -10,7 +10,7 @@ import json
 import common
 from common import PASS_GRADE, SEMESTERS_PER_GRADE_YEAR, sem_idx, sem_str, idx_str
 
-ENGINE_VERSION = "1.1"
+ENGINE_VERSION = "1.2"
 GRADUATION_YEARS = 6  # 最长学籍年限（年），自入学学年起算
 PLAN_JSON = r'''{}'''  # build_embed.py 替换为 {"computer_science": {...}, "software_engineering": {...}}
 
@@ -61,10 +61,17 @@ def match(record, plan):
 
 
 def aggregate(matched, plan):
-    """按模块汇总已通过学分。"""
+    """按模块汇总已通过学分。同一门方案课程多条成绩单记录（重修/补考）只计一次学分；
+    credit_included=False（弃修/待录/缓考/无效）不计入已取得学分，但仍视为已通过，
+    避免重复出现在待修列表。"""
     earned = {m["module_id"]: 0.0 for m in plan["modules"]}
+    counted = set()
     for r, c in matched:
-        if _is_passed(r):
+        cid = c["course_id"]
+        if not _is_passed(r) or cid in counted:
+            continue
+        counted.add(cid)
+        if r.get("credit_included") is not False:
             earned[c["module_id"]] += c["credits"]
     return earned
 
@@ -75,6 +82,10 @@ def build(record, plan):
     by_id = {c["course_id"]: c for c in plan["courses"]}
     taken_ids = {c["course_id"] for _, c in matched}
     passed_ids = {c["course_id"] for r, c in matched if _is_passed(r)}
+    # 方案课程 id -> 首条匹配到的成绩单记录（无论是否通过），供 plan_courses 明细回显
+    matched_record_by_plan_id = {}
+    for r, c in matched:
+        matched_record_by_plan_id.setdefault(c["course_id"], r)
 
     cur_idx = sem_idx(record["student"]["current_semester"])
     grade_year = int(record["student"]["grade"])
@@ -107,10 +118,48 @@ def build(record, plan):
                                 "offered_years": c.get("offered_years"),
                                 "terms": [idx_str(i) for i in fi], "closed": not fi,
                                 "page": (c.get("source") or {}).get("page")})
-        summary.append({"module_id": m["module_id"], "module_path": m["module_path"],
-                        "required": req, "earned": got, "gap": gap,
-                        "remaining_future": open_before_grad,
-                        "color": color, "status": status, "missing_courses": missing})
+        # 方案课程全量明细：展开卡片时展示“培养方案详细要求”，不再只有
+        # gap=0 时的「学分已满足」。missing_courses 保留以兼容旧消费者。
+        plan_courses_of_module = []
+        seen_plan_course_ids = set()
+        for c in plan["courses"]:
+            if c["module_id"] != m["module_id"]:
+                continue
+            cid = c["course_id"]
+            if cid in seen_plan_course_ids:
+                continue
+            seen_plan_course_ids.add(cid)
+            fi = future_idx(c)
+            r_hit = matched_record_by_plan_id.get(cid)
+            item = {"course_id": c["course_id"], "name": c["name"],
+                    "credits": c["credits"], "offered": c["offered"],
+                    "offered_years": c.get("offered_years"),
+                    "terms": [idx_str(i) for i in fi], "closed": not fi,
+                    "passed": cid in passed_ids}
+            if r_hit is not None:
+                item["record"] = {"semester": r_hit.get("semester"),
+                                  "grade": r_hit.get("grade")}
+            item["page"] = (c.get("source") or {}).get("page")
+            plan_courses_of_module.append(item)
+        plan_course_stats = {"total": len(plan_courses_of_module),
+                             "passed": sum(1 for x in plan_courses_of_module if x["passed"]),
+                             "pending": sum(1 for x in plan_courses_of_module if not x["passed"]),
+                             "closed": sum(1 for x in plan_courses_of_module if x["closed"])}
+        row = {"module_id": m["module_id"], "module_path": m["module_path"],
+               "title": m.get("title"), "level": m.get("level"), "category": m.get("category"),
+               "plan_credits_raw": m.get("plan_credits_raw"),
+               "plan_credits_unit": m.get("plan_credits_unit"),
+               "notes": m.get("notes") or []}
+        # 模块里带哪些扩展口径字段就透传哪些（教务实时方案可能有，golden 冻结方案没有）
+        for k in ("choice_rule", "alternative", "certified_category", "sub_requirements"):
+            if k in m:
+                row[k] = m[k]
+        row.update({"required": req, "earned": got, "gap": gap,
+                    "remaining_future": open_before_grad,
+                    "color": color, "status": status,
+                    "plan_courses": plan_courses_of_module,
+                    "course_stats": plan_course_stats, "missing_courses": missing})
+        summary.append(row)
 
         if color == "red" and gap > 0:
             closed_courses = [c for c in remaining if not future_idx(c)]

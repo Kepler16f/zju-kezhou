@@ -7,15 +7,21 @@ library;
 import 'package:flutter/material.dart';
 
 import '../data/semester.dart';
+import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/course_marks.dart';
 
 class GradeDetailPage extends StatefulWidget {
   final List<Map<String, dynamic>> courses;
   final Map<String, Map<String, bool>> marks;
+  final XkListParseResult? choosed; // 本学期已选（在修，未出成绩）
   final void Function(String key, String kind, bool value)? onMark;
   const GradeDetailPage(
-      {super.key, required this.courses, this.marks = const {}, this.onMark});
+      {super.key,
+      required this.courses,
+      this.marks = const {},
+      this.choosed,
+      this.onMark});
 
   @override
   State<GradeDetailPage> createState() => _GradeDetailPageState();
@@ -55,12 +61,20 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
         itemCount: semesters.length + 1,
         itemBuilder: (context, i) {
           if (i == 0) {
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(4, 0, 4, 2),
-              child: Text(
-                  '长按课程行可设本地排除（不计入学分 / 绩点）——仅学业视图，不影响审计'
-                  '${markedCount > 0 ? '｜已标记 $markedCount 门' : ''}',
-                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 2),
+                  child: Text(
+                      '长按课程行可设本地排除（不计入学分 / 绩点）——仅学业视图，不影响审计'
+                      '${markedCount > 0 ? '｜已标记 $markedCount 门' : ''}',
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.grey)),
+                ),
+                if (widget.choosed != null)
+                  _choosedCard(context, widget.choosed!),
+              ],
             );
           }
           final sem = semesters[i - 1];
@@ -101,6 +115,53 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
             ],
           );
         },
+      ),
+    );
+  }
+
+  /// 本学期已选（在修）分组：没有成绩，不计入上方学期 GPA。
+  Widget _choosedCard(BuildContext context, XkListParseResult choosed) {
+    final theme = Theme.of(context);
+    if (choosed.state == 'unavailable') {
+      return Card(
+        child: ListTile(
+          leading: Icon(Icons.info_outline, color: theme.colorScheme.error),
+          title: const Text('本学期已选暂不可用'),
+          subtitle: Text(choosed.issues.isEmpty
+              ? '请到设置页重新拉取教务数据'
+              : choosed.issues.first),
+        ),
+      );
+    }
+    final credits = choosed.courses.fold<double>(
+        0, (sum, c) => sum + (c.xf ?? 0));
+    final creditText = (credits - credits.roundToDouble()).abs() < 1e-9
+        ? '${credits.round()}'
+        : credits.toStringAsFixed(1);
+    return Card(
+      margin: const EdgeInsets.only(top: 6, bottom: 4),
+      child: ExpansionTile(
+        initiallyExpanded: true,
+        leading: Icon(Icons.playlist_add_check_circle_outlined,
+            color: theme.colorScheme.primary),
+        title: const Text('本学期已选（在修，未出成绩）'),
+        subtitle: Text(
+            '${choosed.courses.length} 门 · $creditText 学分'
+            ' · 不计入 GPA / 已取得学分'),
+        children: [
+          for (final c in choosed.courses)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.schedule, size: 18),
+              title: Text(c.kcmc),
+              subtitle: Text(<String>[
+                if (c.xf != null) '${c.xf} 学分',
+                if (c.teacher.isNotEmpty) c.teacher,
+                if (c.sksj.isNotEmpty) c.sksj,
+                if (c.cdmc.isNotEmpty) c.cdmc,
+              ].join(' · ')),
+            ),
+        ],
       ),
     );
   }

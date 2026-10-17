@@ -9,10 +9,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../data/ai_config.dart';
+import '../data/ai_models.dart';
 import '../data/ai_prompts.dart';
 import '../data/app_version.dart';
 import '../data/diagnostic_log.dart';
+import '../data/plan_models.dart';
 import '../data/semester.dart';
+import '../data/xk_parse.dart';
+import '../engine/analytics.dart';
 
 enum DataMode { sample, paste, zju }
 
@@ -36,6 +40,19 @@ class SettingsPage extends StatefulWidget {
   final AiConfig aiConfig; // AI 解读配置（出厂无存档时默认公益端点）
   final Future<void> Function(AiConfig config) onAiConfigChange;
   final Future<String> Function(AiConfig config) onTestAi;
+  final Future<AiModelsResult> Function(AiConfig config) onListAiModels;
+
+  // 桌面端（仅 Windows/macOS/Linux 传入；移动端传 null 即不展示该组）
+  final bool closeToTray; // 关闭窗口是否收起到托盘
+  final ValueChanged<bool>? onCloseToTrayChange;
+  final VoidCallback? onQuit;
+
+  // 数据概览 / 我的培养方案（诉求 #10/#11）
+  final List<Map<String, dynamic>> courses;
+  final XkListParseResult? choosed;
+  final MatchedPlanInfo? matchedPlan;
+  final String? planNote;
+  final VoidCallback onGoPlan;
 
   /// 分享给导师：导出脱敏学业分享包（realName 可选实名，默认匿名）。
   /// 返回导出结果提示文本（含课程数与落盘路径），失败返回原因。
@@ -52,7 +69,16 @@ class SettingsPage extends StatefulWidget {
       required this.pasteCtl, required this.busy, required this.onRun,
       this.notice, this.loggedInAs, this.lastDataAt, required this.onClearData,
       required this.aiConfig, required this.onAiConfigChange,
-      required this.onTestAi, this.onExportSharePack, this.onEnterTeacherMode});
+      required this.onTestAi, required this.onListAiModels,
+      this.courses = const [],
+      this.choosed,
+      this.matchedPlan,
+      this.planNote,
+      required this.onGoPlan,
+      this.closeToTray = true,
+      this.onCloseToTrayChange,
+      this.onQuit,
+      this.onExportSharePack, this.onEnterTeacherMode});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -116,6 +142,14 @@ class _SettingsPageState extends State<SettingsPage> {
     final aiConfig = widget.aiConfig;
     final onAiConfigChange = widget.onAiConfigChange;
     final onTestAi = widget.onTestAi;
+    final onListAiModels = widget.onListAiModels;
+    final courses = widget.courses;
+    final choosed = widget.choosed;
+    final matchedPlan = widget.matchedPlan;
+    final planNote = widget.planNote;
+    final closeToTray = widget.closeToTray;
+    final onCloseToTrayChange = widget.onCloseToTrayChange;
+    final onQuit = widget.onQuit;
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
       children: [
@@ -263,6 +297,11 @@ class _SettingsPageState extends State<SettingsPage> {
                   ],
                 ),
               ),
+              _dataAndPlanBlock(context,
+                  courses: courses,
+                  choosed: choosed,
+                  matchedPlan: matchedPlan,
+                  planNote: planNote),
               if (mode == DataMode.paste)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -306,7 +345,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 style: const TextStyle(color: Colors.red, fontSize: 13)),
           ),
         _groupHeader('AI 解读'),
-        _AiCard(config: aiConfig, onSave: onAiConfigChange, onTest: onTestAi),
+        _AiCard(
+            config: aiConfig,
+            onSave: onAiConfigChange,
+            onTest: onTestAi,
+            onListModels: onListAiModels),
         _groupHeader('分享给导师'),
         Card(
           child: Column(
@@ -361,6 +404,36 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
         ),
+        if (onQuit != null) ...[
+          _groupHeader('桌面端'),
+          Card(
+            child: Column(
+              children: [
+                // 托盘只有 Windows 侧实现；其它桌面平台不展示开关，避免
+                // 出现"开了却没地方唤回窗口"的死路。
+                if (onCloseToTrayChange != null) ...[
+                  SwitchListTile(
+                    secondary: const Icon(Icons.minimize_outlined),
+                    title: const Text('关闭窗口时收起到托盘'),
+                    subtitle: const Text('开启：点 X 只隐藏窗口，托盘图标可再唤回；'
+                        '关闭：点 X 直接退出进程',
+                        style: TextStyle(fontSize: 11)),
+                    value: closeToTray,
+                    onChanged: onCloseToTrayChange,
+                  ),
+                  const Divider(height: 1, indent: 16),
+                ],
+                ListTile(
+                  leading: const Icon(Icons.power_settings_new),
+                  title: const Text('退出课舟'),
+                  subtitle: const Text('结束进程；已保存的登录状态、方案与窗口偏好保留',
+                      style: TextStyle(fontSize: 11)),
+                  onTap: onQuit,
+                ),
+              ],
+            ),
+          ),
+        ],
         _groupHeader('关于'),
         // 通用组已解散（任务 11）：「数据与合规」「登录诊断日志」两个入口
         // 并入关于组，标题保持原名（main.dart 崩溃引导文案指名「登录诊断日志」）。
@@ -446,6 +519,131 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  /// 数据概览 + 我的培养方案（诉求 #10/#11）。
+  /// 教务模式显示真实匹配方案；样例/粘贴模式明确标注为内置样例，绝不冒充。
+  Widget _dataAndPlanBlock(
+    BuildContext context, {
+    required List<Map<String, dynamic>> courses,
+    required XkListParseResult? choosed,
+    required MatchedPlanInfo? matchedPlan,
+    required String? planNote,
+  }) {
+    final isZju = widget.mode == DataMode.zju;
+    final earned =
+        (Analytics.overall(courses)['earned_credits'] ?? 0).toDouble();
+    final choosedCredits = choosed == null
+        ? 0.0
+        : choosed.courses.fold<double>(0, (s, c) => s + (c.xf ?? 0));
+    final builtinName = widget.majors[widget.major] ?? widget.major;
+    final builtin = MatchedPlanInfo.builtin(
+      builtinName,
+      grade: widget.current.length >= 4
+          ? widget.current.substring(0, 4)
+          : '',
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(height: 1, indent: 16),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 10, 16, 4),
+          child: Text('我的数据',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+        ),
+        if (courses.isNotEmpty)
+          _dataLine('成绩单',
+              '${courses.length} 门 · 已取得 ${_num(earned)} 学分'),
+        if (choosed != null) _choosedLine(choosed, choosedCredits),
+        const SizedBox(height: 2),
+        if (isZju) ...[
+          if (matchedPlan == null)
+            _dataWarn('尚未匹配到本人培养方案：登录教务网并拉取数据后自动匹配，'
+                '也可到「方案」页手动选择')
+          else ...[
+            _dataLine(
+                '我的培养方案',
+                '${matchedPlan.zymc}'
+                '${matchedPlan.gradeLabel.isEmpty ? '' : '（${matchedPlan.gradeLabel}）'}'),
+            if (matchedPlan.subtitle.isNotEmpty)
+              _dataLine('方案信息', matchedPlan.subtitle),
+            _dataLine(
+                '匹配结果',
+                '${matchedPlan.level.label} · '
+                '${matchedPlan.candidateCount > 1 ? '候选 ${matchedPlan.candidateCount} 条' : '唯一匹配'}'),
+            if (matchedPlan.id.isNotEmpty)
+              _dataLine('教学计划号', matchedPlan.id),
+            if (matchedPlan.ambiguous)
+              _dataWarn('有多条相近方案，请到「方案」页确认本人方案'),
+          ],
+        ] else ...[
+          _dataLine(
+              '当前方案',
+              '${builtin.zymc}'
+              '${builtin.gradeLabel.isEmpty ? '' : '（${builtin.gradeLabel}）'}'),
+          _dataLine('方案来源', '内置样例方案（非教务实时方案）'),
+        ],
+        if (planNote != null && planNote.trim().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+            child: Text(planNote,
+                style: TextStyle(
+                    fontSize: 11, color: Colors.grey.shade700, height: 1.4)),
+          ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: widget.onGoPlan,
+            icon: const Icon(Icons.open_in_new, size: 16),
+            label: Text(isZju && matchedPlan == null ? '去匹配' : '查看方案'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _choosedLine(XkListParseResult choosed, double credits) {
+    if (choosed.state == 'data') {
+      return _dataLine('本学期已选',
+          '${choosed.courses.length} 门 · ${_num(credits)} 学分（在修，未出成绩）');
+    }
+    if (choosed.state == 'unavailable') {
+      return _dataLine(
+          '本学期已选',
+          '暂不可用${choosed.issues.isEmpty ? '' : '：${choosed.issues.first}'}');
+    }
+    return _dataLine('本学期已选', '0 门');
+  }
+
+  Widget _dataLine(String label, String value) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 3, 16, 3),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+                width: 84,
+                child: Text(label,
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.grey.shade700))),
+            Expanded(
+                child: Text(value, style: const TextStyle(fontSize: 12))),
+          ],
+        ),
+      );
+
+  Widget _dataWarn(String text) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        child: Text(text,
+            style: TextStyle(
+                fontSize: 11.5, color: Colors.orange.shade800, height: 1.4)),
+      );
+
+  String _num(num v) {
+    final d = v.toDouble();
+    return (d - d.roundToDouble()).abs() < 1e-9
+        ? '${d.round()}'
+        : d.toStringAsFixed(1);
+  }
+
   void _showDiagnostics(BuildContext context) {
     showDialog<void>(
       context: context,
@@ -519,8 +717,12 @@ class _AiCard extends StatefulWidget {
   final AiConfig config;
   final Future<void> Function(AiConfig config) onSave;
   final Future<String> Function(AiConfig config) onTest;
+  final Future<AiModelsResult> Function(AiConfig config) onListModels;
   const _AiCard(
-      {required this.config, required this.onSave, required this.onTest});
+      {required this.config,
+      required this.onSave,
+      required this.onTest,
+      required this.onListModels});
 
   @override
   State<_AiCard> createState() => _AiCardState();
@@ -535,8 +737,10 @@ class _AiCardState extends State<_AiCard> {
   late final TextEditingController _model =
       TextEditingController(text: widget.config.model);
   bool _busy = false;
+  bool _loadingModels = false;
   bool _obscure = true;
   String? _result;
+  AiModelInfo? _pickedModel; // 从模型列表选中的条目（用于展示上下文大小）
   late AiConfig _synced = widget.config;
 
   @override
@@ -551,6 +755,7 @@ class _AiCardState extends State<_AiCard> {
       _base.text = widget.config.baseUrl;
       _key.text = widget.config.apiKey;
       _model.text = widget.config.model;
+      _pickedModel = null;
     }
   }
 
@@ -606,6 +811,7 @@ class _AiCardState extends State<_AiCard> {
   void _onProviderChanged(AiProvider p) {
     setState(() {
       _provider = p;
+      _pickedModel = null;
       final preset = AiConfig.preset(p);
       if (preset.baseUrl.isNotEmpty && _base.text.trim().isEmpty) {
         _base.text = preset.baseUrl;
@@ -613,6 +819,49 @@ class _AiCardState extends State<_AiCard> {
       if (preset.model.isNotEmpty && _model.text.trim().isEmpty) {
         _model.text = preset.model;
       }
+    });
+  }
+
+  /// 拉取模型列表并让用户选择（自定义 Key 场景）。
+  /// 选中后只回填模型名；模型列表里的上下文大小在当前卡片内展示。
+  Future<void> _fetchModels() async {
+    if (_busy || _loadingModels) return;
+    final cfg = _collect();
+    if (cfg.provider == AiProvider.dify) {
+      setState(() => _result = 'Dify 不提供模型列表接口，请手动填写模型名');
+      return;
+    }
+    if (!cfg.enabled) {
+      setState(() => _result = '请先填写接口地址与 API Key，再拉取模型列表');
+      return;
+    }
+    setState(() {
+      _loadingModels = true;
+      _result = null;
+    });
+    AiModelsResult result;
+    try {
+      result = await widget.onListModels(cfg);
+    } catch (_) {
+      result = AiModelsResult.failure('请求异常（请检查接口地址格式后重试）');
+    }
+    if (!mounted) return;
+    setState(() => _loadingModels = false);
+    if (!result.ok) {
+      setState(() => _result = '拉取模型失败：${result.error}');
+      return;
+    }
+    final picked = await showDialog<AiModelInfo>(
+      context: context,
+      builder: (ctx) =>
+          _ModelPickerDialog(models: result.models, note: result.note),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _model.text = picked.id;
+      _pickedModel = picked;
+      _result = '已选择模型 ${picked.id}'
+          '（上下文 ${picked.contextLabel}${picked.maxOutputTokens == null ? '' : '，最大输出 ${picked.outputLabel}'}）';
     });
   }
 
@@ -630,7 +879,8 @@ class _AiCardState extends State<_AiCard> {
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
             child:
-                Text(kAiSendNotice, style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text(kAiChatSendNotice,
+                    style: TextStyle(fontSize: 11, color: Colors.grey)),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -690,11 +940,32 @@ class _AiCardState extends State<_AiCard> {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: TextField(
                 controller: _model,
-                decoration: const InputDecoration(
-                    labelText: '模型名（例：deepseek-chat / claude-opus-5-5；Dify 可留空）',
-                    border: OutlineInputBorder()),
+                decoration: InputDecoration(
+                  labelText: '模型名（例：deepseek-chat / claude-opus-5-5；Dify 可留空）',
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    tooltip: '拉取模型列表',
+                    onPressed: (_busy || _loadingModels) ? null : _fetchModels,
+                    icon: _loadingModels
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.cloud_download_outlined, size: 18),
+                  ),
+                ),
               ),
             ),
+            if (_pickedModel != null && _model.text.trim() == _pickedModel!.id)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text(
+                  '上下文：${_pickedModel!.contextLabel}'
+                  '${_pickedModel!.maxOutputTokens == null ? '' : ' · 最大输出：${_pickedModel!.outputLabel}'}'
+                  '${_pickedModel!.sourceNote == null ? '' : ' · ${_pickedModel!.sourceNote}'}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ),
           ],
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -729,6 +1000,114 @@ class _AiCardState extends State<_AiCard> {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// 模型选择弹窗：搜索 + 列表（显示 id、显示名、上下文大小、最大输出）。
+class _ModelPickerDialog extends StatefulWidget {
+  const _ModelPickerDialog({required this.models, this.note});
+
+  final List<AiModelInfo> models;
+  final String? note;
+
+  @override
+  State<_ModelPickerDialog> createState() => _ModelPickerDialogState();
+}
+
+class _ModelPickerDialogState extends State<_ModelPickerDialog> {
+  final TextEditingController _search = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  List<AiModelInfo> get _filtered {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return widget.models;
+    return widget.models.where((m) {
+      return m.id.toLowerCase().contains(q) ||
+          (m.displayName?.toLowerCase().contains(q) ?? false);
+    }).toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final list = _filtered;
+    final note = widget.note?.trim() ?? '';
+    return AlertDialog(
+      title: Text('选择模型（共 ${widget.models.length} 个）'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 420,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _search,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: '搜索模型 id / 显示名',
+                prefixIcon: Icon(Icons.search, size: 18),
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              onChanged: (v) => setState(() => _query = v),
+            ),
+            if (note.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(note,
+                    style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: list.isEmpty
+                  ? const Center(
+                      child: Text('没有匹配的模型',
+                          style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    )
+                  : ListView.separated(
+                      itemCount: list.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final m = list[i];
+                        final parts = <String>[
+                          if (m.displayName != null &&
+                              m.displayName!.trim().isNotEmpty &&
+                              m.displayName != m.id)
+                            m.displayName!,
+                          '上下文 ${m.contextLabel}',
+                          if (m.maxOutputTokens != null)
+                            '最大输出 ${m.outputLabel}',
+                          if (m.sourceNote != null) m.sourceNote!,
+                        ];
+                        return ListTile(
+                          dense: true,
+                          title: Text(m.id,
+                              style: const TextStyle(
+                                  fontFamily: 'monospace', fontSize: 13)),
+                          subtitle: Text(parts.join(' · '),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11)),
+                          onTap: () => Navigator.pop(context, m),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+      ],
     );
   }
 }

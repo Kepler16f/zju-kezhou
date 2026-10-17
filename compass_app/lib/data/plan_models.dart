@@ -659,12 +659,18 @@ class ResolvedPlan {
   final List<PlanCourseRow> courseTable;
   final List<String> notes;
   final bool matched;
+  final PlanMatchLevel matchLevel;
+  final bool ambiguous;
+  final int candidateCount;
   const ResolvedPlan({
     this.summary,
     this.planFile,
     this.courseTable = const [],
     this.notes = const [],
     this.matched = false,
+    this.matchLevel = PlanMatchLevel.none,
+    this.ambiguous = false,
+    this.candidateCount = 0,
   });
 
   static const empty = ResolvedPlan();
@@ -679,5 +685,131 @@ class ResolvedPlan {
       courseTable.isEmpty ? '方案摘要（不含逐门课程表）' : '${courseTable.length} 门课程',
       ...notes,
     ].join('｜');
+  }
+}
+
+/// 培养方案来源：教务网实时匹配 / 内置样例（非本人方案）。
+enum PlanSource { zju, builtin }
+
+/// 设置页「我的培养方案」展示用的轻量摘要（可 JSON 持久化）。
+/// 与 [PlanSummary] 分开，是为了只带展示所需字段，避免把整份方案写进缓存。
+class MatchedPlanInfo {
+  final String zymc;
+  final String synj;
+  final String zydm;
+  final String jxjhh;
+  final String pyfaxxId;
+  final String xymc;
+  final double? zdbyxf;
+  final String dlbsmc;
+  final PlanMatchLevel level;
+  final bool ambiguous;
+  final PlanSource source;
+  final int candidateCount;
+
+  const MatchedPlanInfo({
+    required this.zymc,
+    this.synj = '',
+    this.zydm = '',
+    this.jxjhh = '',
+    this.pyfaxxId = '',
+    this.xymc = '',
+    this.zdbyxf,
+    this.dlbsmc = '',
+    this.level = PlanMatchLevel.none,
+    this.ambiguous = false,
+    this.source = PlanSource.zju,
+    this.candidateCount = 0,
+  });
+
+  String get id => jxjhh.isNotEmpty ? jxjhh : pyfaxxId;
+
+  String get gradeLabel => synj.isEmpty ? '' : '$synj 级';
+
+  String get creditsLabel =>
+      zdbyxf == null ? '' : '${_trimNum(zdbyxf!)} 学分';
+
+  String get subtitle => <String>[
+        if (xymc.isNotEmpty) xymc,
+        if (gradeLabel.isNotEmpty) gradeLabel,
+        if (zydm.isNotEmpty) '代码 $zydm',
+        if (creditsLabel.isNotEmpty) creditsLabel,
+        if (dlbsmc.isNotEmpty && dlbsmc != '专业') dlbsmc,
+      ].join(' · ');
+
+  factory MatchedPlanInfo.fromSummary(
+    PlanSummary s, {
+    PlanMatchLevel level = PlanMatchLevel.none,
+    bool ambiguous = false,
+    PlanSource source = PlanSource.zju,
+    int candidateCount = 0,
+  }) =>
+      MatchedPlanInfo(
+        zymc: s.zymc,
+        synj: s.synj,
+        zydm: s.zydm,
+        jxjhh: s.jxjhh,
+        pyfaxxId: s.pyfaxxId,
+        xymc: s.xymc,
+        zdbyxf: s.zdbyxf,
+        dlbsmc: s.dlbsmc,
+        level: level,
+        ambiguous: ambiguous,
+        source: source,
+        candidateCount: candidateCount,
+      );
+
+  factory MatchedPlanInfo.builtin(String name,
+          {String grade = '', String credits = ''}) =>
+      MatchedPlanInfo(
+        zymc: name,
+        synj: grade,
+        source: PlanSource.builtin,
+        dlbsmc: '内置样例方案',
+        zdbyxf: double.tryParse(credits),
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'zymc': zymc,
+        'synj': synj,
+        'zydm': zydm,
+        'jxjhh': jxjhh,
+        'pyfaxx_id': pyfaxxId,
+        'xymc': xymc,
+        'zdbyxf': zdbyxf,
+        'dlbsmc': dlbsmc,
+        'level': level.name,
+        'ambiguous': ambiguous,
+        'source': source.name,
+        'candidate_count': candidateCount,
+      };
+
+  factory MatchedPlanInfo.fromJson(Object? json) {
+    if (json is! Map) return const MatchedPlanInfo(zymc: '');
+    String s(String k) => (json[k] ?? '').toString().trim();
+    final level = PlanMatchLevel.values.firstWhere(
+        (e) => e.name == s('level'),
+        orElse: () => PlanMatchLevel.none);
+    final source = PlanSource.values.firstWhere(
+        (e) => e.name == s('source'),
+        orElse: () => PlanSource.zju);
+    final rawCredits = json['zdbyxf'];
+    return MatchedPlanInfo(
+      zymc: s('zymc'),
+      synj: s('synj'),
+      zydm: s('zydm'),
+      jxjhh: s('jxjhh'),
+      pyfaxxId: s('pyfaxx_id'),
+      xymc: s('xymc'),
+      zdbyxf: rawCredits is num
+          ? rawCredits.toDouble()
+          : double.tryParse('$rawCredits'),
+      dlbsmc: s('dlbsmc'),
+      level: level,
+      ambiguous: json['ambiguous'] == true,
+      source: source,
+      candidateCount:
+          int.tryParse('${json['candidate_count'] ?? ''}') ?? 0,
+    );
   }
 }

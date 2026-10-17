@@ -16,7 +16,9 @@ namespace {
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 
-constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
+// 课舟专用窗口类名（Flutter 模板默认的 FLUTTER_RUNNER_WIN32_WINDOW 是所有 Flutter
+// 应用共用的，单实例查找会误中别的应用）。改名后 main.cpp 的 FindWindow 才是精确的。
+constexpr const wchar_t kWindowClassName[] = L"KeZhou.Compass.MainWindow";
 
 /// Registry key for app theme preference.
 ///
