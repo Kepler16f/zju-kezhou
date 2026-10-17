@@ -4,6 +4,8 @@ library;
 
 import 'dart:convert';
 
+import 'disclaimer.dart';
+import 'matching.dart';
 import 'timeline.dart';
 
 class AuditEngine {
@@ -39,59 +41,29 @@ class AuditEngine {
     return p;
   }
 
-  static bool _isPassed(Map<String, dynamic> r) {
-    final passed = r['passed'];
-    if (passed != null) return passed == true;
-    final g = r['grade'];
-    return g != null && (g as num).toDouble() >= Timeline.passGrade;
-  }
-
-  /// 已修记录 ↔ 方案课程：course_id 精确优先，名称相似度≥0.85 兜底
-  (List<List<dynamic>>, List<Map<String, dynamic>>) _match(
-      List<Map<String, dynamic>> recordCourses, Map<String, dynamic> plan) {
-    final byId = <String, Map<String, dynamic>>{};
-    final names = <String>[];
-    final byName = <String, Map<String, dynamic>>{};
-    for (final c in (plan['courses'] as List).cast<Map<String, dynamic>>()) {
-      byId[c['course_id'] as String] = c;
-      names.add(c['name'] as String);
-      byName[c['name'] as String] = c;
-    }
-    final matched = <List<dynamic>>[];
-    final unmatched = <Map<String, dynamic>>[];
-    for (final r in recordCourses) {
-      Map<String, dynamic>? course;
-      final cid = r['course_id'];
-      if (cid != null && byId.containsKey(cid)) {
-        course = byId[cid];
-      } else {
-        final close = getCloseMatches(r['name'] as String, names, n: 1, cutoff: 0.85);
-        if (close.isNotEmpty) course = byName[close.first];
-      }
-      if (course == null) {
-        unmatched.add(r);
-      } else {
-        matched.add([r, course]);
-      }
-    }
-    return (matched, unmatched);
-  }
+  // 已修↔方案的匹配与通过判定已移至 engine/matching.dart（选课建议共用，行为不变）。
 
   Map<String, dynamic> build(Map<String, dynamic> record, Map<String, dynamic> plan) {
     final recordCourses = (record['courses'] as List).cast<Map<String, dynamic>>();
-    final (matched, unmatched) = _match(recordCourses, plan);
+    final (matched, unmatched) = matchRecordToPlan(recordCourses, plan);
 
     final earned = <String, double>{};
     for (final m in (plan['modules'] as List).cast<Map<String, dynamic>>()) {
       earned[m['module_id'] as String] = 0.0;
     }
     final passedIds = <String>{};
+    final matchedRecordByPlanId = <String, Map<String, dynamic>>{};
     for (final pair in matched) {
       final r = pair[0] as Map<String, dynamic>, c = pair[1] as Map<String, dynamic>;
-      if (_isPassed(r)) {
-        earned[c['module_id'] as String] =
-            earned[c['module_id'] as String]! + (c['credits'] as num).toDouble();
-        passedIds.add(c['course_id'] as String);
+      final cid = '${c['course_id']}';
+      matchedRecordByPlanId.putIfAbsent(cid, () => r);
+      if (isPassed(r) && passedIds.add(cid)) {
+        // 同一门课重修多次只计一次学分；credit_included=false（弃修/待录/
+        // 缓考/无效）不计入已取得学分，但仍视为已通过，避免重复出现在待修。
+        if (r['credit_included'] as bool? ?? true) {
+          earned[c['module_id'] as String] = earned[c['module_id'] as String]! +
+              (c['credits'] as num).toDouble();
+        }
       }
     }
 
@@ -154,15 +126,63 @@ class AuditEngine {
           });
         }
       }
+      // 方案课程全量明细：展开卡片时展示“培养方案详细要求”，不再只有
+      // gap=0 时的「学分已满足」。missing_courses 保留以兼容旧消费者。
+      final planCoursesOfModule = <Map<String, dynamic>>[];
+      final seenPlanCourseIds = <String>{};
+      for (final c in (plan['courses'] as List).cast<Map<String, dynamic>>()) {
+        if (c['module_id'] != mid) continue;
+        final cid = '${c['course_id'] ?? ''}';
+        if (!seenPlanCourseIds.add(cid)) continue;
+        final fi = futureIdx(c);
+        final record = matchedRecordByPlanId[cid];
+        final src = c['source'];
+        planCoursesOfModule.add(<String, dynamic>{
+          'course_id': c['course_id'],
+          'name': c['name'],
+          'credits': c['credits'],
+          'offered': c['offered'],
+          'offered_years': c['offered_years'],
+          'terms': fi.map(Timeline.idxStr).toList(),
+          'closed': fi.isEmpty,
+          'passed': passedIds.contains(cid),
+          if (record != null)
+            'record': <String, dynamic>{
+              'semester': record['semester'],
+              'grade': record['grade'],
+            },
+          'page': src is Map ? src['page'] : null,
+        });
+      }
+      final planCourseStats = <String, int>{
+        'total': planCoursesOfModule.length,
+        'passed': planCoursesOfModule.where((c) => c['passed'] == true).length,
+        'pending': planCoursesOfModule.where((c) => c['passed'] != true).length,
+        'closed': planCoursesOfModule.where((c) => c['closed'] == true).length,
+      };
       summary.add({
         'module_id': mid,
         'module_path': m['module_path'],
+        'title': m['title'],
+        'level': m['level'],
+        'category': m['category'],
+        'plan_credits_raw': m['plan_credits_raw'],
+        'plan_credits_unit': m['plan_credits_unit'],
+        'notes': m['notes'] ?? const [],
+        if (m.containsKey('choice_rule')) 'choice_rule': m['choice_rule'],
+        if (m.containsKey('alternative')) 'alternative': m['alternative'],
+        if (m.containsKey('certified_category'))
+          'certified_category': m['certified_category'],
+        if (m.containsKey('sub_requirements'))
+          'sub_requirements': m['sub_requirements'],
         'required': req,
         'earned': got,
         'gap': gap,
         'remaining_future': openBeforeGrad,
         'color': color,
         'status': status,
+        'plan_courses': planCoursesOfModule,
+        'course_stats': planCourseStats,
         'missing_courses': missing,
       });
 
@@ -205,7 +225,7 @@ class AuditEngine {
               ? '（隔年开课，仅 ${(cyc as List).join('、')} 学年）'
               : '（仅${(c['offered'] as List).first}开课）';
           final takenFailed = matched.any((pair) =>
-              pair[1]['course_id'] == c['course_id'] && !_isPassed(pair[0] as Map<String, dynamic>));
+              pair[1]['course_id'] == c['course_id'] && !isPassed(pair[0] as Map<String, dynamic>));
           final verb = takenFailed ? '已修未过需重修' : '尚未修';
           warnings.add({
             'type': 'offering_closed',
@@ -221,7 +241,7 @@ class AuditEngine {
     // 先修检查（已修侧）
     for (final pair in matched) {
       final r = pair[0] as Map<String, dynamic>, c = pair[1] as Map<String, dynamic>;
-      if (!_isPassed(r)) continue;
+      if (!isPassed(r)) continue;
       for (final p in (c['prereq'] as List? ?? [])) {
         if (passedIds.contains(p)) continue;
         final pc = byId[p];
@@ -304,7 +324,7 @@ class AuditEngine {
 
     // 未通过课程重修提醒
     for (final r in recordCourses) {
-      if (r['grade'] != null && !_isPassed(r)) {
+      if (r['grade'] != null && !isPassed(r)) {
         warnings.add({
           'type': 'failed_recheck',
           'level': 'yellow',
@@ -335,7 +355,7 @@ class AuditEngine {
       'warnings': warnings,
       'extra_courses': unmatched,
       'totals': totals,
-      'disclaimer': '本报告仅供与导师沟通参考，正式认定以教务系统为准。',
+      'disclaimer': kDisclaimer,
       'trace': {
         'plan': '${plan['meta']['source_doc']}'
             '${(plan['meta']['grade'] ?? '').toString().isEmpty ? '' : ' ${plan['meta']['grade']}级'}'

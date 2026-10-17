@@ -23,15 +23,27 @@ class Analytics {
     return sems;
   }
 
+  /// 通过判定：passed 字段优先，缺省按 grade>=60 推断
+  /// （与 engine/matching.dart 的 isPassed 同口径；样例/手写记录常缺 passed 字段，
+  ///  若按缺省 false 处理会把整份成绩单排除在 GPA 之外——历史 bug）。
+  static bool isPassed(Map<String, dynamic> c) {
+    final p = c['passed'];
+    if (p is bool) return p;
+    final g = (c['grade'] as num?)?.toDouble();
+    return g != null && g >= 60;
+  }
+
   static bool _gpaIncluded(Map<String, dynamic> c) =>
-      (c['gpa_included'] as bool? ?? true) && (c['passed'] as bool? ?? false);
+      (c['gpa_included'] as bool? ?? true) && isPassed(c);
 
   /// 五分绩点：教务 jd 权威值优先；缺失（粘贴/样例模式）用百分制参考换算兜底。
-  static double _five(Map<String, dynamic> c) {
+  static double fiveOf(Map<String, dynamic> c) {
     final jd = (c['five_point'] as num?)?.toDouble() ?? 0.0;
     if (jd > 0) return jd;
     return fiveFromScore((c['grade'] as num?)?.toInt() ?? 0);
   }
+
+  static double _five(Map<String, dynamic> c) => fiveOf(c);
 
   static double _credit(Map<String, dynamic> c) =>
       (c['credits'] as num?)?.toDouble() ?? 0.0;
@@ -61,10 +73,11 @@ class Analytics {
     };
   }
 
-  /// 学期走势：每学期 {semester, four, weighted, credits, cumulative_four}。
+  /// 学期走势：每学期 {semester_idx, four, five, weighted, credits,
+  /// cumulative_four, cumulative_five}（five 系列为五分制口径，供走势图默认使用）。
   static List<Map<String, double>> semesterTrend(List<Map<String, dynamic>> courses) {
     final out = <Map<String, double>>[];
-    var cumSum = 0.0, cumCredits = 0.0;
+    var cumSum = 0.0, cumCredits = 0.0, cumFive = 0.0;
     for (final sem in semesterOrder(courses)) {
       final bucket = courses
           .where((c) => (c['semester'] as String? ?? 'unknown') == sem)
@@ -72,13 +85,16 @@ class Analytics {
       final o = overall(bucket);
       final gpaCredits = bucket.where(_gpaIncluded).fold<double>(0, (s, c) => s + _credit(c));
       cumSum += (o['four']! * gpaCredits);
+      cumFive += (o['five']! * gpaCredits);
       cumCredits += gpaCredits;
       out.add({
         'semester_idx': sem == 'unknown' ? -1 : _semesterIndex(sem).toDouble(),
         'four': o['four']!,
+        'five': o['five']!,
         'weighted': o['weighted']!,
         'credits': gpaCredits,
         'cumulative_four': cumCredits == 0 ? 0.0 : cumSum / cumCredits,
+        'cumulative_five': cumCredits == 0 ? 0.0 : cumFive / cumCredits,
       });
     }
     return out;
@@ -94,7 +110,7 @@ class Analytics {
   static List<Map<String, dynamic>> creditByCategory(List<Map<String, dynamic>> courses) {
     final byCat = <String, double>{};
     for (final c in courses) {
-      if (!_gpaIncluded(c) && !(c['passed'] as bool? ?? false)) continue;
+      if (!_gpaIncluded(c) && !isPassed(c)) continue;
       if (!(c['credit_included'] as bool? ?? true)) continue;
       final cat = (c['category'] as String? ?? '').trim();
       final key = cat.isEmpty ? '未分类' : cat;
@@ -142,5 +158,39 @@ class Analytics {
       if (neededAvgFour >= e.key) return e.value;
     }
     return neededAvgFour.clamp(0.0, 4.0); // ≤4.0 时五分=四分
+  }
+
+  /// 五分制 what-if 模拟：口径同 simulateGpa（gpaIncluded 过滤 + Σ绩点×学分/Σ学分），
+  /// 但直接用五分绩点，不走 fourFromFive 映射（模拟器默认五分制用）。
+  static double simulateFiveGpa(List<Map<String, dynamic>> courses,
+      List<Map<String, dynamic>> planned) {
+    var sumFive = 0.0, credits = 0.0;
+    for (final c in courses) {
+      if (!_gpaIncluded(c)) continue;
+      sumFive += _five(c) * _credit(c);
+      credits += _credit(c);
+    }
+    for (final p in planned) {
+      sumFive += _five(p) * _credit(p);
+      credits += _credit(p);
+    }
+    return credits == 0 ? 0.0 : sumFive / credits;
+  }
+
+  /// 五分制反推：距目标五分制 GPA，剩余 R 学分需达到的平均五分绩点（闭式解）。
+  /// 与 requiredFiveForTarget 同思路，但目标/结果均为五分制，无 4.3 映射；
+  /// 剩余学分 ≤0、目标超 5.0 或所需平均绩点越界 [0, 5.0] 均视为不可达，返回 null。
+  static double? requiredFiveForTargetFive(List<Map<String, dynamic>> courses,
+      double targetFive, double remainingCredits) {
+    if (remainingCredits <= 0 || targetFive > 5.0) return null;
+    var sumFive = 0.0, credits = 0.0;
+    for (final c in courses) {
+      if (!_gpaIncluded(c)) continue;
+      sumFive += _five(c) * _credit(c);
+      credits += _credit(c);
+    }
+    final needed = (targetFive * (credits + remainingCredits) - sumFive) / remainingCredits;
+    if (needed < 0 || needed > 5.0) return null;
+    return needed;
   }
 }

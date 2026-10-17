@@ -168,5 +168,16 @@ void main() {
       final s = parsePracticeScores(html);
       expect(s['第二课堂'], 3.0);
     });
+    test('页面根本没有课堂数据（登录页/404/改版/未开通）→ 空 Map（上游显示"未获取"）', () {
+      // 核心修复（用户反馈 #12）：绝不把"没拿到数据"渲染成 0 分误导用户。
+      expect(parsePracticeScores('<html><body>请先登录</body></html>'), isEmpty);
+      expect(parsePracticeScores('<html>HTTP Status 404</html>'), isEmpty);
+    });
+    test('有课堂字样但值为 0 → 保留 0.0（真实 0 分，不是缺数据）', () {
+      final html = '<table><tr><td>第二课堂</td><td>0.0</td></tr></table>';
+      final s = parsePracticeScores(html);
+      expect(s['第二课堂'], 0.0);
+      expect(s['第三课堂'], 0.0); // 未出现的课堂补 0 占位（三键契约）
+    });
   });
 }

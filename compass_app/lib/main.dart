@@ -1,6 +1,6 @@
-/// 课舟 App 主入口：底部导航四页（学业/审计/工具/设置）。
-/// 数据流：设置页选源运行 → 状态持有 courses/report/practice → 各页消费。
-/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）。
+/// 课舟 App 主入口：底部导航四页签（学业/方案/选课/设置；审计并入方案页，原「工具」页签并入学业页）。
+/// 数据流：设置页选源运行 → 状态持有 courses/report/practice/choosed/timetable → 各页消费。
+/// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（出厂默认公益免费端点）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
 library;
 
@@ -12,8 +12,15 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import 'data/ai_client.dart';
+import 'data/ai_config.dart';
+import 'data/ai_models.dart';
+import 'data/ai_prompts.dart';
 import 'data/credential_store.dart';
 import 'data/diagnostic_log.dart';
+import 'data/plan_models.dart';
+import 'data/xk_parse.dart'
+    show TimetableParseResult, XkListParseResult, parseXkCourseList;
 import 'data/zju_client.dart';
 import 'data/zju_parse.dart';
 import 'data/zju_parse_ext.dart';
@@ -21,18 +28,22 @@ import 'engine/adapters.dart';
 import 'engine/audit.dart';
 import 'engine/course_marks.dart';
 import 'engine/exam.dart';
-import 'pages/audit_page.dart';
+// 课程类别打通（学分看板「未分类」修复）：用审计方案板块补全展示链路的 category。
+import 'engine/plan_audit_adapter.dart' show applyPlanCategories;
+import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
-import 'widgets/gpa_tools_view.dart';
+import 'widgets/ai_chat.dart';
+import 'widgets/boat_icon.dart';
 
 void main(List<String> args) async {
   // 崩溃自动恢复标记（RegisterApplicationRestart 重启时带 --crashed）
   _crashRecovered = args.contains('--crashed');
+  // PiliPlus 同款窗口管理：异步就绪后显示（绕开引擎默认显示/resize 路径）。
+  // 仅桌面（Windows/macOS/Linux）启用：移动端（iOS/Android/ohos）无此插件实现，
+  // 调用即 MissingPluginException 崩溃。
   WidgetsFlutterBinding.ensureInitialized();
-  // 仅桌面（Windows/macOS/Linux）启用 window_manager：它是 Windows resize 崩溃的
-  // 规避手段（PiliPlus 同款）。移动端（iOS/Android/ohos）无此插件实现，调用即崩。
   if (_isDesktopWindowed) {
     await windowManager.ensureInitialized();
     const options = WindowOptions(
@@ -142,11 +153,20 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+  // 页签索引常量（评审B：插入/调序只改这里，禁止散落裸数字）。
+  // 顺序：0 学业 / 1 方案 / 2 选课 / 3 设置（审计并入方案页，原「工具」页签并入学业页）
+  static const int tabScholar = 0;
+  static const int tabPlan = 1;
+  static const int tabSelect = 2;
+  static const int tabSettings = 3;
+
   final _store = CredentialStore();
   late final ZjuClient _client = ZjuClient(_store);
+  // 全局 AI 对话（诉求 #9）：悬浮入口唤起抽屉；history 跨页签常驻。
+  final _aiCtrl = AiChatController();
   AuditEngine? _engine;
   late final Future<void> _assetsReady; // 启动资产加载完成信号（运行审计前等待）
-  int _tabIndex = 0;
+  int _tabIndex = tabScholar;
 
   DataMode _mode = DataMode.sample;
   String _major = 'computer_science'; // 始终为内置 key（下拉框合法值）
@@ -164,8 +184,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Map<String, Map<String, bool>> _marks = {}; // 本地排除标记（仅学业视图）
   String? _planQuality;
   String? _recordSourceLabel;
+  XkListParseResult? _choosed; // 本学期已选（在修未出成绩，诉求 #8；仅教务模式有值）
+  TimetableParseResult? _timetable; // 本学期课表（诉求 #16；方案页底部周视图数据源）
   bool _busy = false;
   String? _notice;
+  Map<String, dynamic>? _auditPlan; // 当前审计所用方案（选课页做缺口/先修/开课季匹配用）
+  MatchedPlanInfo? _matchedPlan; // 本次数据匹配命中的本人培养方案（设置页展示）
+  Map<String, dynamic>? _selectionSummary; // 选课页上抛的脱敏候选摘要（全局 AI 用）
+  AiConfig _aiConfig = const AiConfig(); // AI 解读配置（出厂无存档时默认公益端点，见 initState）
+  int _aiSessionReset = 0; // 一键清除时自增：通知选课页清掉 AI 问答历史等会话态
 
   static const majors = {
     'computer_science': '计算机科学与技术（样例方案）',
@@ -214,6 +241,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _mode = DataMode.zju;
       });
     }
+    // AI 解读配置：出厂从未存过配置 → 默认「公益免费」端点（开箱即用，诉求 #4：
+    // 免 Key、有限额）；用户显式保存过（含选「关闭」）后完全尊重其选择。
+    // 缺失/损坏回落 none 同样按未存过处理（下次开机仍是免费端点）。
+    final aiCfg = await _store.loadAiConfig();
+    final firstRun =
+        aiCfg.provider == AiProvider.none && !await _store.hasStoredAiConfig();
+    if (mounted) {
+      setState(() => _aiConfig =
+          firstRun ? AiConfig.preset(AiProvider.pollinations) : aiCfg);
+    }
     // 本地排除标记随会话恢复（不依赖登录，粘贴/样例模式同样生效）
     final marksRaw = await _store.readCache('course_marks');
     final marks = parseMarks(marksRaw);
@@ -229,12 +266,66 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               .cast<Map<String, dynamic>>();
           _practice = (s['practice'] as Map? ?? const {})
               .map((k, v) => MapEntry(k.toString(), (v as num).toDouble()));
-          _planQuality = s['plan_quality'] as String?;          _recordSourceLabel = (s['source_label'] as String?) ?? '上次会话数据';
+          _planQuality = s['plan_quality'] as String?;
+          _recordSourceLabel =
+              (s['source_label'] as String?) ?? '上次会话数据';
           _lastDataAt = (s['saved_at'] as String?) != null
               ? DateTime.tryParse(s['saved_at'] as String)
               : null;
+          // 已选课程与审计方案随会话恢复：重启后方案页/选课页/设置页
+          // 仍能显示“本学期已选”和培养方案对应关系，不必等重新联网。
+          final ch = s['choosed'];
+          if (ch is Map) {
+            final state = '${ch['state'] ?? ''}';
+            final rows = (ch['rows'] as List? ?? const []);
+            final issues = <String>[
+              for (final e in (ch['issues'] as List? ?? const [])) '$e'
+            ];
+            if (state == 'empty') {
+              _choosed = const XkListParseResult(
+                  courses: [], state: 'empty', fromCache: true);
+            } else if (state == 'unavailable') {
+              _choosed = XkListParseResult(
+                  courses: const [],
+                  state: 'unavailable',
+                  issues: issues.isEmpty ? const ['已选课程暂不可用'] : issues,
+                  fromCache: true);
+            } else if (rows.isNotEmpty) {
+              try {
+                final parsed =
+                    parseXkCourseList(json.encode(rows), xkkzId: 'choosed');
+                _choosed = XkListParseResult(
+                  courses: parsed.courses,
+                  state: parsed.state,
+                  issues: issues.isEmpty ? parsed.issues : issues,
+                  dropped: parsed.dropped,
+                  blocked: parsed.blocked,
+                  fromCache: true,
+                );
+              } catch (_) {}
+            }
+          }
+          final ap = s['audit_plan'];
+          if (ap is Map) _auditPlan = ap.cast<String, dynamic>();
         });
       } catch (_) {/* 缓存损坏则忽略 */}
+    }
+    // 恢复上次匹配/选定的本人培养方案（带账号校验，换号不串台）。
+    if (_loggedInAs != null) {
+      final selRaw = await _store.readCache('plan_selection');
+      if (selRaw != null) {
+        try {
+          final m = json.decode(selRaw) as Map<String, dynamic>;
+          final owner = (m['student_id'] ?? '').toString().trim();
+          final me = _loggedInAs ?? '';
+          if (owner.isEmpty || me.isEmpty || owner == me) {
+            final info = MatchedPlanInfo.fromJson(m);
+            if (info.zymc.isNotEmpty && mounted) {
+              setState(() => _matchedPlan = info);
+            }
+          }
+        } catch (_) {}
+      }
     }
     // 崩溃自动恢复（RegisterApplicationRestart 带 --crashed）：跳过自动登录
     // 防崩循环，显示恢复提示；用户手动刷新时再走网络。
@@ -274,6 +365,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       'practice': _practice,
       'plan_quality': _planQuality,
       'source_label': _recordSourceLabel,
+      'audit_plan': _auditPlan,
+      'choosed': _choosed == null
+          ? null
+          : {
+              'state': _choosed!.state,
+              'issues': _choosed!.issues,
+              'rows': [for (final c in _choosed!.courses) c.raw],
+            },
       'saved_at': DateTime.now().toIso8601String(),
     }));
   }
@@ -312,12 +411,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() => _notice = out['error'].toString());
       return;
     }
+    // 记录本次审计所用方案（runtime 优先；未知专业静默跳过——选课页对此按"无方案"降级）
+    Map<String, dynamic>? auditPlan;
+    try {
+      auditPlan = engine.findPlan(record['student']['major'] as String);
+    } catch (_) {}
+    // 类别打通（学分看板「未分类」修复）：报告已在 engine.main 里算完，此处
+    // 改写 record 课程行只影响展示链路（学业页学分看板）与 _saveSession 落盘。
+    // 以审计方案的板块为唯一类别事实源，只补空/「未分类」，教务自带 kcxzmc 不动。
+    if (auditPlan != null) {
+      final filled = applyPlanCategories(
+          (record['courses'] as List).cast<Map<String, dynamic>>(), auditPlan);
+      if (filled > 0) {
+        DiagnosticLog.instance.record('课程类别',
+            detail: '按培养方案板块补全 $filled 门课程的类别（展示链路）');
+      }
+    }
     setState(() {
       _report = out['report'] as Map<String, dynamic>;
       _courses = (record['courses'] as List).cast<Map<String, dynamic>>();
+      _auditPlan = auditPlan;
       _notice = null;
       _lastDataAt = DateTime.now();
-      _tabIndex = 2; // 审计完成后自动切到审计页
+      _tabIndex = tabPlan; // 审计完成后自动切到方案页（审计区已并入方案页，诉求 #13）
     });
     unawaited(_saveSession());
   }
@@ -330,13 +446,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _busy = true;
       _recordSourceLabel = '内置样例（$name）';
       _planQuality = null;
+      _matchedPlan = null; // 样例模式不冒充教务匹配方案
+      _choosed = null; // 样例无已选/课表数据，切源即清（方案页对应区块不展示）
+      _timetable = null;
     });
     await _runAudit(rec);
     if (mounted) setState(() => _busy = false);
   }
 
   Future<void> _fromPaste() async {
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _planQuality = null;
+      _matchedPlan = null; // 粘贴模式不冒充教务匹配方案
+      _choosed = null; // 粘贴模式无已选/课表数据
+      _timetable = null;
+    });
     final res = RecordAdapter.run(
         recordText: _pasteCtl.text,
         studentJson: json.encode({
@@ -379,8 +504,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           });
           return;
         }
+        final previous = _loggedInAs;
         await _client.login(username, password);
-        setState(() => _loggedInAs = username);
+        setState(() {
+          if (previous != null && previous != username) {
+            // 换号：上一账号的方案/已选/课表一律不得残留。
+            _matchedPlan = null;
+            _choosed = null;
+            _timetable = null;
+          }
+          _loggedInAs = username;
+        });
       }
       // 并行拉取：成绩（必须）+ 专业/课堂分/考试安排（尽力而为，失败不阻断）。
       // 四路并发经 RequestThrottle 主机级限频（FIFO + 最小间隔削峰），不会触发 zdbk 风控。
@@ -397,9 +531,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _exams = exams;
       });
 
+      // 本学期已选（在修未出成绩，诉求 #8）：best-effort，失败静默；
+      // 仅 SSO 会话可用时调用（样例/粘贴模式不联网拉此数据）。
+      try {
+        final xnXq = _xnXqOf(_current);
+        if (_client.ssoTicket != null && xnXq != null) {
+          final choosed = await _client.fetchXkChoosedCourses(
+              xn: xnXq.$1, xq: xnXq.$2,
+              refresh: !auto); // 手动刷新必须拿新快照，不能吃旧缓存
+          if (mounted) setState(() => _choosed = choosed);
+        }
+      } catch (e) {
+        // 失败不能保留上一学期的旧已选（会显示成当前学期）。
+        if (mounted) {
+          setState(() => _choosed = XkListParseResult(
+              courses: const [],
+              state: 'unavailable',
+              issues: ['已选课程获取失败：$e']));
+        }
+      }
+
       // 专业识别 → 培养方案（方案列表接口 + 客户端匹配；歧义留给「方案」页点选）
       var auditMajor = _major;
       var quality = '';
+      MatchedPlanInfo? matchedNew;
       if (majorName != null) {
         final builtinKey = matchPlanKey(majorName, majors.keys.toList());
         try {
@@ -409,6 +564,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               grade: profile.grade ??
                   inferGradeFromStudentId(_userCtl.text.trim()),
               transcript: courses);
+          final summary = resolved.summary;
+          if (summary != null) {
+            matchedNew = MatchedPlanInfo.fromSummary(
+              summary,
+              level: resolved.matchLevel,
+              ambiguous: resolved.ambiguous,
+              candidateCount: resolved.candidateCount,
+            );
+          }
           final planFile = resolved.planFile;
           if (planFile != null) {
             final key = builtinKey ?? 'zdbk:$majorName';
@@ -428,7 +592,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               '审计将使用当前选择器方案（结果仅供参考）';
         }
       }
-      setState(() => _planQuality = quality.isEmpty ? null : quality);
+      setState(() {
+        _planQuality = quality.isEmpty ? null : quality;
+        _matchedPlan = matchedNew; // 匹配失败即清空，避免残留上一账号/上一次方案
+      });
 
       // 学期/年级自动推断（学期选择器值保持合法：仅接受标准格式）
       final sem = currentSemesterFrom(courses);
@@ -439,11 +606,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         'grade': grade ?? _current.substring(0, 4),
         'current_semester': _current,
       };
+      // 注意：不要把 _current 覆盖成成绩单最晚学期——否则下一次刷新已选课程
+      // 会去查错学期（历史 bug）。sem 只用于本次审计的 student 记录。
       if (sem != null) {
         student['current_semester'] = sem;
-        if (RegExp(r'^20\d{2}-[AB]$').hasMatch(sem)) {
-          setState(() => _current = sem);
-        }
       }
       final rec = <String, dynamic>{
         'student': student,
@@ -456,6 +622,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             '${majorName != null ? '｜$majorName' : ''}';
       });
       await _runAudit(rec);
+      // 本学期课表（诉求 #16）：审计成功后异步拉取（失败静默），方案页底部展示周视图。
+      unawaited(_loadTimetable());
     } on AuthException catch (e) {
       if (!auto) setState(() => _notice = e.message);
     } catch (e) {
@@ -466,8 +634,89 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (mounted) setState(() => _busy = false);
   }
 
+  /// 学期选择器值 → 已选课程接口的 xn/xq（诉求 #8）：
+  /// '2026-A'→('2026-2027','1')、'-B'→'2'、'-C'→'3'（短学期）。
+  /// 非标准格式返回 null（宁缺勿猜）。
+  static (String, String)? _xnXqOf(String current) {
+    final m = RegExp(r'^(\d{4})-([ABC])$').firstMatch(current.trim());
+    if (m == null) return null;
+    final xn = '${m.group(1)}-${int.parse(m.group(1)!) + 1}';
+    final xq = switch (m.group(2)) { 'A' => '1', 'B' => '2', _ => '3' };
+    return (xn, xq);
+  }
+
+  /// 本学期课表（诉求 #16）：best-effort，未登录/失败静默跳过（方案页有数据才展示）。
+  Future<void> _loadTimetable() async {
+    if (_client.ssoTicket == null) return;
+    try {
+      final tt = await _client.fetchTimetableSlots();
+      if (mounted) setState(() => _timetable = tt);
+    } catch (_) {/* 静默：课表是辅助视图，失败不打扰 */}
+  }
+
+  /// AI 配置保存（沙箱落盘 + 内存态刷新）。
+  Future<void> _setAiConfig(AiConfig cfg) async {
+    await _store.saveAiConfig(cfg);
+    if (mounted) setState(() => _aiConfig = cfg);
+  }
+
+  /// AI 连接测试：最小请求验证密钥/地址（不携带任何教务数据）。
+  /// 全 catch 兜底：AiClient 有意只捕 Exception（Error 属编程缺陷）；但测试按钮
+  /// 不能因此软锁死，任何意外都要回落成可读文案（评审实测：漏写 scheme 会抛 Error）。
+  Future<String> _testAi(AiConfig cfg) async {
+    try {
+      final client = AiClient(cfg);
+      final out = await client.chat(
+        system: '你是连接测试助手。',
+        messages: const [
+          {'role': 'user', 'content': '请只回复：连接正常'}
+        ],
+        // claude-opus-5-5 自适应思考计入 max_tokens，给小了对端可能只思考不吐字
+        maxTokens: 4096,
+      );
+      return switch (out) {
+        AiReply(:final text) => '连接正常（模型：${text.trim()}）',
+        AiFailure(:final message) => '连接失败：$message',
+      };
+    } catch (_) {
+      return '连接失败：请求异常（请检查接口地址格式后重试）';
+    }
+  }
+
+  /// 给全局 AI 对话的上下文摘要：学业（成绩概览+课程）+ 培养方案 + 审计报告 +
+  /// 选课（候选/课表/已选）。不含学号、姓名、凭证；摘要只进 system，不展示给用户。
+  String? _aiContextSummary() {
+    try {
+      final summary = buildAiContextJson(
+        transcript: _courses,
+        practice: _practice,
+        exams: _exams,
+        report: _report,
+        plan: _auditPlan,
+        matchedPlan: _matchedPlan,
+        timetable: _timetable,
+        choosed: _choosed,
+        selection: _selectionSummary,
+      );
+      return summary.trim().isEmpty ? null : summary;
+    } catch (_) {
+      // 摘要构造失败不应阻断 AI 对话：按无上下文继续（模型会提示数据不足）。
+      return null;
+    }
+  }
+
+  /// 拉取模型列表（设置页「拉取模型」按钮）。异常兜底成可读文案。
+  Future<AiModelsResult> _listAiModels(AiConfig cfg) async {
+    try {
+      return await AiClient(cfg).listModels();
+    } catch (_) {
+      return AiModelsResult.failure('请求异常（请检查接口地址格式后重试）');
+    }
+  }
+
   Future<void> _clearData() async {
     await _store.deleteCredentials();
+    await _store.deleteAiConfig(); // AI 密钥属"全部本地数据"，必须一并删除（合规承诺）
     await _store.clearCache();
     _store.clearMemory();
     _client.disposeClient();
@@ -484,13 +733,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _loggedInAs = null;
       _lastDataAt = null;
       _notice = null;
+      _auditPlan = null;
+      _matchedPlan = null;
+      _selectionSummary = null;
+      _choosed = null;
+      _timetable = null;
+      _aiConfig = const AiConfig();
+      _aiSessionReset++; // 让选课页清掉 AI 问答历史（含上一账号的课程名/解读文本）
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
+      // 无 AppBar：手机上不包 SafeArea 会把首屏内容画进状态栏（遮挡修复 #3）。
+      // bottom=false，底部由 NavigationBar 自行占位。
+      body: SafeArea(
+        top: true,
+        bottom: false,
+        child: IndexedStack(
         index: _tabIndex,
         children: [
           ScholarPage(
@@ -499,8 +760,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             exams: _exams,
             marks: _marks,
             onMark: _setMark,
+            choosed: _choosed,
             sourceLabel: _recordSourceLabel,
-            onGoSettings: () => setState(() => _tabIndex = 4),
+            onGoSettings: () => setState(() => _tabIndex = tabSettings),
+            // 快捷卡两入口（诉求 #16）：培养方案 / 我的课表（课表周视图在方案页底部，
+            // 两卡暂都跳方案页签，不新增页签）。
+            onGoPlan: () => setState(() => _tabIndex = tabPlan),
+            onGoTimetable: () => setState(() => _tabIndex = tabPlan),
             onRefresh: () async => switch (_mode) {
               DataMode.sample => _fromSample(),
               DataMode.paste => _fromPaste(),
@@ -512,10 +778,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             store: _store,
             loggedIn: _loggedInAs != null,
             transcript: _courses,
-            onGoSettings: () => setState(() => _tabIndex = 4),
+            onGoSettings: () => setState(() => _tabIndex = tabSettings),
+            report: _report,
+            choosed: _choosed,
+            timetable: _timetable,
+            plan: _auditPlan,
+            onPlanSelected: (info) =>
+                setState(() => _matchedPlan = info),
           ),
-          AuditPage(report: _report, planQuality: _planQuality),
-          GpaToolsView(courses: _coursesViewed),
+          CourseSelectPage(
+            client: _client,
+            store: _store,
+            loggedIn: _loggedInAs != null,
+            active: _tabIndex == tabSelect,
+            currentSemester: _current,
+            transcript: _courses,
+            plan: _auditPlan,
+            report: _report,
+            choosed: _choosed,
+            timetable: _timetable,
+            aiConfig: _aiConfig,
+            resetToken: _aiSessionReset,
+            onGoSettings: () => setState(() => _tabIndex = tabSettings),
+            onAiContext: (s) => _selectionSummary = s,
+          ),
           SettingsPage(
             mode: _mode,
             onModeChange: (m) => setState(() => _mode = m),
@@ -537,8 +823,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             loggedInAs: _loggedInAs,
             lastDataAt: _lastDataAt,
             onClearData: _clearData,
+            aiConfig: _aiConfig,
+            onAiConfigChange: _setAiConfig,
+            onTestAi: _testAi,
+            onListAiModels: _listAiModels,
+            courses: _courses,
+            choosed: _choosed,
+            matchedPlan: _matchedPlan,
+            planNote: _planQuality,
+            onGoPlan: () => setState(() => _tabIndex = tabPlan),
           ),
         ],
+        ),
+      ),
+      // 全局 AI 对话悬浮入口（诉求 #9）。上下文摘要由 buildAiContextJson 汇总
+      // 学业/方案/审计/选课的脱敏子集（不含姓名/学号/凭证），只进 system 消息。
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => showAiChat(
+          context,
+          controller: _aiCtrl,
+          config: _aiConfig,
+          onGoSettings: () => setState(() => _tabIndex = tabSettings),
+          // 每一轮发送前重新生成，聊天过程中数据更新后 AI 也能读到最新值。
+          contextProvider: _aiContextSummary,
+        ),
+        tooltip: 'AI 助手',
+        child: const BoatIcon(size: 26),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
@@ -553,13 +863,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               selectedIcon: Icon(CurriculumPlanPage.tabIconSelected),
               label: CurriculumPlanPage.tabLabel),
           NavigationDestination(
-              icon: Icon(Icons.fact_check_outlined),
-              selectedIcon: Icon(Icons.fact_check),
-              label: '审计'),
-          NavigationDestination(
-              icon: Icon(Icons.trending_up_outlined),
-              selectedIcon: Icon(Icons.trending_up),
-              label: '工具'),
+              icon: Icon(CourseSelectPage.tabIcon),
+              selectedIcon: Icon(CourseSelectPage.tabIconSelected),
+              label: CourseSelectPage.tabLabel),
           NavigationDestination(
               icon: Icon(Icons.settings_outlined),
               selectedIcon: Icon(Icons.settings),

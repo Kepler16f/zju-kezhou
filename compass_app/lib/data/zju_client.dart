@@ -19,10 +19,15 @@ import 'dart:io';
 import 'dart:isolate';
 
 import '../engine/exam.dart';
+import '../engine/plan_audit_adapter.dart';
 import 'credential_store.dart';
 import 'diagnostic_log.dart';
+import 'pdf_text_extractor.dart';
 import 'plan_models.dart';
+import 'plan_pdf_parse.dart';
 import 'request_throttle.dart';
+import 'xk_models.dart';
+import 'xk_parse.dart';
 import 'zju_parse.dart';
 import 'zju_parse_ext.dart';
 
@@ -553,6 +558,13 @@ class ZjuClient {
     return resp.body;
   }
 
+  /// 探针/诊断专用：原始 GET HTML / POST JSON（只读；不记正文、不落盘、App 业务 UI 不调用）。
+  /// 用于接口形态回归取证（如选课入口结构变化）。
+  Future<String> rawGetHtmlForProbe(String path) => _getHtml(path);
+
+  Future<String> rawPostForProbe(String path, Map<String, String> form) =>
+      _postQuery(Uri.parse('$_zdbk/jwglxt/$path'), form);
+
   // ── 业务接口：专业识别 / 培养方案 / 实践分 ─────────────────────────
   /// 本人学号（正方部分接口不带 su= 会返回空数据，登录时已存）。
   String? get _studentId => store.memory('student_id');
@@ -1058,6 +1070,7 @@ class ZjuClient {
             ...result.notes,
             '已沿用你上次选定的方案：${picked.plan.zymc} ${picked.plan.synj} 级',
           ],
+          ambiguous: result.ambiguous,
         );
       }
     }
@@ -1065,25 +1078,35 @@ class ZjuClient {
   }
 
   /// 记住用户选定的方案（下次自动沿用；只存非敏感标识与名称）。
-  Future<void> selectPlan(PlanSummary plan) async {
-    await store.saveCache(
-        'plan_selection',
-        json.encode({
-          'jxjhh': plan.jxjhh,
-          'pyfaxx_id': plan.pyfaxxId,
-          'zymc': plan.zymc,
-          'synj': plan.synj,
-          'zydm': plan.zydm,
-          'selected_at': DateTime.now().toIso8601String(),
-        }));
+  /// 额外保存匹配强度/歧义/候选数，供设置页「我的培养方案」展示。
+  Future<void> selectPlan(
+    PlanSummary plan, {
+    PlanMatchLevel level = PlanMatchLevel.none,
+    bool ambiguous = false,
+    int candidateCount = 0,
+  }) async {
+    final info = MatchedPlanInfo.fromSummary(
+      plan,
+      level: level,
+      ambiguous: ambiguous,
+      candidateCount: candidateCount,
+    );
+    final payload = info.toJson();
+    payload['student_id'] = store.memory('student_id') ?? '';
+    payload['selected_at'] = DateTime.now().toIso8601String();
+    await store.saveCache('plan_selection', json.encode(payload));
   }
 
   /// 上次选定的方案 id（教学计划号优先）。
+  /// 带账号校验：缓存属于上一个学号时视为无缓存，避免把别人的方案显示给自己。
   Future<String?> savedPlanId() async {
     final raw = await store.readCache('plan_selection');
     if (raw == null) return null;
     try {
       final m = json.decode(raw) as Map<String, dynamic>;
+      final owner = (m['student_id'] ?? '').toString().trim();
+      final me = store.memory('student_id') ?? '';
+      if (owner.isNotEmpty && me.isNotEmpty && owner != me) return null;
       final id = (m['jxjhh'] ?? m['pyfaxx_id'] ?? '').toString().trim();
       return id.isEmpty ? null : id;
     } catch (_) {
@@ -1338,12 +1361,24 @@ class ZjuClient {
       );
       notes.add('课程明细来自教务接口，共 ${table.length} 门');
     } else {
-      planFile =
-          planFileFromSummary(plan, grade: plan.synj, transcript: transcript);
-      notes.add('教务未开放逐门课程表（学生端只有 PDF 预览），'
-          '已按方案摘要（专业核心课/核心实践课/前沿与荣誉课程）构建');
+      // 学生端课程明细接口不开放（实测 HTTP 910）——改走官方培养方案 PDF 全文解析：
+      // 板块/课程完整（实测 30 板块 / 88 门），审计不再把大量已修课误报"未匹配到方案"
+      //（用户反馈 #7/#6：方案页标亮的课审计却说没匹配）。失败才退回摘要口径。
+      final pdf = await _auditPlanFileFromPdf(plan, transcript);
+      if (pdf != null) {
+        planFile = pdf;
+        notes.add('课程清单来自官方培养方案 PDF 解析（完整板块与课程表）');
+      } else {
+        planFile =
+            planFileFromSummary(plan, grade: plan.synj, transcript: transcript);
+        notes.add('教务未开放逐门课程表且 PDF 解析未成功，'
+            '已按方案摘要（专业核心课/核心实践课/前沿与荣誉课程）构建');
+      }
     }
-    await selectPlan(plan);
+    await selectPlan(plan,
+        level: best.level,
+        ambiguous: result.ambiguous,
+        candidateCount: result.candidates.length);
     _log('培养方案', detail: '${plan.zymc} ${plan.synj} 级'
         '（${plan.id}）｜课程 ${table.length} 门｜学分 ${plan.creditsLabel}');
     return ResolvedPlan(
@@ -1352,8 +1387,43 @@ class ZjuClient {
       courseTable: table,
       notes: notes,
       matched: true,
+      matchLevel: best.level,
+      ambiguous: result.ambiguous,
+      candidateCount: result.candidates.length,
     );
   }
+  /// 学生端无课程明细接口时，用官方培养方案 PDF 全文解析构建审计 PlanFile。
+  /// 缓存优先（与课程规划页 [readBinaryCache] 同名 `planpdf_<id>.pdf` 复用同一份），
+  /// 命中不重复下载；无缓存再拉并落盘。PDF 缺失 / 解析出 0 板块 → 返回 null，
+  /// 调用方回落 planFileFromSummary。任何异常吞掉返回 null（宁缺勿崩，红线只读）。
+  Future<Map<String, dynamic>?> _auditPlanFileFromPdf(
+      PlanSummary plan, List<Map<String, dynamic>> transcript) async {
+    try {
+      final id = plan.jxjhh.isNotEmpty ? plan.jxjhh : plan.id;
+      final name = 'planpdf_${id.replaceAll(RegExp(r'[^0-9A-Za-z_-]'), '')}.pdf';
+      var bytes = await store.readBinaryCache(name);
+      if (bytes == null) {
+        bytes = await fetchPlanPdf(plan);
+        if (bytes != null) await store.saveBinaryCache(name, bytes);
+      }
+      if (bytes == null || bytes.isEmpty) return null;
+      final parsed = parsePlanPdfText(extractPdfText(bytes));
+      if (parsed.isEmpty) return null;
+      return planFileFromPdf(
+        parsed,
+        major: plan.zymc.isEmpty ? plan.id : plan.zymc,
+        grade: plan.synj,
+        totalCredits: plan.zdbyxf,
+        transcript: transcript,
+        sourceDoc: '教务网培养方案 ${plan.zymc} ${plan.synj} 级'
+            '（教学计划号 ${plan.jxjhh}｜官方 PDF 解析）',
+      );
+    } catch (e) {
+      _log('审计方案(PDF)', level: 'warn', detail: '$e');
+      return null;
+    }
+  }
+
   /// 实践分/课堂分（第二三四课堂，N108001 + su=）。
   Future<Map<String, double>> fetchPracticeScores() async {
     await ensureZdbkSession();
@@ -1434,5 +1504,583 @@ class ZjuClient {
       if (e.location.isNotEmpty) 'jsmc': e.location,
       if (e.seat.isNotEmpty) 'zwh': e.seat,
     };
+  }
+
+  // ── 业务接口：选课(xsxk)（只读；提交/退课等写接口绝不调用，见 docs/选课模块接入说明.md）──
+  // 两套页面形态（LIVE 取证 2026-10-16）：
+  //  - 通用正方：zzxkyzb_cxZzxkYzbIndex.html?gnmkdm=N253512（入口=轮次×类别 xkkz_id）；
+  //  - 浙大：zzxkghb_cxZzxkGhbIndex.html?gnmkdm=N253530（入口=课程类别 dl，列表走 KcList）。
+  // 浙大实例 N253512 路径直接 404，故双路径都试，以能解出入口者为准。
+
+  static const _xkIndexPath = 'xsxk/zzxkyzb_cxZzxkYzbIndex.html';
+  static const _xkListPath = 'xsxk/zzxkyzb_cxZzxkYzbPartDisplay.html';
+  static const _xkMenu = 'N253512';
+  static const _xkGhbIndexPath = 'xsxk/zzxkghb_cxZzxkGhbIndex.html';
+  static const _xkGhbListPath = 'xsxk/zzxkghb_cxZzxkGhbKcList.html';
+  static const _xkGhbMenu = 'N253530';
+
+  /// 缓存键分量编码：base64url（去掉 '='）保住原值，避免 _cacheSafe 把不同 xkkzId
+  /// 清洗成同一个键（如 'AB-CD' 与 'ABCD' 撞键，评审L2）。
+  static String _cacheToken(String s) =>
+      base64Url.encode(utf8.encode(s)).replaceAll('=', '');
+
+  /// 上次选课入口是否来自缓存（UI 据此提示"离线/可能过期"）。
+  bool lastXkIndexFromCache = false;
+
+  /// 选课首页：入口（类别×轮次）发现 + 查询参数采集（隐藏域）。
+  /// 轮次信息内嵌于页面 onclick（无独立轮次接口，评审A1）；xklc 拿不到就留空，不臆取。
+  /// 缓存策略（评审L2 改口径）：**缓存优先**——回读带「可能过期」标注，「刷新入口」走直连；
+  /// xkkz_id 随选课批次变化，缓存可能过期是已知事实（UI 已如实标注）。
+  Future<XkIndexParseResult> fetchXkIndex({bool refresh = false}) async {
+    const cacheKey = 'xk_index';
+    Future<XkIndexParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached);
+        if (obj is! Map) return null;
+        // 缓存 schema 版本：旧版本可能把 zju_ghb/hidden 空值写坏，直接失效重拉。
+        if ((obj['v'] as num?)?.toInt() != 2) return null;
+        final rounds = <XkRound>[];
+        for (final r in (obj['rounds'] as List? ?? const [])) {
+          if (r is Map && '${r['xkkz_id'] ?? ''}'.isNotEmpty) {
+            rounds.add(XkRound(
+              xkkzId: '${r['xkkz_id']}',
+              kklxdm: '${r['kklxdm'] ?? ''}',
+              xklc: '${r['xklc'] ?? ''}'.isEmpty ? null : '${r['xklc']}',
+              label: '${r['label'] ?? ''}',
+            ));
+          }
+        }
+        if (rounds.isEmpty) return null;
+        return XkIndexParseResult(
+          rounds: rounds,
+          xkxnm: obj['xkxnm']?.toString(),
+          xkxqm: obj['xkxqm']?.toString(),
+          firstXkkzId: obj['firstXkkzId']?.toString(),
+          issues: const ['读取自本地缓存（可能过期，请刷新）'],
+          queryCourseHits: (obj['hits'] as num?)?.toInt() ?? rounds.length,
+          zjuGhb: obj['zju_ghb'] == true,
+          hiddenFields: {
+            for (final e in ((obj['hidden'] as Map?) ?? const {}).entries)
+              '${e.key}': '${e.value}',
+          },
+          fromCache: true,
+          fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) {
+        lastXkIndexFromCache = true;
+        return cached;
+      }
+    }
+    lastXkIndexFromCache = false;
+    try {
+      await ensureZdbkSession();
+      var html =
+          await _getHtml('$_xkIndexPath?gnmkdm=$_xkMenu&layout=default$_suParam');
+      var parsed = parseXkIndexHtml(html);
+      // 浙大实例：通用路径 404/无入口 → 改打浙大自主选课页（zzxkGhb）。
+      final is404 = html.contains('HTTP Status 404');
+      if (parsed.rounds.isEmpty && !parsed.zjuGhb) {
+        final hbHtml = await _getHtml(
+            '$_xkGhbIndexPath?gnmkdm=$_xkGhbMenu&layout=default$_suParam');
+        final hbParsed = parseXkIndexHtml(hbHtml);
+        if (hbParsed.rounds.isNotEmpty) {
+          parsed = hbParsed;
+          html = hbHtml;
+        } else if (is404) {
+          // 两页都不通：保留通用路径的 issues，但如实提到 404
+          parsed = XkIndexParseResult(
+              rounds: const [],
+              hiddenFields: parsed.hiddenFields,
+              issues: [...parsed.issues, ...hbParsed.issues]);
+        }
+      }
+      if (parsed.rounds.isNotEmpty) {
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'v': 2,
+              'fetched_at': DateTime.now().millisecondsSinceEpoch,
+              'xkxnm': parsed.xkxnm,
+              'xkxqm': parsed.xkxqm,
+              'firstXkkzId': parsed.firstXkkzId,
+              'hits': parsed.queryCourseHits,
+              'zju_ghb': parsed.zjuGhb,
+              'hidden': parsed.hiddenFields,
+              'rounds': [
+                for (final x in parsed.rounds)
+                  {
+                    'xkkz_id': x.xkkzId,
+                    'kklxdm': x.kklxdm,
+                    'xklc': x.xklc,
+                    'label': x.label,
+                  }
+              ],
+            }));
+      }
+      _log('选课入口',
+          detail: '命中 ${parsed.queryCourseHits} 处｜入口 ${parsed.rounds.length} 个'
+              '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      return parsed;
+    } on RateLimitedException {
+      final cached = await fromCache();
+      lastXkIndexFromCache = cached != null;
+      _log('选课入口', level: 'warn',
+          detail: '限频退避，${cached == null ? '无缓存' : '降级缓存'}');
+      return cached ??
+          const XkIndexParseResult(rounds: [], issues: ['限频退避且无缓存，请稍后再试']);
+    } catch (e) {
+      final cached = await fromCache();
+      lastXkIndexFromCache = cached != null;
+      _log('选课入口', level: 'warn', detail: '$e${cached == null ? '' : '（降级缓存）'}');
+      return cached ??
+          XkIndexParseResult(rounds: const [], issues: ['选课入口获取失败：$e']);
+    }
+  }
+
+  /// 上次课程列表是否来自缓存（UI 据此提示"离线/可能过期"）。
+  bool lastXkListFromCache = false;
+
+  /// 软封禁冷却窗（用户反馈：网页正常、App 突然全部看不到）。机制：正方 WAF 对
+  /// 高频列表请求回 200+HTML 登录页（_postQuery 的会话重试兜不住时），此时继续
+  /// 打请求只会延长封锁。检测到 blocked 信号后 90 秒内不再发列表网络请求，
+  /// 有缓存回缓存；窗口过后首个请求自然试探恢复。仅作用于列表链路（选课页），
+  /// 成绩/课表等主链路有自己的 throttle/重试纪律，不受影响。
+  static const _xkSoftBlockWindow = Duration(seconds: 90);
+
+  /// 空列表缓存 TTL：选课未开放/参数瞬时缺失时接口会回 []，
+  /// 不能像 data 一样永久有效；过期后自动重新请求。
+  static const _xkEmptyCacheTtl = Duration(minutes: 5);
+  DateTime? _xkSoftBlockedUntil;
+  bool get xkListCoolingDown =>
+      _xkSoftBlockedUntil != null && DateTime.now().isBefore(_xkSoftBlockedUntil!);
+  int get xkListCooldownRemainingSeconds {
+    final u = _xkSoftBlockedUntil;
+    if (u == null) return 0;
+    final left = u.difference(DateTime.now()).inSeconds;
+    return left > 0 ? left : 0;
+  }
+
+  /// 某入口（xkkz_id）的课程列表（只读）。
+  /// 参数策略（评审A2）：以首页采集的 hiddenFields 为底 + 本次 xkkz_id/kklxdm + 防缓存
+  /// nd/time；正方对缺参数回空数据而不报错（更难发现），所以参数宁全勿缺。
+  /// 三态（评审A6）：data/empty 才落缓存；unavailable 绝不落缓存、绝不当「无课」。
+  /// 缓存策略（评审L2）：缓存优先（issues/dropped 原样随缓存落盘回读；回读重解析若降级为
+  /// unavailable 视同无缓存）；键用 base64url 编码分量，防清洗撞键。
+  Future<XkListParseResult> fetchXkCourses({
+    required XkRound round,
+    Map<String, String> hiddenFields = const {},
+    String? xkxnm,
+    String? xkxqm,
+    bool zjuGhb = false, // 浙大自主选课页形态（入口=课程类别 dl）
+    bool refresh = false,
+  }) async {
+    final term =
+        ((xkxnm ?? '').isNotEmpty && (xkxqm ?? '').isNotEmpty) ? '$xkxnm-$xkxqm' : '';
+    // 缓存键带 kklxdm：同一 dl 的 bl/zl 子入口不能互相覆盖。
+    final cacheKey = 'xk_${_cacheToken(term)}_${_cacheToken(round.xkkzId)}'
+        '_${_cacheToken(round.kklxdm)}';
+    Future<XkListParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached);
+        if (obj is! Map) return null;
+        final state = '${obj['state'] ?? ''}';
+        final at = (obj['fetched_at'] as num?)?.toInt() ?? 0;
+        // 原始 issues/dropped 随缓存落盘并原样回读（重解析会丢"有 N 行被跳过"这类留痕，评审L2）
+        final storedIssues =
+            (obj['issues'] as List? ?? const []).map((e) => '$e').toList();
+        final storedDropped = (obj['dropped'] as num?)?.toInt() ?? 0;
+        if (state == 'empty') {
+          final age = at > 0
+              ? DateTime.now().millisecondsSinceEpoch - at
+              : null;
+          // 空结果只短暂有效；过期视同无缓存，自动重新请求。
+          if (age == null || age > _xkEmptyCacheTtl.inMilliseconds) {
+            return null;
+          }
+          return XkListParseResult(
+              courses: const [],
+              state: 'empty',
+              issues: [...storedIssues, '读取自本地缓存（可能过期，请刷新）'],
+              fromCache: true,
+              fetchedAtMillis: at);
+        }
+        final rows = obj['rows'] as List? ?? const [];
+        final parsed = parseXkCourseList(json.encode({'tmpList': rows}),
+            xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
+        // 回读重解析若降级为 unavailable（行损坏/字段名变更）：视同无缓存，交给网络刷新
+        if (parsed.state == 'unavailable') return null;
+        return XkListParseResult(
+          courses: parsed.courses,
+          state: parsed.state,
+          issues: [...storedIssues, '读取自本地缓存（可能过期，请刷新）'],
+          dropped: storedDropped,
+          fromCache: true,
+          fetchedAtMillis: at,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) {
+        lastXkListFromCache = true;
+        return cached;
+      }
+    }
+    // 软封禁冷却窗：命中风控/HTML 登录页后，自动/批量请求在窗口内短路
+    //（有缓存回缓存，否则如实提示稍候恢复）——继续轰炸只会延长封锁（用户反馈：
+    // 网页正常、App 突然看不到）。显式刷新放行，作为窗口到期后的单次探测。
+    if (!refresh && xkListCoolingDown) {
+      final cached = await fromCache();
+      return cached ??
+          XkListParseResult(
+              courses: const [],
+              state: 'unavailable',
+              blocked: true,
+              issues: [
+                '触发教务访问频率保护（网页端不受影响）：已自动冷却，'
+                '约 ${xkListCooldownRemainingSeconds} 秒后恢复自动拉取；'
+                '也可稍后点「刷新入口」重试。'
+              ]);
+    }
+    String firstNonEmpty(Iterable<String?> values) {
+      for (final v in values) {
+        final s = (v ?? '').trim();
+        if (s.isNotEmpty) return s;
+      }
+      return '';
+    }
+
+    lastXkListFromCache = false;
+    try {
+      await ensureZdbkSession();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final String text;
+      if (zjuGhb) {
+        // 浙大 zzxkGhb：入口=类别 dl，参数来自首页隐藏域（xn/xq/nj/zydm）。
+        // 空串不是有效值：必须用“第一个非空”回填，否则 xnxq 会变成 (-)-，
+        // 服务端返回 [] 并被误缓存成“该类别无课”。
+        final xn = firstNonEmpty([hiddenFields['xn'], xkxnm]);
+        final xq = firstNonEmpty([hiddenFields['xq'], xkxqm]);
+        final nj = firstNonEmpty([hiddenFields['nj'], hiddenFields['njdm_id']]);
+        final zydm = firstNonEmpty([
+          hiddenFields['zydm'],
+          hiddenFields['zyh_id'],
+          hiddenFields['bh_id'],
+        ]);
+        if (xn.isEmpty || xq.isEmpty) {
+          _log('选课列表', level: 'warn',
+              detail: '${round.label}｜学年/学期隐藏域缺失（xn="$xn", xq="$xq"）');
+          return XkListParseResult(
+            courses: const [],
+            state: 'unavailable',
+            issues: [
+              '选课首页的学年/学期隐藏域缺失，未请求该类别；'
+                  '请点「刷新入口」重新获取选课首页后再试'
+            ],
+          );
+        }
+        final uri = Uri.parse('$_zdbk/jwglxt/$_xkGhbListPath')
+            .replace(queryParameters: {
+          'gnmkdm': _xkGhbMenu,
+          if ((_studentId ?? '').isNotEmpty) 'su': _studentId!,
+          'doType': 'query',
+          'nd': '$now',
+          'time': '0',
+        });
+        final body = <String, String>{
+          // 首页全部隐藏域先带上（rwlx/jg_id/xqh_id/filter_list 等），再覆盖关键项。
+          ...hiddenFields,
+          'dl': round.xkkzId,
+          'lx': round.kklxdm.isEmpty ? 'bl' : round.kklxdm,
+          'xkmc': '',
+          'kcbs': '',
+          'nj': nj,
+          'xn': xn,
+          'xq': xq,
+          'zydm': zydm,
+          'jxjhh': '',
+          'xnxq': '($xn-$xq)-',
+          'kspage': '1',
+          'jspage': '1000',
+        };
+        text = await _postQuery(uri, body,
+            referer: '$_zdbk/jwglxt/$_xkGhbIndexPath'
+                '?gnmkdm=$_xkGhbMenu&layout=default$_suParam');
+      } else {
+        final query = <String, String>{
+          ...hiddenFields,
+          'gnmkdm': _xkMenu,
+          'doType': 'query',
+          'xkkz_id': round.xkkzId,
+          if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
+          if (term.isNotEmpty) 'xkxnm': xkxnm!,
+          if (term.isNotEmpty) 'xkxqm': xkxqm!,
+          'nd': '$now',
+          'time': '0',
+        };
+        final su = _studentId;
+        if (su != null && su.isNotEmpty) query['su'] = su;
+        final uri =
+            Uri.parse('$_zdbk/jwglxt/$_xkListPath').replace(queryParameters: query);
+        text = await _postQuery(uri, {
+          ...hiddenFields,
+          'xkkz_id': round.xkkzId,
+          if (round.kklxdm.isNotEmpty) 'kklxdm': round.kklxdm,
+          if (term.isNotEmpty) 'xkxnm': xkxnm!,
+          if (term.isNotEmpty) 'xkxqm': xkxqm!,
+          'kspage': '1',
+          'jspage': '1000',
+        });
+      }
+      final parsed = parseXkCourseList(text,
+          xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
+      if (parsed.state == 'data' || parsed.state == 'empty') {
+        _xkSoftBlockedUntil = null; // 正常 JSON：复位冷却窗
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': now,
+              'state': parsed.state,
+              'label': round.label,
+              'issues': parsed.issues,
+              'dropped': parsed.dropped,
+              'rows': [for (final c in parsed.courses) c.raw],
+            }));
+      } else if (parsed.blocked) {
+        // 风控/HTML 登录页：进入冷却窗，窗口内短路后续列表请求（含已选/课表同源信号），
+        // 让服务端反爬窗口自然平息。刷新按钮可越过窗口做单次探测。
+        _xkSoftBlockedUntil = DateTime.now().add(_xkSoftBlockWindow);
+        _log('选课列表', level: 'warn',
+            detail: '${round.label}｜软封禁，冷却 ${_xkSoftBlockWindow.inSeconds}s');
+      }
+      // 日志只记 入口/状态/条数/首条 issue —— 绝不记完整 URL（含 su）与响应正文（评审A11）
+      if (parsed.state != 'unavailable' || !parsed.blocked) {
+        _log('选课列表',
+            detail: '${round.label.isEmpty ? round.xkkzId : round.label}｜${parsed.state}'
+                '｜${parsed.courses.length} 条'
+                '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      }
+      return parsed;
+    } on RateLimitedException {
+      final cached = await fromCache();
+      lastXkListFromCache = cached != null;
+      _xkSoftBlockedUntil = DateTime.now().add(_xkSoftBlockWindow); // 限频同属软封禁
+      _log('选课列表', level: 'warn',
+          detail: '限频退避，${cached == null ? '无缓存' : '降级缓存'}');
+      return cached ??
+          XkListParseResult(
+              courses: const [],
+              state: 'unavailable',
+              blocked: true,
+              issues: ['限频退避且无缓存，请稍后再试']);
+    } catch (e) {
+      final cached = await fromCache();
+      lastXkListFromCache = cached != null;
+      _log('选课列表', level: 'warn', detail: '$e${cached == null ? '' : '（降级缓存）'}');
+      return cached ??
+          XkListParseResult(
+              courses: const [], state: 'unavailable', issues: ['课程列表获取失败：$e']);
+    }
+  }
+
+  /// 上次课表时隙是否来自缓存。
+  bool lastTimetableFromCache = false;
+
+  /// 已选课程（zzxkGhb Choosed，只读；LIVE 取证：POST xn/xq → 裸数组 JSON，
+  /// 行含 kcdm/kcmc/xf/jsxm/xxq/sksj/xkkh 等）。诉求 #8：审计要区分
+  /// 「已获得学分（成绩单）」与「本学期已选（在修未出成绩）」，此接口即后者数据源。
+  /// 缓存原始行回读重解析（与课表同款纪律）；失败不缓存、如实 unavailable。
+  Future<XkListParseResult> fetchXkChoosedCourses({
+    required String xn,
+    required String xq,
+    bool refresh = false,
+  }) async {
+    final cacheKey = 'xk_choosed_${_cacheToken('$xn-$xq')}';
+    Future<XkListParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached);
+        if (obj is! Map) return null;
+        final state = '${obj['state'] ?? ''}';
+        if (state == 'empty') {
+          return XkListParseResult(
+            courses: const [],
+            state: 'empty',
+            issues: const ['读取自本地缓存（可能过期，请刷新）'],
+            fromCache: true,
+            fetchedAtMillis: ((obj['fetched_at'] as num?)?.toInt() ?? 0),
+          );
+        }
+        final rows = obj['rows'] as List? ?? const [];
+        final parsed = parseXkCourseList(json.encode(rows), xkkzId: 'choosed');
+        if (parsed.state != 'data') return null;
+        return XkListParseResult(
+          courses: parsed.courses,
+          state: parsed.state,
+          issues: [...(obj['issues'] as List? ?? const []).map((e) => '$e'),
+              '读取自本地缓存（可能过期，请刷新）'],
+          fromCache: true,
+          fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) return cached;
+    }
+    try {
+      await ensureZdbkSession();
+      final text = await _postQuery(
+          Uri.parse('$_zdbk/jwglxt/xsxk/zzxkghb_cxZzxkGhbChoosed.html'
+              '?gnmkdm=$_xkGhbMenu$_suParam'),
+              {'xn': xn, 'xq': xq});
+      final parsed = parseXkCourseList(text, xkkzId: 'choosed');
+      if (parsed.state == 'data' || parsed.state == 'empty') {
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': DateTime.now().millisecondsSinceEpoch,
+              'state': parsed.state,
+              'issues': parsed.issues,
+              'rows': [for (final c in parsed.courses) c.raw],
+            }));
+      }
+      _log('已选课程',
+          detail: '${parsed.state}｜${parsed.courses.length} 门'
+              '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+      return parsed;
+    } on RateLimitedException {
+      final cached = await fromCache();
+      return cached ??
+          const XkListParseResult(
+              courses: [], state: 'unavailable', issues: ['限频退避且无缓存，请稍后再试']);
+    } catch (e) {
+      final cached = await fromCache();
+      _log('已选课程', level: 'warn', detail: '$e${cached == null ? '' : '（降级缓存）'}');
+      return cached ??
+          XkListParseResult(
+              courses: const [], state: 'unavailable', issues: ['已选课程获取失败：$e']);
+    }
+  }
+
+  /// 当前课表时隙（xskbcx kbList 解析；选课冲突检测的数据源，只读）。
+  /// 学期候选与 fetchStudentProfile 同款（同端点同参数，仅取 kbList）。
+  /// 学期一致性（评审L2）：响应回显学期与请求不符的候选一律不接受；缓存按学期归属校验，
+  /// 不符视同无缓存；第一候选（本学期）明确返回空课表＝真实空，不再向后猜学期。
+  Future<TimetableParseResult> fetchTimetableSlots({bool refresh = false}) async {
+    const cacheKey = 'timetable_slots';
+    final now = DateTime.now();
+    final isAutumn = now.month >= 8;
+    final y0 = isAutumn ? now.year : now.year - 1;
+    // 学期码（LIVE 取证）：xnm='YYYY-YYYY+1'，xqm='1' 秋冬 / '2' 春夏；
+    // 子学期细分参数是 '1|秋'/'1|冬'/'1|短'/'1|暑'/'2|春'/'2|夏'（默认主学期即覆盖全部）。
+    final candidates = <List<String>>[
+      ['$y0-${y0 + 1}', '1'],
+      ['$y0-${y0 + 1}', '2'],
+      ['${y0 - 1}-$y0', '1'],
+      ['${y0 - 1}-$y0', '2'],
+    ];
+    Future<TimetableParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached) as Map<String, dynamic>;
+        // 学期归属校验：缓存学期必须等于本机当前学期第一候选，否则视同无缓存
+        final cxnm = obj['xnm']?.toString() ?? '';
+        final cxqm = obj['xqm']?.toString() ?? '';
+        if (cxnm != candidates[0][0] || cxqm != candidates[0][1]) return null;
+        // 缓存原始 kbList 行、回读重解析：保证 rows/slots 与在线路径同一口径
+        //（旧版只存展开后的 slots，单双周信息丢失、课表视图无法还原）。
+        final rows = obj['kb_rows'] as List? ?? const [];
+        final parsed = parseXskbListToSlots(rows);
+        if (parsed.slots.isEmpty) return null;
+        return TimetableParseResult(
+          slots: parsed.slots,
+          courses: parsed.courses,
+          rows: parsed.rows,
+          issues: const ['读取自本地缓存（可能过期，请刷新）'],
+          fromCache: true,
+          fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) {
+        lastTimetableFromCache = true;
+        return cached;
+      }
+    }
+    lastTimetableFromCache = false;
+    await ensureZdbkSession(); // 评审L2：选课段唯一漏调会话的入口（冷会话下 4 连败）
+    for (final c in candidates) {
+      try {
+        final body = await _postQuery(
+            Uri.parse('$_zdbk/jwglxt/kbcx/xskbcx_cxXsKb.html?gnmkdm=N2151$_suParam'),
+            {'xnm': c[0], 'xqm': c[1]});
+        final t = body.trim();
+        if (!t.startsWith('{')) continue;
+        final decoded = json.decode(t) as Map<String, dynamic>;
+        // 学期回显校验：回显与请求不符 → 该候选不接受（防把别的学期课表当本学期）
+        final echoXnm = decoded['xnm']?.toString() ?? '';
+        final echoXqm = decoded['xqm']?.toString() ?? '';
+        if ((echoXnm.isNotEmpty && echoXnm != c[0]) ||
+            (echoXqm.isNotEmpty && echoXqm != c[1])) {
+          _log('当前课表', level: 'warn',
+              detail: '学期回显不一致（请求 ${c[0]}-${c[1]}，回显 $echoXnm-$echoXqm），跳过');
+          continue;
+        }
+        final parsed = parseXskbListToSlots(decoded['kbList']);
+        if (parsed.courses.isEmpty) {
+          // 本学期明确返回空课表（且回显一致）：如实表现为"未排课/未检查"，不向后猜学期
+          if (identical(c, candidates.first)) {
+            return const TimetableParseResult(
+                slots: [], issues: ['本学期课表为空（尚未排课？）：冲突检测按未检查处理']);
+          }
+          continue;
+        }
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': DateTime.now().millisecondsSinceEpoch,
+              'xnm': c[0],
+              'xqm': c[1],
+              'kb_rows': decoded['kbList'], // 原始行缓存，回读重解析保 rows 完整
+            }));
+        _log('当前课表',
+            detail: '学期 ${c[0]}-${c[1]}｜${parsed.courses.length} 门｜'
+                '${parsed.slots.length} 个时隙');
+        return parsed;
+      } catch (e) {
+        _log('当前课表', level: 'warn', detail: '学期 ${c[0]}-${c[1]}: $e');
+      }
+    }
+    final cached = await fromCache();
+    lastTimetableFromCache = cached != null;
+    _log('当前课表', level: 'warn',
+        detail: '课表接口未返回课程表${cached == null ? '' : '（降级缓存）'}');
+    return cached ??
+        const TimetableParseResult(slots: [], issues: ['课表获取失败：冲突检测将不可用']);
   }
 }
