@@ -16,3 +16,12 @@ _diag_*
 Thumbs.db
 __pycache__/
 *.pyc
+
+# docx 生成/渲染工具产物
+node_modules/
+bun.lock
+package.json
+docs/render/
+*.pdf
+!docs/**/reference*.pdf
+packaging/_dl_artifacts.py
