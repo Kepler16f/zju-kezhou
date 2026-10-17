@@ -927,18 +927,19 @@ class _InterfacePrefsCard extends StatelessWidget {
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
           ),
           // RadioListTile 用旧 groupValue/onChanged API：flutter-ohos 3.27（Dart 3.6）
-          // 没有 RadioGroup 符号，回退到两版 SDK 通吃的写法（3.47 仅 deprecation info）。
-          // 回调未接线时禁用，避免"能点但没反应"。
+          // 既没有 RadioGroup，也没有 enabled 参数——禁用态一律走 onChanged:null
+          // （两版 SDK 通吃；3.47 仅 deprecation info）。
           for (var i = 0; i < _tabNames.length; i++)
             RadioListTile<int>(
               dense: true,
               visualDensity: VisualDensity.compact,
               groupValue: homeTab,
               value: i,
-              enabled: onDefaultTabChange != null,
-              onChanged: (v) {
-                if (v != null) onDefaultTabChange?.call(v);
-              },
+              onChanged: onDefaultTabChange == null
+                  ? null
+                  : (v) {
+                      if (v != null) onDefaultTabChange?.call(v);
+                    },
               title: Text(_tabNames[i], style: const TextStyle(fontSize: 13)),
             ),
           const SizedBox(height: 8),
