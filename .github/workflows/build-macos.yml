@@ -56,9 +56,11 @@ jobs:
       - name: xcodebuild 交叉编译 x86_64
         run: |
           cd macos
+          # -derivedDataPath 钉到 flutter build macos 的同一布局（<root>/Build/Products/Release），
+          # 否则产物落进 macos/build 旁路目录，后续校验/打包步骤找不到 .app（v0.12.1 实测）。
           xcodebuild -workspace Runner.xcworkspace -scheme Runner \
             -configuration Release -arch x86_64 ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO build
+            CODE_SIGNING_ALLOWED=NO -derivedDataPath ../build/macos build
       - name: 校验架构（必须是 x86_64，失败即中止避免错包）
         run: |
           APP=$(ls -d build/macos/Build/Products/Release/*.app | head -1)
