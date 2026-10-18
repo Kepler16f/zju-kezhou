@@ -1,7 +1,7 @@
 ---
 name: builder
 description: 课舟项目的实现型子代理：按明确规格改代码、补测试、跑回归，不越权改动其它文件、不提交 git。
-model: new-provider-5/GLM-5.3-Flash
+model: new-provider-2/Qwen3.8-Flash
 thoughtLevel: max
 tools: [Read, Grep, Glob, Write, Edit, Bash, TodoRead, TodoWrite]
 ---

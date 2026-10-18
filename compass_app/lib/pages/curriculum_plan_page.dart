@@ -1577,6 +1577,11 @@ Map<String, PlanCourseState> resolvePlanCourseStates(
 /// 供 UI 与单测共用；#13）。判定与引擎适配器同源：certifiedSectionCategory
 /// 认板块（level≤3、标题命中美育/劳育/创新创业/心理健康），certifiedCategoryOf
 /// 认课程；板块自带课程表时不重复补（宁缺勿猜），同名课（重修）只取一次。
+///
+/// 需求 #1（2026-10-18）：认定型课程此前只按课名关键词归类，漏掉了名字里
+/// 不含关键词、但成绩单 category 字段已标注该认定类的课程（如「民乐演奏」
+/// 被教务归美育类却不含美育关键词）。故增加类别兜底：行的 category 归入的
+/// 类别等于板块认定类别时一并纳入。
 List<PdfCourseRow> certifiedRowsForSection(
     PdfModuleSection s, List<Map<String, dynamic>> transcript) {
   final cat = certifiedSectionCategory(s);
@@ -1586,7 +1591,9 @@ List<PdfCourseRow> certifiedRowsForSection(
   for (final r in transcript) {
     final name = '${r['name'] ?? ''}'.trim();
     if (name.isEmpty || !used.add(name)) continue;
-    if (certifiedCategoryOf(name) != cat) continue;
+    final byName = certifiedCategoryOf(name);
+    final byCategory = certifiedCategoryOf('${r['category'] ?? ''}'.trim());
+    if (byName != cat && byCategory != cat) continue;
     final cr = r['credits'];
     out.add(PdfCourseRow(
       code: '${r['course_id'] ?? ''}',

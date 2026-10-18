@@ -1,9 +1,12 @@
-// test/engine_audit_test.dart — audit v1.3 口径修复回归（2026-10-18 用户实测
-// 「培养方案积分重复计算」）：
+// test/engine_audit_test.dart — audit 口径回归（2026-10-18 用户实测与明确口径）：
 //  1) 选课组（四选一 / 选 N 门）只按「至少 N 门」折算要求学分，不再全组和；
 //  2) 外语等级 L1/L2/L3 封顶外语类模块要求学分，缺省不假设；
-//  3) 多标签课程（同一 course_id 出现在多个模块）不重复计学分；
-//  4) selected_no_credit（已选未获学分）与 earned（已获学分）分开呈现。
+//  3) 多标签课程（同一 course_id/名称出现在多个模块）按各模块分别计学分
+//     （v1.4 多重计分，用户明确「一节课两个标签同时计入两边」，与教务一致）；
+//  4) selected_no_credit（已选未获学分）与 earned（已获学分）分开呈现，
+//     多标签课程同步双计；同一模块内重复行去重、重修只计一次；
+//  5) totals 总学分口径：方案声明 meta.total_credits 为准（plan_total_credits /
+//     total_basis），未声明回落模块求和并在 trace.notes 说明。
 // 纯 Dart 测试（无 Flutter 依赖），可与 engine_test.dart 同批跑。
 import 'package:test/test.dart';
 
@@ -13,6 +16,7 @@ Map<String, dynamic> planOf({
   required List<Map<String, dynamic>> modules,
   required List<Map<String, dynamic>> courses,
   String major = 't_major',
+  double? totalCredits,
 }) =>
     {
       'meta': {
@@ -20,6 +24,7 @@ Map<String, dynamic> planOf({
         'grade': '2023',
         'source_doc': '合成测试方案',
         'verified_at': '2026-10-13',
+        if (totalCredits != null) 'total_credits': totalCredits,
       },
       'modules': modules,
       'courses': courses,
@@ -282,32 +287,103 @@ void main() {
     });
   });
 
-  // ── 多标签课程不重复计 ────────────────────────────────────────────────────
-  group('多标签课程不重复计', () {
-    test('同一 course_id 出现在两个模块：earned/totals 只计一次', () {
-      final p = planOf(modules: [
-        moduleOf(
-          id: 'writing_group',
-          path: '通识教育/通识选修 · 大学写作（四选一）',
-          requiredCredits: 8.0,
-          title: '大学写作（四选一）',
-        ),
-        moduleOf(id: 'other', path: '专业教育/专业限选', requiredCredits: 2.0),
-      ], courses: [
-        ...writingCourses,
-        // W1 同时挂在专业限选（多标签）
-        courseOf('W1', '大学写作——写作·人', 2.0, moduleId: 'other'),
-      ]);
+  // ── 多标签课程双计（多重计分，v1.4 用户口径）─────────────────────────────
+  group('多标签课程双计', () {
+    // W1 同时挂在「大学写作（四选一）」与「专业限选」两个模块
+    final multiPlan = planOf(modules: [
+      moduleOf(
+        id: 'writing_group',
+        path: '通识教育/通识选修 · 大学写作（四选一）',
+        requiredCredits: 8.0,
+        title: '大学写作（四选一）',
+      ),
+      moduleOf(id: 'other', path: '专业教育/专业限选', requiredCredits: 2.0),
+    ], courses: [
+      ...writingCourses,
+      courseOf('W1', '大学写作——写作·人', 2.0, moduleId: 'other'),
+    ]);
+
+    test('同一 course_id 出现在两个模块：两模块各计一次（earned 双计）', () {
+      final r = AuditEngine({})
+          .build(rec(courses: [passed('W1', '大学写作——写作·人', 2.0)]), multiPlan);
+      expect(moduleRow(r, 'writing_group')!['earned'], 2.0);
+      expect(moduleRow(r, 'other')!['earned'], 2.0);
+      expect(r['totals']['earned'], 4.0);
+      expect(r['totals']['required'], 4.0); // 组 2.0（折算）+ 限选 2.0
+      // summary 明细：两处 W1 均标 multi_tag
+      for (final id in ['writing_group', 'other']) {
+        final w1 = (moduleRow(r, id)!['plan_courses'] as List)
+            .cast<Map<String, dynamic>>()
+            .firstWhere((c) => c['course_id'] == 'W1');
+        expect(w1['multi_tag'], isTrue, reason: id);
+      }
+      // trace 注明多重计分；caliber_notes 固定含多重计分口径
+      expect((r['trace']['notes'] as List).join(), contains('多重计分'));
+      expect((r['caliber_notes'] as List), contains(kCaliberMultiTagNote));
+    });
+
+    test('已选未获同步双计：failed W1 在两个模块各计 1 门', () {
       final r = AuditEngine({}).build(
-          rec(courses: [passed('W1', '大学写作——写作·人', 2.0)]), p);
-      final totals = r['totals'];
-      expect(totals['earned'], 2.0); // 只计一次（修复前若逐模块求和会变 4.0）
-      expect(totals['required'], 4.0); // 组 2.0（折算）+ 限选 2.0
-      // 学分归入其一，绝不在两个模块各计 2.0
-      final earnedSum = (r['summary'] as List)
-          .cast<Map<String, dynamic>>()
-          .fold<double>(0, (s, m) => s + (m['earned'] as num));
-      expect(earnedSum, 2.0);
+          rec(courses: [failed('W1', '大学写作——写作·人', 2.0)]), multiPlan);
+      expect(moduleRow(r, 'writing_group')!['selected_no_credit'], 1);
+      expect(moduleRow(r, 'other')!['selected_no_credit'], 1);
+      expect(moduleRow(r, 'writing_group')!['earned'], 0.0);
+      expect(moduleRow(r, 'other')!['earned'], 0.0);
+    });
+
+    test('重修多条记录：每模块仍只计一次', () {
+      final r = AuditEngine({}).build(
+          rec(courses: [
+            passed('W1', '大学写作——写作·人', 2.0, grade: 61),
+            passed('W1', '大学写作——写作·人', 2.0, grade: 88),
+          ]),
+          multiPlan);
+      expect(moduleRow(r, 'writing_group')!['earned'], 2.0);
+      expect(moduleRow(r, 'other')!['earned'], 2.0);
+      expect(r['totals']['earned'], 4.0);
+    });
+
+    test('同名不同号跨模块（名称多归属）：同样双计', () {
+      final p = planOf(modules: [
+        moduleOf(id: 'm1', path: '专业教育/专业核心', requiredCredits: 3.0),
+        moduleOf(id: 'm2', path: '通识教育/劳育类', requiredCredits: 2.0),
+      ], courses: [
+        courseOf('A1', '劳动教育实践', 3.0, moduleId: 'm1'),
+        courseOf('B2', '劳动教育实践', 2.0, moduleId: 'm2'),
+      ]);
+      final r = AuditEngine({})
+          .build(rec(courses: [passed('A1', '劳动教育实践', 3.0)]), p);
+      expect(moduleRow(r, 'm1')!['earned'], 3.0);
+      expect(moduleRow(r, 'm2')!['earned'], 2.0);
+      expect(r['totals']['earned'], 5.0);
+    });
+
+    test('单归属课程不受影响：只计一次', () {
+      final r = AuditEngine({}).build(
+          rec(courses: [passed('W2', '大学写作——写作·自然', 2.0)]), groupPlan);
+      expect(moduleRow(r, 'writing_group')!['earned'], 2.0);
+      expect(r['totals']['earned'], 2.0);
+    });
+  });
+
+  // ── 同一模块内去重与重修口径 ─────────────────────────────────────────────
+  group('模块内去重', () {
+    test('同模块重复行（同 course_id 多行）：earned/明细只计一次', () {
+      final p = planOf(modules: [
+        moduleOf(id: 'm1', path: '专业教育/专业核心', requiredCredits: 4.0),
+      ], courses: [
+        courseOf('A', '课程甲', 2.0, moduleId: 'm1'),
+        courseOf('A', '课程甲', 2.0, moduleId: 'm1'), // 重复行
+        courseOf('B', '课程乙', 2.0, moduleId: 'm1'),
+      ]);
+      final r = AuditEngine({}).build(rec(courses: [passed('A', '课程甲', 2.0)]), p);
+      final m = moduleRow(r, 'm1')!;
+      expect(m['earned'], 2.0); // 绝不 4.0
+      expect(m['selected_no_credit'], 0);
+      expect(
+          (m['plan_courses'] as List).where((c) => c['course_id'] == 'A').length, 1);
+      expect(r['totals']['required'], 4.0); // 甲+乙（重复行去重，不虚增）
+      expect(r['totals']['earned'], 2.0);
     });
 
     test('重修同一门课两条记录：只计一次学分', () {
@@ -319,6 +395,39 @@ void main() {
           groupPlan);
       expect(moduleRow(r, 'writing_group')!['earned'], 2.0);
       expect(r['totals']['earned'], 2.0);
+    });
+  });
+
+  // ── totals 总学分口径（v1.4：方案声明为准，模块求和回落）──────────────────
+  group('totals 总学分口径', () {
+    test('方案声明 total_credits：plan_total_credits 原值 + plan_declared', () {
+      final p = planOf(modules: [
+        moduleOf(id: 'm1', path: '专业教育/专业核心', requiredCredits: 4.0),
+      ], courses: [
+        courseOf('A', '课程甲', 2.0, moduleId: 'm1'),
+        courseOf('B', '课程乙', 2.0, moduleId: 'm1'),
+      ], totalCredits: 160.0);
+      final r = AuditEngine({})
+          .build(rec(courses: [passed('A', '课程甲', 2.0)]), p);
+      final t = r['totals'];
+      expect(t['plan_total_credits'], 160.0);
+      expect(t['total_basis'], 'plan_declared');
+      expect(t['required'], 4.0); // 模块级照旧
+      expect((r['trace']['notes'] as List).join(), contains('最低毕业学分 160 分'));
+    });
+
+    test('方案未声明：回落模块求和（module_sum_fallback），无 plan_total_credits', () {
+      final r = AuditEngine({}).build(rec(), groupPlan); // planOf 无 total_credits
+      final t = r['totals'];
+      expect(t.containsKey('plan_total_credits'), isFalse);
+      expect(t['total_basis'], 'module_sum_fallback');
+      expect(t['required'], 2.0);
+      expect((r['trace']['notes'] as List).join(), contains('回落'));
+    });
+
+    test('固定口径说明第三条（多重计分）逐字存在', () {
+      final r = AuditEngine({}).build(rec(), groupPlan);
+      expect((r['caliber_notes'] as List), contains(kCaliberMultiTagNote));
     });
   });
 

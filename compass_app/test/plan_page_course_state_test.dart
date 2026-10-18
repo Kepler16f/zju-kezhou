@@ -8,6 +8,7 @@
 // 由 `flutter test --no-pub` 全量覆盖。
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:compass_app/data/plan_pdf_parse.dart';
 import 'package:compass_app/pages/curriculum_plan_page.dart';
 
 void main() {
@@ -156,6 +157,43 @@ void main() {
       final states =
           resolvePlanCourseStates(['数据结构'], collectPlanCourseEvidence());
       expect(states['数据结构'], PlanCourseState.unknown);
+    });
+  });
+
+  group('certifiedRowsForSection：认定型课程类别兜底（2026-10-18 需求 #1）', () {
+    const meiyu = PdfModuleSection(title: '美育类', level: 3);
+    test('课名无美育关键词但成绩单 category=美育类 → 纳入认定板块', () {
+      final rows = certifiedRowsForSection(meiyu, [
+        {'name': '民乐演奏', 'course_id': 'X1', 'credits': 2.0, 'category': '美育类'},
+      ]);
+      expect(rows, hasLength(1));
+      expect(rows.single.name, '民乐演奏');
+    });
+    test('课名关键词命中仍有效；同名只取一次；他类类别不误纳', () {
+      final rows = certifiedRowsForSection(meiyu, [
+        {'name': '美术鉴赏', 'credits': 2.0},
+        {'name': '美术鉴赏', 'credits': 2.0},
+        {'name': '高等数学', 'credits': 4.0, 'category': '数智类'},
+      ]);
+      expect(rows.map((r) => r.name), ['美术鉴赏']);
+    });
+    test('板块自带课程表不重复补；非认定板块返回空', () {
+      const withCourses = PdfModuleSection(title: '美育类', level: 3, courses: [
+        PdfCourseRow(code: 'Y1', name: '艺术史', credits: 1.0),
+      ]);
+      expect(
+          certifiedRowsForSection(
+              withCourses, [
+            {'name': '民乐演奏', 'category': '美育类'}
+          ]),
+          isEmpty);
+      const other = PdfModuleSection(title: '必修课程', level: 3);
+      expect(
+          certifiedRowsForSection(
+              other, [
+            {'name': '民乐演奏', 'category': '美育类'}
+          ]),
+          isEmpty);
     });
   });
 }

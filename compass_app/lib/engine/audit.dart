@@ -7,11 +7,19 @@
 ///    [effectiveRequiredCredits]：仅当要求学分 == 组内全部课程学分和（全量和
 ///    指纹）或模块为门数口径（count_rule / plan_credits_unit='门'）时折算，
 ///    只降不升——标注正确的模块一律不动）；
-///  * 外语等级：build(record, plan, action) 的 action 支持
-///    {'foreign_lang_level': 'L1'|'L2'|'L3'}，外语类模块要求学分按等级封顶
-///    （L1=6 / L2=4.5 / L3=3）；等级缺省不假设，trace 注明「外语等级未选择」；
+///  * 外语口径：build(record, plan, action) 的 action 支持
+///    {'foreign_lang_credits': 正数}（自选要求学分=用户指定，可超过方案原要求，
+///    2026-10-18 改版）与 {'foreign_lang_level': 'L1'|'L2'|'L3'}（向后兼容档位：
+///    映射 caps 只降不升，L1=6 / L2=4.5 / L3=3）；两者缺省不假设，
+///    trace 注明「外语等级未选择」；
 ///  * 已选 vs 已获：每模块输出 selected_no_credit（已选未获学分课程数），
-///    与 earned（已获学分）分开呈现；报告顶层附 caliber_notes 口径说明。
+///    与 earned（已获学分）分开呈现；报告顶层附 caliber_notes 口径说明；
+///  * 多重计分（v1.4，2026-10-18 用户明确口径）：同一课程（course_id 或名称）
+///    出现在方案多个模块（多标签）时，一条成绩单记录按每个所属模块分别计学分
+///    （earned 与 selected_no_credit 同步双计；同一模块内仍去重、重修只计一次）；
+///  * 总学分口径（v1.4）：毕业总要求以方案声明 meta.total_credits（最低毕业
+///    学分）为准——totals 新增 plan_total_credits / total_basis；模块级要求照旧，
+///    方案未声明时回落模块求和并在 trace.notes 说明。
 library;
 
 import 'dart:convert';
@@ -39,6 +47,11 @@ const String kCaliberSelectedNote =
     'selected_no_credit=已选未获学分：本模块内已修未通过（含在修未出分、'
     '弃修/待录/缓考/无效）或已列入计划选课、尚未取得学分的课程门数'
     '（按方案课程去重），与 earned 分开呈现，请勿相加当作总进度。';
+
+/// 多重计分口径（v1.4，用户 2026-10-18 明确：一节课有两个标签时同时计入两边
+/// 学分，与教务系统一致；固定第三条，字面量被测试逐字断言）。
+const String kCaliberMultiTagNote =
+    '同一课程多类别归属时按各模块分别计学分（培养方案口径），与教务系统一致。';
 
 /// 选课组规则（「四选一」「选 N 门」「至少修读 N 门」等修读选择约束）。
 /// [minCourses] 为组内至少要修的门数；[minCredits] 为显式学分下限（可空）；
@@ -186,7 +199,7 @@ double effectiveRequiredCredits(
 }
 
 class AuditEngine {
-  static const engineVersion = '1.3';
+  static const engineVersion = '1.4';
   static const graduationYears = 6;
 
   final Map<String, dynamic> plans; // major -> PlanFile（内置 golden）
@@ -229,13 +242,81 @@ class AuditEngine {
       throw ArgumentError(
           '未知的外语等级：$foreignLevelRaw（支持 L1/L2/L3）');
     }
-    final foreignCap =
-        foreignLevelRaw == null ? null : kForeignLangCaps['$foreignLevelRaw']!;
+    final foreignCreditsRaw = action?['foreign_lang_credits'];
+    double? foreignCredits;
+    if (foreignCreditsRaw != null) {
+      final v = foreignCreditsRaw is num ? foreignCreditsRaw.toDouble() : null;
+      if (v == null || !(v > 0)) {
+        throw ArgumentError('非法的外语要求学分：$foreignCreditsRaw（需为正数）');
+      }
+      foreignCredits = v;
+    }
+    // 自选学分优先（=用户指定的模块要求）；level 档位向后兼容（映射 caps 作默认）
+    final foreignCap = foreignCredits ??
+        (foreignLevelRaw == null ? null : kForeignLangCaps['$foreignLevelRaw']!);
 
     final recordCourses = (record['courses'] as List).cast<Map<String, dynamic>>();
     final (matched, unmatched) = matchRecordToPlan(recordCourses, plan);
     final planModules = (plan['modules'] as List).cast<Map<String, dynamic>>();
     final planHasForeign = planModules.any(isForeignLangModule);
+
+    // ── 多重计分（v1.4）：多标签课程的归属展开 ─────────────────────────────
+    // 数据表达：plan['courses'] 同一 course_id（或同名）出现多行、module_id
+    // 不同（当前 golden/适配器均单归属；多行多归属出现时按本口径展开）。
+    // 一条成绩单记录按其全部归属行分别计学分：每模块至多一次（module_id 去重）、
+    // 同一模块内重复行仍去重、重修只计一次（见 earnedClaimed）。单归属课程
+    // 展开后恰为原单行，行为与 v1.3 一致。
+    final planRowsAll = (plan['courses'] as List).cast<Map<String, dynamic>>();
+    final rowsById = <String, List<Map<String, dynamic>>>{};
+    final rowsByName = <String, List<Map<String, dynamic>>>{};
+    final moduleIdsByKey = <String, Set<String>>{}; // 'i|课号' / 'n|课名' → 所属模块
+    for (final c in planRowsAll) {
+      final cid = '${c['course_id'] ?? ''}';
+      final nm = '${c['name'] ?? ''}';
+      final mid = '${c['module_id'] ?? ''}';
+      if (cid.isNotEmpty) {
+        rowsById.putIfAbsent(cid, () => []).add(c);
+        moduleIdsByKey.putIfAbsent('i|$cid', () => <String>{}).add(mid);
+      }
+      if (nm.isNotEmpty) {
+        rowsByName.putIfAbsent(nm, () => []).add(c);
+        moduleIdsByKey.putIfAbsent('n|$nm', () => <String>{}).add(mid);
+      }
+    }
+    // 多标签判定：该行课号或课名去重后归属 >1 个模块（summary 明细标 multi_tag）
+    bool planRowIsMultiTag(Map<String, dynamic> c) {
+      final cid = '${c['course_id'] ?? ''}';
+      final nm = '${c['name'] ?? ''}';
+      return (cid.isNotEmpty && (moduleIdsByKey['i|$cid']?.length ?? 0) > 1) ||
+          (nm.isNotEmpty && (moduleIdsByKey['n|$nm']?.length ?? 0) > 1);
+    }
+
+    // 一条匹配到的方案课程 → 其在方案中的全部归属行（课号相同或课名相同的行
+    // 取并集；同一模块只保留首行——一条成绩单记录对每个模块至多贡献一次学分）。
+    List<Map<String, dynamic>> membershipsOf(Map<String, dynamic> c) {
+      final cid = '${c['course_id'] ?? ''}';
+      final nm = '${c['name'] ?? ''}';
+      final rows = <Map<String, dynamic>>[
+        if (cid.isNotEmpty) ...rowsById[cid] ?? const [],
+        if (nm.isNotEmpty) ...rowsByName[nm] ?? const [],
+      ];
+      final seenMods = <String>{};
+      final out = <Map<String, dynamic>>[];
+      for (final row in rows) {
+        if (seenMods.add('${row['module_id'] ?? ''}')) out.add(row);
+      }
+      return out;
+    }
+
+    var multiTagCourseCount = 0; // 方案中多标签课程数（去重，供 trace.notes）
+    final countedMultiTagKeys = <String>{};
+    for (final c in planRowsAll) {
+      final cid = '${c['course_id'] ?? ''}';
+      final nm = '${c['name'] ?? ''}';
+      final key = cid.isNotEmpty ? 'i|$cid' : (nm.isNotEmpty ? 'n|$nm' : null);
+      if (key == null || !countedMultiTagKeys.add(key)) continue;
+      if (planRowIsMultiTag(c)) multiTagCourseCount++;
+    }
 
     final earned = <String, double>{};
     for (final m in planModules) {
@@ -244,22 +325,28 @@ class AuditEngine {
     final passedIds = <String>{};
     final earnedCids = <String>{}; // 已获学分：通过且计入学分（与 earned 累加同条件）
     final selectedNoCreditIds = <String>{}; // 已选未获学分：已修未取得学分的课程
+    final earnedClaimed = <String>{}; // '课号|模块'：一门课在每个模块只计一次学分
     final matchedRecordByPlanId = <String, Map<String, dynamic>>{};
     for (final pair in matched) {
       final r = pair[0] as Map<String, dynamic>, c = pair[1] as Map<String, dynamic>;
-      final cid = '${c['course_id']}';
-      matchedRecordByPlanId.putIfAbsent(cid, () => r);
       final credited = isPassed(r) && (r['credit_included'] as bool? ?? true);
-      if (!credited) {
-        // 在修未出分 / 已修未过 / 弃修待录缓考无效：已选但未获学分
-        selectedNoCreditIds.add(cid);
-      }
-      if (isPassed(r) && passedIds.add(cid)) {
-        // 同一门课重修多次只计一次学分；credit_included=false（弃修/待录/
-        // 缓考/无效）不计入已取得学分，但仍视为已通过，避免重复出现在待修。
-        if (credited) {
-          earned[c['module_id'] as String] = earned[c['module_id'] as String]! +
-              (c['credits'] as num).toDouble();
+      for (final row in membershipsOf(c)) {
+        final cid = '${row['course_id']}';
+        final mid = '${row['module_id']}';
+        matchedRecordByPlanId.putIfAbsent(cid, () => r);
+        if (!credited) {
+          // 在修未出分 / 已修未过 / 弃修待录缓考无效：已选但未获学分
+          // （多标签课程每个所属模块都计：selected_no_credit 同步双计）
+          selectedNoCreditIds.add(cid);
+        }
+        if (isPassed(r)) passedIds.add(cid);
+        // 同一门课重修多次只计一次学分（(课, 模块) 由首条通过记录认领）；
+        // 多标签课程在每个所属模块分别计学分（多重计分，培养方案口径）；
+        // credit_included=false（弃修/待录/缓考/无效）不计入已取得学分，
+        // 但仍视为已通过，避免重复出现在待修。
+        if (isPassed(r) && earnedClaimed.add('$cid|$mid') && credited) {
+          earned[row['module_id'] as String] =
+              earned[row['module_id'] as String]! + (row['credits'] as num).toDouble();
           earnedCids.add(cid);
         }
       }
@@ -306,14 +393,28 @@ class AuditEngine {
       final req0 = (m['required_credits'] as num).toDouble();
       var req = effectiveRequiredCredits(m, moduleCourses, rule: groupRule);
       if ((req - req0).abs() > 1e-9) groupApplied = true;
-      // 外语等级封顶：仅外语类模块，且只降不升（等级缺省 → 方案原要求）
-      if (foreignCap != null && isForeignLangModule(m) && foreignCap < req) {
-        req = foreignCap;
+      // 外语口径：仅外语类模块。自选学分=用户指定的模块要求（可升可降，
+      // 用户明确「可修超过要求学分」）；level 档位向后兼容旧口径只降不升
+      // （缺省 → 方案原要求）。
+      if (foreignCap != null && isForeignLangModule(m)) {
+        if (foreignCredits != null) {
+          req = foreignCredits;
+        } else if (foreignCap < req) {
+          req = foreignCap;
+        }
       }
       final got = double.parse(earned[mid]!.toStringAsFixed(2));
       final gap = double.parse((req - got).clamp(0.0, double.infinity).toStringAsFixed(2));
-      final remaining =
-          moduleCourses.where((c) => !passedIds.contains('${c['course_id']}')).toList();
+      // 剩余可选 = 未通过课程；同一模块内同课号重复行只计一次
+      // （无课号行无法判同，不去重——宁缺勿猜）
+      final remaining = <Map<String, dynamic>>[];
+      final seenRemainingIds = <String>{};
+      for (final c in moduleCourses) {
+        final cid = '${c['course_id']}';
+        if (passedIds.contains(cid)) continue;
+        if (cid.isNotEmpty && !seenRemainingIds.add(cid)) continue;
+        remaining.add(c);
+      }
       var openBeforeGrad = 0.0;
       for (final c in remaining) {
         if (futureIdx(c).isNotEmpty) openBeforeGrad += (c['credits'] as num).toDouble();
@@ -378,6 +479,9 @@ class AuditEngine {
           'terms': fi.map(Timeline.idxStr).toList(),
           'closed': fi.isEmpty,
           'passed': passedIds.contains(cid),
+          // 多标签课程标记（v1.4）：该课在方案中归属多个模块，学分按各模块
+          // 分别计（UI 可据此注明「此课学分已同时计入其归属的另一模块」）。
+          if (planRowIsMultiTag(c)) 'multi_tag': true,
           if (record != null)
             'record': <String, dynamic>{
               'semester': record['semester'],
@@ -583,31 +687,59 @@ class AuditEngine {
       });
     }
 
+    // 总学分口径（v1.4）：毕业总要求以方案声明 meta.total_credits（最低毕业
+    // 学分）为准，模块级要求照旧；模块求和只在方案未声明时回落（total_basis
+    // 注明口径，trace.notes 同步说明）。
+    final planTotalRaw = (plan['meta'] as Map?)?['total_credits'];
+    final planTotalCredits = planTotalRaw is num ? planTotalRaw.toDouble() : null;
     final totals = {
       'required': double.parse(summary.fold<num>(0, (s, m) => s + m['required']).toStringAsFixed(2)),
       'earned': double.parse(summary.fold<num>(0, (s, m) => s + m['earned']).toStringAsFixed(2)),
       'gap': double.parse(summary.fold<num>(0, (s, m) => s + m['gap']).toStringAsFixed(2)),
+      if (planTotalCredits != null)
+        'plan_total_credits': planTotalCredits, // 方案声明「最低毕业学分」原值
+      'total_basis':
+          planTotalCredits != null ? 'plan_declared' : 'module_sum_fallback',
     };
 
-    // 口径说明（供 UI 用不同颜色注释；固定两条 + 按方案内容追加的组/外语口径）
+    // 口径说明（供 UI 用不同颜色注释；固定三条 + 按方案内容追加的组/外语口径）
     final caliberNotes = <String>[
       kCaliberEarnedNote,
       kCaliberSelectedNote,
+      kCaliberMultiTagNote,
       if (groupApplied)
         '选课组口径：模块内「四选一/选N门/至少修读N门」类组按「至少 N 门」'
             '折算要求学分（组内其余课程为可选项，不再全部求和），任过 N 门即达成。',
       if (planHasForeign)
-        '外语口径：外语类模块可在审计动作中指定 foreign_lang_level'
-            '（L1=6 分、L2=4.5 分、L3=3 分，按等级封顶要求学分）；'
-            '未选择时按方案原要求核算。',
+        '外语口径：外语类模块要求学分可自选（审计动作 foreign_lang_credits 正数，'
+            '可超过方案原要求；或 foreign_lang_level L1=6 分、L2=4.5 分、L3=3 分'
+            '按档位封顶）；未选择时按方案原要求核算。',
     ];
     final traceNotes = <String>[
       if (foreignCap != null && planHasForeign)
-        '外语等级 $foreignLevelRaw：外语类模块要求学分按 ${_g(foreignCap)} 分封顶。',
+        foreignCredits != null
+            ? '外语要求学分自选 ${_g(foreignCredits)} 分：外语类模块要求学分'
+                '按 ${_g(foreignCap)} 分核算。'
+            : '外语等级 $foreignLevelRaw → 自选 ${_g(foreignCap)} 分：外语类模块'
+                '要求学分按 ${_g(foreignCap)} 分封顶。',
       if (foreignCap != null && !planHasForeign)
-        '未在方案中识别外语类模块，foreign_lang_level=$foreignLevelRaw 未生效。',
+        foreignCredits != null
+            ? '未在方案中识别外语类模块，foreign_lang_credits=$foreignCreditsRaw 未生效。'
+            : '未在方案中识别外语类模块，foreign_lang_level=$foreignLevelRaw 未生效。',
       if (foreignCap == null && planHasForeign)
         '外语等级未选择，外语类模块按方案原要求核算。',
+      // 总学分口径（v1.4）：以方案声明为准；未声明则回落模块求和（宁缺勿猜）。
+      if (planTotalCredits != null)
+        '总计学分口径：方案声明最低毕业学分 ${_g(planTotalCredits)} 分'
+            '（meta.total_credits），各模块要求之和为 ${_g(totals['required'])} 分'
+            '——模块间课程交叉/折算时二者可不同，毕业总要求以方案声明为准。',
+      if (planTotalCredits == null)
+        '总计学分口径：方案未声明总学分（meta.total_credits 缺失），'
+            '按各模块要求学分之和 ${_g(totals['required'])} 分回落计算。',
+      // 多重计分（v1.4）：方案确有多标签课程时说明双计口径
+      if (multiTagCourseCount > 0)
+        '多重计分：方案中 $multiTagCourseCount 门课程同时归属多个模块，'
+            '其学分按各所属模块分别计入（earned 与 selected_no_credit 同口径）。',
     ];
 
     return {
@@ -635,8 +767,10 @@ class AuditEngine {
   /// 兼容 Python 版 main() 的入口（record 为 JSON 字符串或 Map）。
   /// action 支持：
   ///  * null / 'audit'（缺省）→ 普通审计；
-  ///  * Map → 审计动作参数，目前支持 {'foreign_lang_level': 'L1'|'L2'|'L3'}
-  ///    （外语类模块要求学分按等级封顶，见 kForeignLangCaps）；
+  ///  * Map → 审计动作参数，支持 {'foreign_lang_credits': 正数}（自选外语要求
+  ///    学分，可超过方案原要求）与 {'foreign_lang_level': 'L1'|'L2'|'L3'}
+  ///    （向后兼容档位，映射 caps 只降不升，见 kForeignLangCaps；
+  ///    同传时 credits 优先）；
   ///    未知键忽略（向前兼容），非法值显式报错（宁缺勿猜）；
   ///  * 其它类型 → {'error': 'unknown action: ...'}（与 Python 镜像同形）。
   Map<String, dynamic> main(Object recordInput, {Object? action}) {

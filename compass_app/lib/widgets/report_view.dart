@@ -51,13 +51,29 @@ class ReportSection extends StatelessWidget {
         Card(
           child: Padding(
             padding: const EdgeInsets.all(14),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                _num('应修', t['required']),
-                _num('已取得', t['earned']),
-                _num('缺口', t['gap'],
-                    color: (t['gap'] as num) > 0 ? _colors['red']! : null),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _num('应修', t['required']),
+                    _num('已取得', t['earned']),
+                    _num('缺口', t['gap'],
+                        color: (t['gap'] as num) > 0 ? _colors['red']! : null),
+                  ],
+                ),
+                // 总学分口径（v1.4）：方案声明「最低毕业学分」（引擎 totals.
+                // plan_total_credits 原样展示）；total_basis=module_sum_fallback
+                // 时引擎不输出该字段，此行不显示（口径见 caliber_notes/trace）。
+                if (t['plan_total_credits'] != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      '方案总学分 ${_fmtCredits(t['plan_total_credits'])}（声明）',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -148,6 +164,13 @@ class ReportSection extends StatelessWidget {
           Text(label, style: const TextStyle(fontSize: 12)),
         ],
       );
+
+  /// 学分数展示：整数去掉小数尾（103.0 → "103"，4.5 保持 "4.5"）。
+  String _fmtCredits(Object? v) {
+    if (v is! num) return '$v';
+    final d = v.toDouble();
+    return d == d.roundToDouble() ? d.toStringAsFixed(0) : '$d';
+  }
 
   /// 模块统计小项：灰标签 + 加粗数值（紧凑、可换行）。
   Widget _stat(String label, String value, Color valueColor) => Text.rich(

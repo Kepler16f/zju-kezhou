@@ -20,7 +20,7 @@ import re
 import common
 from common import PASS_GRADE, SEMESTERS_PER_GRADE_YEAR, sem_idx, sem_str, idx_str
 
-ENGINE_VERSION = "1.3"
+ENGINE_VERSION = "1.4"
 GRADUATION_YEARS = 6  # 最长学籍年限（年），自入学学年起算
 PLAN_JSON = r'''{}'''  # golden 方案注入：{"computer_science": {...}, "software_engineering": {...}}
 
@@ -30,7 +30,7 @@ PLAN_JSON = r'''{}'''  # golden 方案注入：{"computer_science": {...}, "soft
 # L1 计 6 分、L2 计 4.5 分、L3 计 3 分；按等级封顶，绝不抬高方案原要求）。
 FOREIGN_LANG_CAPS = {"L1": 6.0, "L2": 4.5, "L3": 3.0}
 
-# 报告口径说明（顶层 caliber_notes 的固定两条，字面量被测试逐字断言；
+# 报告口径说明（顶层 caliber_notes 的固定三条，字面量被测试逐字断言；
 # UI 据此对 earned / selected_no_credit 用不同颜色注释）。
 K_CALIBER_EARNED_NOTE = (
     "earned=已获学分：仅统计已通过且计入学分的课程，同一门课重修/补考只计一次；"
@@ -39,6 +39,10 @@ K_CALIBER_SELECTED_NOTE = (
     "selected_no_credit=已选未获学分：本模块内已修未通过（含在修未出分、"
     "弃修/待录/缓考/无效）或已列入计划选课、尚未取得学分的课程门数"
     "（按方案课程去重），与 earned 分开呈现，请勿相加当作总进度。")
+# 多重计分口径（v1.4，用户 2026-10-18 明确：一节课有两个标签时同时计入两边
+# 学分，与教务系统一致；固定第三条，字面量被测试逐字断言）。
+K_CALIBER_MULTI_TAG_NOTE = (
+    "同一课程多类别归属时按各模块分别计学分（培养方案口径），与教务系统一致。")
 
 _CN_NUM = r"[0-9]+|[一二两三四五六七八九十]+"
 _CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
@@ -242,16 +246,99 @@ def build(record, plan, action=None):
     foreign_level_raw = (action or {}).get("foreign_lang_level")
     if foreign_level_raw is not None and str(foreign_level_raw) not in FOREIGN_LANG_CAPS:
         raise ValueError("未知的外语等级：%s（支持 L1/L2/L3）" % foreign_level_raw)
-    foreign_cap = None if foreign_level_raw is None else FOREIGN_LANG_CAPS[str(foreign_level_raw)]
+    foreign_credits_raw = (action or {}).get("foreign_lang_credits")
+    foreign_credits = None
+    if foreign_credits_raw is not None:
+        v = float(foreign_credits_raw) if isinstance(foreign_credits_raw, (int, float)) else None
+        if v is None or not v > 0:
+            raise ValueError("非法的外语要求学分：%s（需为正数）" % foreign_credits_raw)
+        foreign_credits = v
+    # 自选学分优先（=用户指定的模块要求，可升可降）；level 档位向后兼容只降不升
+    foreign_cap = foreign_credits if foreign_credits is not None else (
+        None if foreign_level_raw is None else FOREIGN_LANG_CAPS[str(foreign_level_raw)])
 
     matched, unmatched = match(record, plan)
-    earned, passed_ids, earned_cids, selected_no_credit_ids = aggregate(matched, plan)
     plan_has_foreign = any(is_foreign_lang_module(m) for m in plan["modules"])
-    by_id = {c["course_id"]: c for c in plan["courses"]}
-    # 方案课程 id -> 首条匹配到的成绩单记录（无论是否通过），供 plan_courses 明细回显
+
+    # ── 多重计分（v1.4）：多标签课程的归属展开 ─────────────────────────────
+    # 数据表达：plan["courses"] 同一 course_id（或同名）出现多行、module_id
+    # 不同（当前 golden/适配器均单归属；多行多归属出现时按本口径展开）。
+    # 一条成绩单记录按其全部归属行分别计学分：每模块至多一次（module_id 去重）、
+    # 展开后恰为原单行，行为与 v1.3 一致。
+    plan_rows_all = plan["courses"]
+    rows_by_id, rows_by_name, module_ids_by_key = {}, {}, {}
+    for c in plan_rows_all:
+        cid = str(c.get("course_id") or "")
+        nm = str(c.get("name") or "")
+        mid = str(c.get("module_id") or "")
+        if cid:
+            rows_by_id.setdefault(cid, []).append(c)
+            module_ids_by_key.setdefault("i|%s" % cid, set()).add(mid)
+        if nm:
+            rows_by_name.setdefault(nm, []).append(c)
+            module_ids_by_key.setdefault("n|%s" % nm, set()).add(mid)
+
+    def plan_row_is_multi_tag(c):
+        cid = str(c.get("course_id") or "")
+        nm = str(c.get("name") or "")
+        return (bool(cid) and len(module_ids_by_key.get("i|%s" % cid, ())) > 1) or \
+               (bool(nm) and len(module_ids_by_key.get("n|%s" % nm, ())) > 1)
+
+    def memberships_of(c):
+        """一条匹配到的方案课程 → 其全部归属行（课号或同名行并集；同模块只留首行）。"""
+        cid = str(c.get("course_id") or "")
+        nm = str(c.get("name") or "")
+        rows = (rows_by_id.get(cid, []) if cid else []) + (rows_by_name.get(nm, []) if nm else [])
+        seen_mods, out = set(), []
+        for row in rows:
+            m = str(row.get("module_id") or "")
+            if m in seen_mods:
+                continue
+            seen_mods.add(m)
+            out.append(row)
+        return out
+
+    multi_tag_course_count = 0  # 方案中多标签课程数（去重，供 trace.notes）
+    counted_keys = set()
+    for c in plan_rows_all:
+        cid = str(c.get("course_id") or "")
+        nm = str(c.get("name") or "")
+        key = ("i|%s" % cid) if cid else (("n|%s" % nm) if nm else None)
+        if key is None or key in counted_keys:
+            continue
+        counted_keys.add(key)
+        if plan_row_is_multi_tag(c):
+            multi_tag_course_count += 1
+
+    earned = {m["module_id"]: 0.0 for m in plan["modules"]}
+    passed_ids = set()
+    earned_cids = set()
+    selected_no_credit_ids = set()
+    earned_claimed = set()  # '课号|模块'：一门课在每个模块只计一次学分
     matched_record_by_plan_id = {}
     for r, c in matched:
-        matched_record_by_plan_id.setdefault(c["course_id"], r)
+        passed = _is_passed(r)
+        credited = passed and r.get("credit_included") is not False
+        for row in memberships_of(c):
+            cid = str(row.get("course_id"))
+            mid = str(row.get("module_id"))
+            matched_record_by_plan_id.setdefault(cid, r)
+            if not credited:
+                # 在修未出分 / 已修未过 / 弃修待录缓考无效：已选但未获学分
+                # （多标签课程每个所属模块都计：selected_no_credit 同步双计）
+                selected_no_credit_ids.add(cid)
+            if passed:
+                passed_ids.add(cid)
+            # 同一门课重修多次只计一次学分（(课,模块) 由首条通过记录认领）；
+            # 多标签课程在每个所属模块分别计学分（培养方案口径）；
+            # credit_included=False 不计入已取得学分但仍视为已通过。
+            claim = "%s|%s" % (cid, mid)
+            if passed and credited and claim not in earned_claimed:
+                earned_claimed.add(claim)
+                earned[row["module_id"]] += row["credits"]
+                earned_cids.add(cid)
+
+    by_id = {c["course_id"]: c for c in plan["courses"]}
     # 计划选课（已选未出分）：计入选课组口径的"已选未获学分"
     plan_courses = record.get("planned_courses") or []
     for x in plan_courses:
@@ -282,9 +369,14 @@ def build(record, plan, action=None):
         req = effective_required_credits(m, module_courses, rule=group_rule)
         if abs(req - req0) > 1e-9:
             group_applied = True
-        # 外语等级封顶：仅外语类模块，且只降不升（等级缺省 → 方案原要求）
-        if foreign_cap is not None and is_foreign_lang_module(m) and foreign_cap < req:
-            req = foreign_cap
+        # 外语口径：仅外语类模块。自选学分=用户指定的模块要求（可升可降，
+        # 用户明确「可修超过要求学分」）；level 档位向后兼容旧口径只降不升
+        # （缺省 → 方案原要求）。
+        if foreign_cap is not None and is_foreign_lang_module(m):
+            if foreign_credits is not None:
+                req = foreign_credits
+            elif foreign_cap < req:
+                req = foreign_cap
         got = round(earned[m["module_id"]], 2)
         gap = round(max(0.0, req - got), 2)
         # 剩余可选 = 未通过该模块全部课程（含"已修未过待重修"，它们仍可补学分）
@@ -318,6 +410,10 @@ def build(record, plan, action=None):
                     "offered_years": c.get("offered_years"),
                     "terms": [idx_str(i) for i in fi], "closed": not fi,
                     "passed": c["course_id"] in passed_ids}
+            # 多标签课程标记（v1.4）：该课在方案中归属多个模块，学分按各模块
+            # 分别计（UI 可据此注明「此课学分已同时计入其归属的另一模块」）。
+            if plan_row_is_multi_tag(c):
+                item["multi_tag"] = True
             if r_hit is not None:
                 item["record"] = {"semester": r_hit.get("semester"),
                                   "grade": r_hit.get("grade")}
@@ -456,29 +552,60 @@ def build(record, plan, action=None):
     totals = {"required": round(sum(m["required"] for m in summary), 2),
               "earned": round(sum(m["earned"] for m in summary), 2),
               "gap": round(sum(m["gap"] for m in summary), 2)}
+    # 总学分口径（v1.4）：毕业总要求以方案声明 meta.total_credits（最低毕业
+    # 学分）为准，模块级要求照旧；模块求和只在方案未声明时回落（total_basis
+    # 注明口径，trace.notes 同步说明）。
+    plan_total_raw = (plan.get("meta") or {}).get("total_credits")
+    plan_total_credits = float(plan_total_raw) if isinstance(plan_total_raw, (int, float)) else None
+    if plan_total_credits is not None:
+        totals["plan_total_credits"] = plan_total_credits
+    totals["total_basis"] = "plan_declared" if plan_total_credits is not None else "module_sum_fallback"
 
     def _g(n):
         return "%g" % float(n)
 
-    # 口径说明（供 UI 用不同颜色注释；固定两条 + 按方案内容追加的组/外语口径）
-    caliber_notes = [K_CALIBER_EARNED_NOTE, K_CALIBER_SELECTED_NOTE]
+    # 口径说明（供 UI 用不同颜色注释；固定三条 + 按方案内容追加的组/外语口径）
+    caliber_notes = [K_CALIBER_EARNED_NOTE, K_CALIBER_SELECTED_NOTE, K_CALIBER_MULTI_TAG_NOTE]
     if group_applied:
         caliber_notes.append(
             "选课组口径：模块内「四选一/选N门/至少修读N门」类组按「至少 N 门」"
             "折算要求学分（组内其余课程为可选项，不再全部求和），任过 N 门即达成。")
     if plan_has_foreign:
         caliber_notes.append(
-            "外语口径：外语类模块可在审计动作中指定 foreign_lang_level"
-            "（L1=6 分、L2=4.5 分、L3=3 分，按等级封顶要求学分）；"
-            "未选择时按方案原要求核算。")
+            "外语口径：外语类模块要求学分可自选（审计动作 foreign_lang_credits 正数，"
+            "可超过方案原要求；或 foreign_lang_level L1=6 分、L2=4.5 分、L3=3 分"
+            "按档位封顶）；未选择时按方案原要求核算。")
     trace_notes = []
     if foreign_cap is not None and plan_has_foreign:
-        trace_notes.append("外语等级 %s：外语类模块要求学分按 %s 分封顶。"
-                           % (foreign_level_raw, _g(foreign_cap)))
+        if foreign_credits is not None:
+            trace_notes.append("外语要求学分自选 %s 分：外语类模块要求学分按 %s 分核算。"
+                               % (_g(foreign_credits), _g(foreign_cap)))
+        else:
+            trace_notes.append("外语等级 %s → 自选 %s 分：外语类模块要求学分按 %s 分封顶。"
+                               % (foreign_level_raw, _g(foreign_cap), _g(foreign_cap)))
     if foreign_cap is not None and not plan_has_foreign:
-        trace_notes.append("未在方案中识别外语类模块，foreign_lang_level=%s 未生效。" % foreign_level_raw)
+        if foreign_credits is not None:
+            trace_notes.append("未在方案中识别外语类模块，foreign_lang_credits=%s 未生效。" % foreign_credits_raw)
+        else:
+            trace_notes.append("未在方案中识别外语类模块，foreign_lang_level=%s 未生效。" % foreign_level_raw)
     if foreign_cap is None and plan_has_foreign:
         trace_notes.append("外语等级未选择，外语类模块按方案原要求核算。")
+    # 总学分口径（v1.4）：以方案声明为准；未声明则回落模块求和（宁缺勿猜）。
+    if plan_total_credits is not None:
+        trace_notes.append(
+            "总计学分口径：方案声明最低毕业学分 %s 分（meta.total_credits），"
+            "各模块要求之和为 %s 分——模块间课程交叉/折算时二者可不同，毕业总要求以方案声明为准。"
+            % (_g(plan_total_credits), _g(totals["required"])))
+    else:
+        trace_notes.append(
+            "总计学分口径：方案未声明总学分（meta.total_credits 缺失），"
+            "按各模块要求学分之和 %s 分回落计算。" % _g(totals["required"]))
+    # 多重计分（v1.4）：方案确有多标签课程时说明双计口径
+    if multi_tag_course_count > 0:
+        trace_notes.append(
+            "多重计分：方案中 %d 门课程同时归属多个模块，"
+            "其学分按各所属模块分别计入（earned 与 selected_no_credit 同口径）。"
+            % multi_tag_course_count)
 
     return {"summary": summary, "warnings": warnings,
             "extra_courses": unmatched, "totals": totals,

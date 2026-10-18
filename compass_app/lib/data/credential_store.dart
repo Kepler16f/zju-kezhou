@@ -356,11 +356,14 @@ class CredentialStore {
     return 0;
   }
 
-  /// 外语等级选择（需求 #5）：'L1'|'L2'|'L3' 或 null（未选择，引擎按方案原要求）。
+  /// 外语口径选择（2026-10-18 改版）：null/''=未选择（按方案原要求）；
+  /// 'L1'|'L2'|'L3'=档位（映射 caps 作自选默认）；或正数字符串（如 '5.5'）
+  /// =自选要求学分。同一键值的语义扩展，旧存档（纯档位串）读时兼容。
   Future<void> saveForeignLevel(String? level) =>
       _saveNavPref('foreignLevel', level ?? '');
 
-  /// 读取外语等级：缺省/空串一律 null（宁缺勿猜），绝不抛异常。
+  /// 读取外语口径：档位串原样返回；正数字符串原样返回（自选分，主线解析）；
+  /// 其余（空串/非数字/≤0/缺省）一律 null（宁缺勿猜），绝不抛异常。
   Future<String?> loadForeignLevel() async {
     try {
       final f = File(p.join((await _dirGet()).path, 'nav.cfg'));
@@ -368,7 +371,11 @@ class CredentialStore {
         final raw = json.decode(_deobfuscate(await f.readAsString()));
         if (raw is Map) {
           final v = raw['foreignLevel'];
-          if (v is String && (v == 'L1' || v == 'L2' || v == 'L3')) return v;
+          if (v is String) {
+            if (v == 'L1' || v == 'L2' || v == 'L3') return v;
+            final n = double.tryParse(v);
+            if (n != null && n > 0) return v;
+          }
         }
       }
     } catch (_) {/* 坏文件/沙箱不可用：未选择 */}

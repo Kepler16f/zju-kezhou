@@ -287,14 +287,20 @@ class GroupRuleTest(unittest.TestCase):
         r2 = audit.build(rec(planned=[{"course_id": "W3", "name": "写作3", "credits": 2.0}]), plan)
         self.assertEqual(r2["summary"][0]["selected_no_credit"], 1)
 
-    def test_engine_trace_v13_and_caliber_notes(self):
+    def test_engine_trace_v14_and_caliber_notes(self):
         r = audit.build(rec(), PLANS["computer_science"])
-        self.assertEqual(r["trace"]["engine"], "v1.3")
+        self.assertEqual(r["trace"]["engine"], "v1.4")
         self.assertIn("caliber_notes", r)
         self.assertTrue(any("earned=已获学分" in n for n in r["caliber_notes"]))
         self.assertTrue(any("selected_no_credit=已选未获学分" in n for n in r["caliber_notes"]))
+        # v1.4 固定第三条口径（多标签双计）恒在
+        self.assertTrue(any("同一课程多类别归属" in n for n in r["caliber_notes"]))
         for m in r["summary"]:
             self.assertIn("selected_no_credit", m)
+        # 总学分口径（v1.4）：CS golden 声明 103 → plan_declared
+        self.assertEqual(r["totals"]["plan_total_credits"], 103.0)
+        self.assertEqual(r["totals"]["total_basis"], "plan_declared")
+        self.assertTrue(any("方案声明最低毕业学分" in n for n in r["trace"]["notes"]))
 
 
 class ForeignLangLevelTest(unittest.TestCase):
@@ -350,6 +356,87 @@ class ForeignLangLevelTest(unittest.TestCase):
         r = audit.build(rec(), PLANS["computer_science"], action={"foreign_lang_level": "L1"})
         self.assertTrue(any("未生效" in n for n in r["trace"]["notes"]))
         self.assertFalse(any("外语口径" in n for n in r["caliber_notes"]))
+
+
+class MultiTagDoubleCountTest(unittest.TestCase):
+    """多重计分（v1.4 用户口径）：一节课归属多个模块时学分两边都计。"""
+
+    @staticmethod
+    def _module(mid, path, required, title=None):
+        return {"module_id": mid, "module_path": path, "title": title or path,
+                "level": 1, "category": "必修", "required_credits": required,
+                "plan_credits_raw": None, "plan_credits_unit": None, "notes": []}
+
+    @staticmethod
+    def _course(cid, name, credits, mid):
+        return {"course_id": cid, "name": name, "credits": credits, "module_id": mid,
+                "offered": ["秋", "春"], "offered_years": None, "prereq": [],
+                "source": {"page": 1}}
+
+    def _multi_plan(self):
+        # W1 同时挂在「大学写作（四选一）」与「专业限选」两个模块
+        return {
+            "meta": {"major": "mt", "source_doc": "d.pdf", "grade": "2023",
+                     "verified_at": "2026-01-01", "total_credits": 4.0},
+            "modules": [
+                self._module("writing_group", "通识教育/通识选修 · 大学写作（四选一）", 8.0, "大学写作（四选一）"),
+                self._module("other", "专业教育/专业限选", 2.0),
+            ],
+            "courses": [
+                self._course("W1", "写作1", 2.0, "writing_group"),
+                self._course("W2", "写作2", 2.0, "writing_group"),
+                self._course("W3", "写作3", 2.0, "writing_group"),
+                self._course("W4", "写作4", 2.0, "writing_group"),
+                self._course("W1", "写作1", 2.0, "other"),  # 同课号第二个归属
+            ],
+        }
+
+    def _row(self, report, mid):
+        return next(m for m in report["summary"] if m["module_id"] == mid)
+
+    def test_same_course_id_two_modules_earns_both(self):
+        r = audit.build(rec(courses=[cr("W1", "写作1", 2.0)]), self._multi_plan())
+        self.assertEqual(self._row(r, "writing_group")["earned"], 2.0)
+        self.assertEqual(self._row(r, "other")["earned"], 2.0)
+        self.assertEqual(r["totals"]["earned"], 4.0)
+        # 两处 W1 明细都标 multi_tag
+        for mid in ("writing_group", "other"):
+            w1 = next(c for c in self._row(r, mid)["plan_courses"] if c["course_id"] == "W1")
+            self.assertTrue(w1.get("multi_tag"), mid)
+        self.assertTrue(any("多重计分" in n for n in r["trace"]["notes"]))
+        self.assertTrue(any("同一课程多类别归属" in n for n in r["caliber_notes"]))
+
+    def test_selected_no_credit_double(self):
+        w = {"course_id": "W1", "name": "写作1", "credits": 2.0,
+             "grade": None, "passed": False, "semester": "2025-A"}
+        r = audit.build(rec(courses=[w]), self._multi_plan())
+        self.assertEqual(self._row(r, "writing_group")["selected_no_credit"], 1)
+        self.assertEqual(self._row(r, "other")["selected_no_credit"], 1)
+        self.assertEqual(self._row(r, "writing_group")["earned"], 0.0)
+
+    def test_retake_counts_once_per_module(self):
+        r = audit.build(rec(courses=[
+            cr("W1", "写作1", 2.0, grade=61),
+            cr("W1", "写作1", 2.0, grade=88),
+        ]), self._multi_plan())
+        self.assertEqual(self._row(r, "writing_group")["earned"], 2.0)
+        self.assertEqual(self._row(r, "other")["earned"], 2.0)
+        self.assertEqual(r["totals"]["earned"], 4.0)
+
+    def test_same_name_different_id_cross_modules(self):
+        plan = {
+            "meta": {"major": "mt2", "source_doc": "d.pdf", "grade": "2023",
+                     "verified_at": "2026-01-01", "total_credits": 5.0},
+            "modules": [self._module("m1", "专业教育/专业核心", 3.0),
+                        self._module("m2", "通识教育/劳育类", 2.0)],
+            "courses": [self._course("A1", "劳动教育实践", 3.0, "m1"),
+                        self._course("B2", "劳动教育实践", 2.0, "m2")],
+        }
+        # 成绩单只有 A1；B2 靠同名匹配（≥0.85）命中 → 两模块各计一次
+        r = audit.build(rec(courses=[cr("A1", "劳动教育实践", 3.0)]), plan)
+        self.assertEqual(self._row(r, "m1")["earned"], 3.0)
+        self.assertEqual(self._row(r, "m2")["earned"], 2.0)
+        self.assertEqual(r["totals"]["earned"], 5.0)
 
 
 if __name__ == "__main__":

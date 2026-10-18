@@ -19,6 +19,7 @@ import '../data/plan_models.dart';
 import '../data/semester.dart';
 import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
+import '../engine/audit.dart' show kForeignLangCaps;
 
 enum DataMode { sample, paste, zju }
 
@@ -76,7 +77,9 @@ class SettingsPage extends StatefulWidget {
   /// 选课指导模式开关当前状态（主线持有；传入以渲染开关位置，默认关）。
   final bool teacherMode;
 
-  /// 外语类等级（需求 #5）：null=未选择（按方案原要求）；'L1'/'L2'/'L3' 折算封顶。
+  /// 外语口径（2026-10-18 改版，不绑死三档）：null=未选择（按方案原要求）；
+  /// 'L1'/'L2'/'L3'=档位（映射 kForeignLangCaps 作自选默认）；或正数字符串
+  /// （如 '5.5'）=自选要求学分（可超过方案原要求，引擎 foreign_lang_credits）。
   final String? foreignLevel;
   final ValueChanged<String?>? onForeignLevelChange;
 
@@ -126,6 +129,103 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 选课指导模式「首次开启确认」：本页生命周期内问一次（页面在 IndexedStack 中
   /// 常驻，跨页签不丢），确认过后再进不再打断；跨会话只问一次需主线持久化。
   bool _guideModeConfirmAsked = false;
+
+  // —— 外语自选要求学分（2026-10-18 改版）——
+  /// 数字框显示分：提交/失焦才经 [_commitForeignCredit] 上抛（逐键上抛会触发
+  /// 主线逐键重算审计并跳页）；非法输入（空/非数字/≤0）回落当前生效值。
+  final TextEditingController _foreignCreditCtl = TextEditingController();
+  final FocusNode _foreignCreditFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _foreignCreditFocus.addListener(_onForeignCreditFocus);
+    _syncForeignCreditCtl();
+  }
+
+  @override
+  void didUpdateWidget(covariant SettingsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 主线上抛新值（选档/落库回填/重算回写）后同步显示；正编辑且文本已是
+    // 生效值时 [_syncForeignCreditCtl] 不打断输入。
+    if (widget.foreignLevel != oldWidget.foreignLevel) {
+      _syncForeignCreditCtl();
+    }
+  }
+
+  @override
+  void dispose() {
+    _foreignCreditFocus.removeListener(_onForeignCreditFocus);
+    _foreignCreditFocus.dispose();
+    _foreignCreditCtl.dispose();
+    super.dispose();
+  }
+
+  void _onForeignCreditFocus() {
+    if (!_foreignCreditFocus.hasFocus) _commitForeignCredit();
+  }
+
+  /// 当前生效的外语要求学分（null=未选择）：数字串取自选分，档位取建议默认。
+  double? get _effectiveForeignCredits {
+    final v = widget.foreignLevel;
+    if (v == null) return null;
+    final n = double.tryParse(v);
+    if (n != null && n > 0) return n;
+    return kForeignLangCaps[v];
+  }
+
+  /// 四档高亮：档位串/等值自选分 → 对应档；自定义分 → 空选（都不高亮）。
+  String? get _foreignSegment {
+    final v = widget.foreignLevel;
+    if (v == null) return '';
+    if (kForeignLangCaps.containsKey(v)) return v;
+    final n = double.tryParse(v);
+    if (n == null || n <= 0) return '';
+    for (final e in kForeignLangCaps.entries) {
+      if ((e.value - n).abs() <= 1e-9) return e.key;
+    }
+    return null;
+  }
+
+  /// 数字框显示跟随生效值（选档自动填档位分；外部值变化亦同步）。
+  void _syncForeignCreditCtl() {
+    final cur = _effectiveForeignCredits;
+    if (cur == null) {
+      if (_foreignCreditCtl.text.isNotEmpty) _foreignCreditCtl.text = '';
+      return;
+    }
+    final shown = double.tryParse(_foreignCreditCtl.text.trim());
+    if (shown == null || (shown - cur).abs() > 1e-9) {
+      _foreignCreditCtl.text = _fmtCredit(cur);
+      _foreignCreditCtl.selection =
+          TextSelection.collapsed(offset: _foreignCreditCtl.text.length);
+    }
+  }
+
+  /// 提交/失焦：合法正数 → 上抛（恰为档位分折算回档位串，存档保持 L1/L2/L3 形，
+  /// 便于四档高亮与旧档位语义兼容）；非法（空/非数字/≤0）→ 回落当前生效值，
+  /// 生效值从不落非法态。
+  void _commitForeignCredit() {
+    final onChange = widget.onForeignLevelChange;
+    final v = double.tryParse(_foreignCreditCtl.text.trim());
+    final cur = _effectiveForeignCredits;
+    if (onChange != null && v != null && v > 0 &&
+        (cur == null || (v - cur).abs() > 1e-9)) {
+      for (final e in kForeignLangCaps.entries) {
+        if ((e.value - v).abs() <= 1e-9) {
+          onChange(e.key);
+          return;
+        }
+      }
+      onChange(_fmtCredit(v));
+      return;
+    }
+    _syncForeignCreditCtl(); // 无变化或非法 → 仅规范显示（非法即回落）
+  }
+
+  /// 学分显示格式：整数省小数（6.0 → '6'），其余原样（4.5 → '4.5'）。
+  static String _fmtCredit(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
   Future<void> _doExportShare() async {
     final fn = widget.onExportSharePack;

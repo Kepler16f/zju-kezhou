@@ -1020,8 +1020,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   /// 审计动作参数（需求 #5）：仅在学生选定了外语等级时传入；null → 引擎按方案原要求。
-  Map<String, dynamic>? _auditAction() =>
-      _foreignLevel == null ? null : {'foreign_lang_level': _foreignLevel};
+  /// 审计动作参数（需求 #5 改版）：_foreignLevel 可能是档位串 L1/L2/L3（向后
+  /// 兼容，映射 caps 作默认）或用户自选的正分数串（如 '5.5'，走 foreign_lang_credits）；
+  /// 两者都缺 → null，引擎按方案原要求核算。
+  Map<String, dynamic>? _auditAction() {
+    final v = _foreignLevel;
+    if (v == null) return null;
+    final n = double.tryParse(v);
+    if (n != null && n > 0) return {'foreign_lang_credits': n};
+    return {'foreign_lang_level': v};
+  }
 
   /// 外语等级变更后用同一份记录重算审计（无记录则跳过——首次审计自然带新值）。
   Future<void> _recomputeAudit() async {
