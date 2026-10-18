@@ -501,7 +501,12 @@ void main() {
         clientFactory: (c) =>
             AiClient(c, streamSender: (_) => _statusStream(401)),
       );
-      await ctrl.send(_cfg, '失败问题');
+      // FakeAsync 不投递 async* 流的排程（assistant 会永远停在 streaming）。
+      // 与 widget_test 同法：整个异步链路放进 runAsync 用真实时钟跑完，
+      // 再把已落定为 failed 的消息树挂出来断言渲染。
+      await tester.runAsync(() async {
+        await ctrl.send(_cfg, '失败问题');
+      });
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(
           body: Center(
@@ -513,6 +518,7 @@ void main() {
           ),
         ),
       ));
+      expect(ctrl.busy, isFalse);
       expect(find.text('失败问题'), findsOneWidget);
       expect(find.text('重发'), findsOneWidget);
       expect(find.text('撤回'), findsOneWidget);

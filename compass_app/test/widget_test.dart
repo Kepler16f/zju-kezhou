@@ -20,6 +20,12 @@ import 'package:compass_app/data/credential_store.dart';
 import 'package:compass_app/main.dart';
 import 'package:compass_app/pages/curriculum_plan_page.dart';
 
+/// 底栏 NavigationBar 为 onlyShowSelected 标签行为：未选中页签的文字标签中心
+/// 贴在屏幕下沿之外，find.text 的 tap 会 miss（命中不到）——页签切换一律点
+/// NavigationBar 内的图标。
+Finder navTabIcon(IconData icon) =>
+    find.descendant(of: find.byType(NavigationBar), matching: find.byIcon(icon));
+
 /// 测试环境无原生插件，mock 路径通道避免 MissingPluginException。
 void _mockPlatformChannels() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -68,7 +74,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
       // 切到"设置"
-      await tester.tap(find.text('设置'));
+      await tester.tap(navTabIcon(Icons.settings_outlined));
       await tester.pump();
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
@@ -93,7 +99,7 @@ void main() {
 
     // 学业页有数据：切过去看 GPA 卡 + 成绩详情入口
     // 学业页有数据：切过去看 GPA 卡 + 成绩详情入口
-    await tester.tap(find.text('学业'));
+    await tester.tap(navTabIcon(Icons.dashboard_outlined));
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('成绩'), findsWidgets);
     expect(find.text('五分制'), findsOneWidget);
@@ -123,7 +129,7 @@ void main() {
       await tester.pump();
     });
 
-    await tester.tap(find.text('选课'));
+    await tester.tap(navTabIcon(Icons.how_to_vote_outlined));
     await tester.pump();
     await tester.pump();
     expect(find.text('登录教务网后可查看选课入口与课程'), findsOneWidget);
@@ -152,7 +158,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await tester.pump();
 
-      await tester.tap(find.text('选课'));
+      await tester.tap(navTabIcon(Icons.how_to_vote_outlined));
       await tester.pump();
       await tester.pump();
 

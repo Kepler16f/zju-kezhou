@@ -122,6 +122,12 @@ const _certifiedKeywords = <String, List<String>>{
   '劳育类': ['劳动', '劳育', '农事', '耕读', '实践劳动', '志愿服务'],
 };
 
+/// 认定类别名集合（课程名纠正只允许在板块类别本身也是认定类时生效，
+/// 见 coursesCategoryMap #1 修正版注释）。
+const Set<String> _certifiedCategoryValues = {
+  '心理健康类', '军体类', '思政类', '美育类', '创新创业类', '劳育类',
+};
+
 /// 多类同命中时的确定性优先级（写死顺序、可测）：心理健康 > 美育 > 创新创业 >
 /// 劳育。心理健康最专（词几乎只出现在心理课），故最优先；劳育词面最宽，最后。
 /// 纯函数：contains 任一关键词即归该类；无命中返回 null（宁缺勿猜）。
@@ -1050,9 +1056,13 @@ Map<String, String> coursesCategoryMap(
         : tailCategory(mid == null ? '' : (pathByModule['$mid'] ?? ''));
     final name = '${row['name'] ?? ''}'.trim();
     if (cat.isEmpty || name.isEmpty) continue;
-    // #1：课程名明确指向军体/思政/美育/劳育等认定类时，优先于板块类别。
-    // 板块标题漏识别会把军体课并进思政类、劳育课并进美育类；课程名更可靠。
-    final refined = certifiedCategoryOf(name) ?? cat;
+    // #1（2026-10-18 修正版）：仅当板块类别**本身也是认定类值**时才用课程名纠正
+    //（板块漏识别把军体课并进思政类、劳育课并进美育类的场景）；板块路径是明确
+    // 结构类别（通识必修/专业核心…）时不拿课名覆盖——「思想道德与法治」属通识
+    // 必修板块，不能被关键词拉成思政类（否则学分看板与旧口径双双漂移）。
+    final refined = _certifiedCategoryValues.contains(cat)
+        ? (certifiedCategoryOf(name) ?? cat)
+        : cat;
     out.putIfAbsent(name, () => refined);
   }
   return out;
@@ -1076,16 +1086,16 @@ int applyPlanCategories(
     final cur = '${c['category'] ?? ''}'.trim();
     if (cur.isNotEmpty && cur != '未分类') continue;
     final name = '${c['name'] ?? ''}'.trim();
-    final certified = certifiedCategoryOf(name);
     final cat = byName[name];
-    if (certified != null) {
-      // 课程名认定类（军体/思政/美育/劳育…）优先：避免军体并入思政、
-      // 劳育并入美育（用户反馈 #1）。
-      c['category'] = certified;
-    } else if (cat != null && cat.isNotEmpty) {
+    if (cat != null && cat.isNotEmpty) {
+      // 主路：方案板块匹配结果（认定类板块的军体/思政纠正已在 coursesCategoryMap
+      // 内完成，此处直接用）。板块给出明确类别即采信，不再拿课名覆盖结构类别。
       c['category'] = cat;
     } else {
-      continue;
+      // 第二路：方案模块未命中（name 不在匹配结果里）→ 认定类关键词归类（#13）。
+      final certified = certifiedCategoryOf(name);
+      if (certified == null) continue;
+      c['category'] = certified;
     }
     filled++;
   }

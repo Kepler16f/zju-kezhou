@@ -132,8 +132,10 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await tester.pump();
     });
-    // 切到设置页
-    await tester.tap(find.text('设置'));
+    // 切到设置页。NavigationBar 为 onlyShowSelected 标签行为：未选中页签的
+    // 文字标签中心贴在屏幕下沿之外，tap 文字会 miss——点图标。
+    await tester.tap(find.descendant(
+        of: find.byType(NavigationBar), matching: find.byIcon(Icons.settings_outlined)));
     await tester.pump();
     await tester.dragUntilVisible(
       find.text('导出到剪贴板'),

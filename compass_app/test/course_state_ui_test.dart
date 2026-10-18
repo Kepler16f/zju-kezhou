@@ -46,7 +46,13 @@ void main() {
             alignment: Alignment.topLeft,
             child: SizedBox(
               width: 320,
-              child: CourseBubble(course: course, state: state),
+              // 与选课页调用点一致：类别 Chip 走 widgets 参数（course.categories
+              // 由页面显式传入），气泡本体不隐式读取 course.categories。
+              child: CourseBubble(
+                course: course,
+                state: state,
+                categories: course.categories,
+              ),
             ),
           ),
         ),
