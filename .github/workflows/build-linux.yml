@@ -1,10 +1,12 @@
 # Linux 构建（单一平台文件，供 buildAll.yml 分发器按需调用）：
-#   x64   —— ubuntu-latest，subosito/flutter-action，产 bundle 打 tar.gz
+#   x64   —— ubuntu-latest，subosito/flutter-action，产 bundle 打 deb（amd64）
 #   arm64 —— ubuntu-24.04-arm（GitHub 托管 ARM64 runner，公开仓库免费；reunion 项目同款）
 #            手动装 Flutter：官方发布清单 releases_linux.json 里**没有任何 arm64 SDK 归档**
 #            （744 条记录全 x64），subosito/flutter-action 在 arm64 上装不上；改为 clone
 #            官方仓库，Flutter 会按 uname -m=aarch64 自举 dart-sdk-linux-arm64 与
 #            linux-arm64 引擎产物（两者在发布存储桶里都存在）。
+# 交付形态：deb 直装包（用户 2026-10-18 要求 linux 出 deb）；bundle 装 /opt/kezhou，
+#   /usr/bin/kezhou 软链入口 + 桌面项 + hicolor 图标；版本取自 pubspec 防漂移。
 name: Build Linux
 
 on:
@@ -30,19 +32,21 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: {channel: stable, flutter-version: 3.47.7}
       - run: flutter build linux --release
-      # bundle 是目录——打 tar.gz 后上传单文件（路径与上传步骤严格对齐；曾经写成
-      # ../../../ 导致实际落在 build/ 根下，上传步骤找不到文件却不报错）
-      - name: 打包 bundle 为 tar.gz
+      # bundle 是目录——打 deb 直装包（用户 2026-10-18 要求 linux 出 deb）：
+      # bundle 装 /opt/kezhou，/usr/bin/kezhou 软链 + .desktop + 图标；版本取自 pubspec。
+      - name: 打包 bundle 为 deb（amd64）
         run: |
-          cd build/linux/x64/release
-          tar czf "${{ github.workspace }}/compass_app/build/KeZhou-linux-x64.tar.gz" bundle
-          ls -lh "${{ github.workspace }}/compass_app/build/KeZhou-linux-x64.tar.gz"
+          VER=$(grep -m1 '^version:' pubspec.yaml | sed 's/^version:[[:space:]]*//')
+          bash "${{ github.workspace }}/packaging/build_linux_deb.sh" \
+            build/linux/x64/release/bundle amd64 "$VER" \
+            "${{ github.workspace }}/compass_app/build/KeZhou-linux-amd64.deb" \
+            android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
       - uses: actions/upload-artifact@v7
         with:
-          name: KeZhou-linux-x64.tar.gz
+          name: kezhou-linux-x64
           archive: false
           if-no-files-found: error
-          path: compass_app/build/KeZhou-linux-x64.tar.gz
+          path: compass_app/build/KeZhou-linux-amd64.deb
 
   linux-arm64:
     name: Linux arm64
@@ -77,14 +81,16 @@ jobs:
           file "$BIN"
           file "$BIN" | grep -q aarch64 || { echo "架构不是 aarch64"; exit 1; }
 
-      - name: 打包 bundle 为 tar.gz
+      - name: 打包 bundle 为 deb（arm64）
         run: |
-          cd build/linux/arm64/release
-          tar czf "${{ github.workspace }}/compass_app/build/KeZhou-linux-arm64.tar.gz" bundle
-          ls -lh "${{ github.workspace }}/compass_app/build/KeZhou-linux-arm64.tar.gz"
+          VER=$(grep -m1 '^version:' pubspec.yaml | sed 's/^version:[[:space:]]*//')
+          bash "${{ github.workspace }}/packaging/build_linux_deb.sh" \
+            build/linux/arm64/release/bundle arm64 "$VER" \
+            "${{ github.workspace }}/compass_app/build/KeZhou-linux-arm64.deb" \
+            android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
       - uses: actions/upload-artifact@v7
         with:
-          name: KeZhou-linux-arm64.tar.gz
+          name: kezhou-linux-arm64
           archive: false
           if-no-files-found: error
-          path: compass_app/build/KeZhou-linux-arm64.tar.gz
+          path: compass_app/build/KeZhou-linux-arm64.deb

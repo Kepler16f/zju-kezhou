@@ -1,7 +1,8 @@
 # macOS 构建（单一平台文件，供 buildAll.yml 分发器按需调用）：
 #   arm64 —— macos-14（M 系 runner）flutter build macos 直出
 #   x64   —— 同一 runner 上 xcodebuild -arch x86_64 交叉编译（Flutter 不产 x64 桌面档）
-# 两个架构各出独立 zip，避免互相覆盖；打包前用 lipo 校验实际架构，防止错包。
+# 两个架构各出独立 dmg（hdiutil 拖拽安装镜像，含 /Applications 软链），避免互相覆盖；
+# 打包前用 lipo 校验实际架构，防止错包。产物为未签名 dmg（本机 Gatekeeper 需右键打开）。
 name: Build macOS
 
 on:
@@ -30,17 +31,24 @@ jobs:
           APP=$(ls -d build/macos/Build/Products/Release/*.app | head -1)
           BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
           echo "checking $BIN"; lipo -archs "$BIN"
-      # .app 是目录——打 zip 后上传单文件
-      - name: 打包 .app 为 zip
+      # .app 是目录——打成拖拽安装 dmg（含 /Applications 软链，未签名）后上传单文件
+      - name: 打包 .app 为 dmg
         run: |
-          cd build/macos/Build/Products/Release
-          zip -r -y ../KeZhou-macos-arm64.zip *.app
+          set -euo pipefail
+          APP=$(ls -d build/macos/Build/Products/Release/*.app | head -1)
+          OUT="build/macos/Build/Products/KeZhou-macos-arm64.dmg"
+          STAGE=$(mktemp -d)
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname KeZhou -srcfolder "$STAGE" -ov -format UDZO "$OUT"
+          rm -rf "$STAGE"
+          ls -lh "$OUT"
       - uses: actions/upload-artifact@v7
         with:
           name: kezhou-macos-arm64
           archive: false
           if-no-files-found: error
-          path: compass_app/build/macos/Build/Products/KeZhou-macos-arm64.zip
+          path: compass_app/build/macos/Build/Products/KeZhou-macos-arm64.dmg
 
   macos-x64:
     name: macOS x64
@@ -66,13 +74,21 @@ jobs:
           APP=$(ls -d build/macos/Build/Products/Release/*.app | head -1)
           BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
           echo "checking $BIN"; lipo -archs "$BIN" | tee /dev/stderr | grep -q x86_64
-      - name: 打包 .app 为 zip
+      # .app 是目录——打成拖拽安装 dmg（含 /Applications 软链，未签名）后上传单文件
+      - name: 打包 .app 为 dmg
         run: |
-          cd build/macos/Build/Products/Release
-          zip -r -y ../KeZhou-macos-x64.zip *.app
+          set -euo pipefail
+          APP=$(ls -d build/macos/Build/Products/Release/*.app | head -1)
+          OUT="build/macos/Build/Products/KeZhou-macos-x64.dmg"
+          STAGE=$(mktemp -d)
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname KeZhou -srcfolder "$STAGE" -ov -format UDZO "$OUT"
+          rm -rf "$STAGE"
+          ls -lh "$OUT"
       - uses: actions/upload-artifact@v7
         with:
           name: kezhou-macos-x64
           archive: false
           if-no-files-found: error
-          path: compass_app/build/macos/Build/Products/KeZhou-macos-x64.zip
+          path: compass_app/build/macos/Build/Products/KeZhou-macos-x64.dmg
