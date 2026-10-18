@@ -16,16 +16,19 @@ def api(u):
 deadline = time.time() + 2400
 while time.time() < deadline:
     try:
-        r = api(f"/repos/Kepler16f/zju-kezhou/actions/runs/{run_id}")
+        run = api(f"/repos/Kepler16f/zju-kezhou/actions/runs/{run_id}")
+        jobs = api(f"/repos/Kepler16f/zju-kezhou/actions/runs/{run_id}/jobs?per_page=100")["jobs"]
     except Exception as e:
         print("poll retry:", repr(e)[:70])
         time.sleep(20)
         continue
-    jobs = [j for j in r["jobs"]["jobs"] if not flt or flt.lower() in (j["name"] or "").lower()]
+    jobs = [j for j in jobs if not flt or flt.lower() in (j["name"] or "").lower()]
     rows = [(j["name"][:40], j["status"], j["conclusion"]) for j in jobs]
-    print("status", r["status"], r.get("conclusion"))
+    print("run status", run["status"], run.get("conclusion"))
     for x in rows:
         print("   ", x)
-    if all(x[1] == "completed" for x in rows) and rows:
+    if run["status"] == "completed":
+        break
+    if rows and all(x[1] == "completed" for x in rows):
         break
     time.sleep(25)
