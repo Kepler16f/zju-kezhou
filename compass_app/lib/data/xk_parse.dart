@@ -647,9 +647,22 @@ XkListParseResult parseXkCourseList(String body,
     final categoryLabel = label.trim();
     // 类别入口身份（诉求 #11）：categories 是结构化类别列表（单行来自一个入口）；
     // tags 仍兼容混排入口名（建议卡类别推断等读取点未迁移，勿只删不加）。
-    final categories = <String>[if (categoryLabel.isNotEmpty) categoryLabel];
-    if (categoryLabel.isNotEmpty && !tags.contains(categoryLabel)) {
-      tags.add(categoryLabel);
+    //
+    // 2026-10-18 LIVE 实测（test/live_probe_xk_test.dart）：浙大自主选课页对
+    // 「思政类/军体类/外语类」等 lx=zl 子入口按 dl 查询恒返回 []，课程其实都
+    // 在「全部课程」池里，其真实类别记在每行的 kcgs（课程归属）/rdlb（认定类别）
+    // 字段（多标签用 \ 或 ，、/| 分隔，如「思政类\军体类」）。故 categories 除
+    // 入口 label 外，并集服务器自带的 kcgs/rdlb 类别标签——既修复分类视图空白，
+    // 也让一门课的多个标签如实呈现（诉求 #11）。
+    final categories = <String>[];
+    for (final c in [
+      if (categoryLabel.isNotEmpty) categoryLabel,
+      ..._serverCategoryLabels(m),
+    ]) {
+      if (!categories.contains(c)) categories.add(c); // 入口 label 与服务器类别去重
+    }
+    for (final cat in categories) {
+      if (!tags.contains(cat)) tags.add(cat);
     }
     final sksj = _pick(m, const ['sksj', 'skTime', 'time']).trim();
     var slots = <Map<String, dynamic>>[];
@@ -697,6 +710,42 @@ XkListParseResult parseXkCourseList(String body,
   }
   issues.addAll(slotIssues);
   return XkListParseResult(courses: courses, state: 'data', issues: issues, dropped: dropped);
+}
+
+/// 分类视图客户端回退（2026-10-18 LIVE 实测根因修复）。
+/// 浙大自主选课页对「思政类/军体类/外语类」等 lx=zl 子入口按 dl 查询恒返回空，
+/// 但课程都在「全部课程」池里、每行带服务器归类字段 kcgs/rdlb（已解析进
+/// categories）。故当某类别入口查回空时，从全局池按类别标签过滤回填：命中条件
+/// 为课程 categories 中任一标签与目标类别「相等或互为包含」（长度≥2 才允许包含，
+/// 避免单字误配）。纯函数、不抛异常、宁缺勿猜（匹配不到就返回空，交回原空态）。
+List<XkCourse> deriveCategoryFromPool(
+    List<XkCourse> pool, String categoryLabel) {
+  final target = _normCat(categoryLabel);
+  if (target.isEmpty) return const [];
+  bool hit(String raw) {
+    final c = _normCat(raw);
+    if (c.isEmpty) return false;
+    if (c == target) return true;
+    if (c.length >= 2 && target.length >= 2) {
+      return c.contains(target) || target.contains(c);
+    }
+    return false;
+  }
+
+  final out = <XkCourse>[];
+  for (final course in pool) {
+    if (course.categories.any(hit)) out.add(course);
+  }
+  return out;
+}
+
+/// 类别标签归一：去空白、去「（演示）」等括号后缀、去结尾「类」以外不影响匹配，
+/// 仅保守剥离空格与括号注记（服务器 kcgs 与入口 label 都可能是「美育类」/「美育类
+/// 通识必修课程」/「军体类（演示）」等形态）。
+String _normCat(String s) {
+  var t = s.trim();
+  t = t.replaceAll(RegExp(r'[（(].*?[）)]'), ''); // 去括号注记
+  return t.trim();
 }
 
 // ───────────────────────── 当前课表（xskbcx kbList）→ 时隙 ─────────────────────────
@@ -903,6 +952,27 @@ double? _creditsFromKcxx(Object? v) {
   if (parts.length < 2) return null;
   final c = double.tryParse(parts[1].trim());
   return (c != null && c > 0 && c <= 30) ? c : null;
+}
+
+/// 服务器自带的课程归属类别标签（2026-10-18 LIVE 实测新增）。
+/// 浙大自主选课页对思政/军体/外语等 lx=zl 子入口按 dl 查询恒空，但「全部课程」
+/// 池每行带 kcgs（课程归属，如「外语类」「思政类\军体类」多标签）与 rdlb（认定
+/// 类别，如「心理健康类」）两字段——这是分类视图真正可靠的数据源。按 `\` 及常见
+/// 分隔符拆成多个类别，去空去「-」占位；纯代码/超长说明串不纳入（宁缺勿猜）。
+List<String> _serverCategoryLabels(Map<String, dynamic> m) {
+  final out = <String>[];
+  for (final k in const ['kcgs', 'rdlb']) {
+    final v = m[k];
+    if (v == null || v is bool || v is Map || v is List) continue;
+    for (final p in v.toString().split(RegExp(r'[,，、;；/|\\]'))) {
+      final s = p.trim();
+      if (s.isEmpty || s == 'null' || s == '-') continue;
+      if (s.length > 16) continue; // 说明文本，不作类别
+      if (RegExp(r'^[\d.\-]+$').hasMatch(s)) continue;
+      if (!out.contains(s)) out.add(s);
+    }
+  }
+  return out;
 }
 
 /// 教务列表行的「课程标签/性质」多键收集（诉求 #5：标签→培养方案课程类别）。

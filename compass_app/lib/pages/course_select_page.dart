@@ -386,6 +386,9 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         }
         _listsVersion++;
       });
+      // 单入口直点：若本 tab 服务器回空但「全部课程」池已含该类课程（LIVE 实测
+      // 思政/军体/外语子入口恒空），同样客户端回退填充（幂等，仅填确实匹配到的）。
+      _applyPoolFallback();
       _publishAiContext();
     } catch (e) {
       if (mounted) {
@@ -479,11 +482,45 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     if (mounted) {
       setState(() {
         _aggregating = false;
+        _applyPoolFallback();
         // 手动聚合结束切合并视图；自动聚合开始时已切过，且不劫持用户随后的浏览选择
         if (!_cancelAggregate && !auto) _view = _View.merged;
       });
       _publishAiContext();
     }
+  }
+
+  /// 空类别 tab 的客户端回退（2026-10-18 LIVE 实测：思政/军体/外语等 lx=zl
+  /// 子入口服务器恒回 []，课程真身在「全部课程」池、带 kcgs/rdlb 归类字段）。
+  /// 在聚合收尾统一执行：凡 data 拉回为空/标记 empty 的入口，尝试从已有 data
+  /// 池按类别标签派生；派生到的以 state=data 写回并留痕说明来源。
+  void _applyPoolFallback() {
+    final rounds = _index?.rounds ?? const <XkRound>[];
+    final pool = <XkCourse>[
+      for (final r in _lists.values)
+        if (r.state == 'data') ...r.courses,
+    ];
+    if (pool.isEmpty) return;
+    var changed = false;
+    for (final r in rounds) {
+      final key = _rk(r);
+      final res = _lists[key];
+      final emptyTab = res == null || (res.state != 'data' && res.state != 'unavailable');
+      final emptyData = res != null && res.state == 'data' && res.courses.isEmpty;
+      if (!emptyTab && !emptyData) continue; // 已有数据或状态未知（不覆盖错误态）
+      final derived = deriveCategoryFromPool(pool, r.label);
+      if (derived.isEmpty) continue; // 池里也没有 → 保持原样，交回"该类别暂无课程"
+      _lists[key] = XkListParseResult(
+        courses: derived,
+        state: 'data',
+        issues: ['按服务器课程归属字段（全部课程池）归类显示'],
+        fromCache: res?.fromCache ?? false,
+        fetchedAtMillis: res?.fetchedAtMillis ?? 0,
+      );
+      _roundErrors.remove(key);
+      changed = true;
+    }
+    if (changed) _listsVersion++;
   }
 
   /// 合并结果按 _lists 版本缓存（评审L1：避免每帧/每击键重复全量合并）。

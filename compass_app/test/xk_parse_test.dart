@@ -681,6 +681,66 @@ void main() {
           expect(c.tags, contains('军体类')); // tags 兼容口径保留入口名（引擎类别推断消费）
         });
 
+        // ── 2026-10-18 LIVE 实测根因：类别真源在每行 kcgs/rdlb 字段（服务器自带，
+        // 多标签以 \ 或 ，、/| 分隔），入口 dl 查询对思政/军体/外语恒空 ──
+        test('服务器类别字段进 categories：kcgs 多标签（\\ 与逗号分隔）+ rdlb 认定类别', () {
+          // 真实样本（live_probe_xk_test 抓于全部课程池）：
+          //   中国改革开放史 kcgs=思政类； 经济法 kcgs=当代社会；
+          //   思政类\军体类 = 一门课双归属； rdlb=心理健康类。
+          final r = parseXkCourseList(
+              '[{"kcmc":"军事理论","kch":"MIL1","kcgs":"思政类\\\\军体类"},'
+              '{"kcmc":"体育与心理健康","kch":"EDU6","rdlb":"心理健康类","kcgs":"生命探索"},'
+              '{"kcmc":"某课","kch":"X1","kcgs":"美育类,心理健康类"},'
+              '{"kcmc":"脏行","kch":"X2","kcgs":"-","rdlb":"null"}]',
+              xkkzId: 'xk_b',
+              label: '全部课程');
+          final cs = r.courses;
+          expect(cs[0].categories, ['全部课程', '思政类', '军体类']); // 双归属拆分（#11/#2）
+          expect(cs[1].categories, ['全部课程', '生命探索', '心理健康类']); // kcgs+rdlb 并集
+          expect(cs[2].categories, ['全部课程', '美育类', '心理健康类']); // 逗号分隔
+          // 「-」/「null」占位与脏值不进类别；入口 label 保留
+          expect(cs[3].categories, ['全部课程']);
+        });
+
+        test('kcgs 兜底不依赖入口 label 存在（全部课程池行自带类别）', () {
+          final r = parseXkCourseList('[{"kcmc":"大学英语","kch":"F1","kcgs":"外语类"}]',
+              xkkzId: 'F');
+          expect(r.courses.single.categories, ['外语类']);
+          expect(r.courses.single.tags, contains('外语类'));
+        });
+
+        test('入口 label 与服务器类别重复时不重复计入 categories', () {
+          final r = parseXkCourseList('[{"kcmc":"书法","kch":"W1","kcgs":"美育类"}]',
+              xkkzId: 'xk_rdxkc',
+              label: '美育类');
+          expect(r.courses.single.categories, ['美育类']);
+        });
+
+        // 分类视图客户端回退（LIVE 实测：思政/军体/外语子入口恒空，池里按 kcgs 归类）
+        test('deriveCategoryFromPool：空类别 tab 从全部课程池按 kcgs 归类回填', () {
+          final pool = parseXkCourseList(
+              '[{"kcmc":"军事理论","kch":"M1","kcgs":"思政类\\\\军体类"},'
+              '{"kcmc":"大学英语","kch":"E1","kcgs":"外语类"},'
+              '{"kcmc":"高等数学","kch":"M2","kcgs":"自然科学通识类"}]',
+              xkkzId: 'xk_b',
+              label: '全部课程')
+              .courses;
+          // 思政类 tab：命中双归属行（思政类\军体类）
+          expect(deriveCategoryFromPool(pool, '思政类').map((c) => c.kcmc),
+              ['军事理论']);
+          // 军体类 tab：同一门双归属课也在军体桶出现（两边都计，诉求 #11）
+          expect(deriveCategoryFromPool(pool, '军体类').map((c) => c.kcmc),
+              ['军事理论']);
+          expect(deriveCategoryFromPool(pool, '外语类').map((c) => c.kcmc),
+              ['大学英语']);
+          // 池里没有的类别 → 空（保持"该类别暂无课程"，不臆造）
+          expect(deriveCategoryFromPool(pool, '人工智能类'), isEmpty);
+          // 归一匹配：入口 label 带（演示）/括号后缀仍可命中
+          expect(
+              deriveCategoryFromPool(pool, '外语类（演示）').map((c) => c.kcmc),
+              ['大学英语']);
+        });
+
         test('思政/军体桶：kcxzmc 为空的认定型行跨入口合并后类别齐全', () {
           final sz = parseXkCourseList('[{"kcmc":"思想道德与法治","kch":"SZ1101"}]',
                   xkkzId: 'EA', label: '思政类')
