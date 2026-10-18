@@ -2,19 +2,16 @@
 /// 组：登录（教务网账号）/ 数据（数据源+方案+学期+运行）/ AI 解读 /
 /// 分享给指导教师（导出分享包 + 选课指导模式开关）/
 /// 界面（底栏元素排序 + 启动默认首页）/
-/// 桌面端（托盘·退出，按平台显示）/ 关于（版本·致谢·数据与合规·登录诊断日志）。
-/// 通用组已解散（任务 11）：诊断与合规入口并入「关于」组，
-/// 登录组里的诊断/日志类信息默认折叠、点开可见。
+/// 桌面端（托盘·退出，按平台显示）/ 关于（版本·致谢·数据与合规）。
+/// 通用组已解散（任务 11）：「数据与合规」入口并入「关于」组。
 library;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../data/ai_config.dart';
 import '../data/ai_models.dart';
 import '../data/ai_prompts.dart';
 import '../data/app_version.dart';
-import '../data/diagnostic_log.dart';
 import '../data/plan_models.dart';
 import '../data/semester.dart';
 import '../data/xk_parse.dart';
@@ -117,9 +114,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
   bool get _showCreds => _credsExpanded ?? (widget.loggedInAs == null);
 
-  /// 诊断/日志类信息默认折叠（任务 11）：登录卡里只留一行开关，
-  /// 点开才见上次取数时间等运行信息（_showCreds 同款 bool 模式）。
-  bool _diagOpen = false;
 
   /// 「分享给指导教师」：实名导出选项 + 上次导出结果提示（本机内存态，不落盘）。
   bool _shareRealName = false;
@@ -330,40 +324,20 @@ class _SettingsPageState extends State<SettingsPage> {
                   ],
                 ),
               ),
-              // 任务 11：诊断/日志类信息默认隐藏，点「诊断与日志」才展开
-              // （_showCreds 同款 bool 模式，不让运行细节常驻首屏）。
-              if (lastDataAt != null) ...[
+              // 上次取数时间直接内联显示（原「诊断与日志」折叠已移除）。
+              if (lastDataAt != null)
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Row(
                     children: [
-                      TextButton.icon(
-                        onPressed: () => setState(() => _diagOpen = !_diagOpen),
-                        icon: Icon(
-                            _diagOpen
-                                ? Icons.keyboard_arrow_up
-                                : Icons.keyboard_arrow_down,
-                            size: 18),
-                        label: const Text('诊断与日志',
-                            style: TextStyle(fontSize: 12)),
-                      ),
+                      const Icon(Icons.schedule, size: 16),
+                      const SizedBox(width: 8),
+                      Text('上次数据：${_fmt(lastDataAt)}',
+                          style:
+                              const TextStyle(fontSize: 12, color: Colors.grey)),
                     ],
                   ),
                 ),
-                if (_diagOpen)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.schedule, size: 16),
-                        const SizedBox(width: 8),
-                        Text('上次数据：${_fmt(lastDataAt)}',
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-              ],
               // 需求 #2：已登录时收起学号/密码输入区，点"修改"才展开。
               if (loggedInAs != null)
                 Padding(
@@ -641,8 +615,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ],
         _groupHeader('关于'),
-        // 通用组已解散（任务 11）：「数据与合规」「登录诊断日志」两个入口
-        // 并入关于组，标题保持原名（main.dart 崩溃引导文案指名「登录诊断日志」）。
+        // 通用组已解散（任务 11）：「数据与合规」入口并入关于组。
         Card(
           child: Column(
             children: [
@@ -666,14 +639,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 subtitle: const Text('凭证沙箱存储、Cookie 仅内存、只读通道；AI 开箱即用（公益端点）',
                     style: TextStyle(fontSize: 11)),
                 onTap: () => _showCompliance(context),
-              ),
-              const Divider(height: 1, indent: 16),
-              ListTile(
-                leading: const Icon(Icons.bug_report_outlined),
-                title: const Text('登录诊断日志'),
-                subtitle: const Text('逐步记录登录/取数卡点（不含密码）',
-                    style: TextStyle(fontSize: 11)),
-                onTap: () => _showDiagnostics(context),
               ),
             ],
           ),
@@ -848,45 +813,6 @@ class _SettingsPageState extends State<SettingsPage> {
     return (d - d.roundToDouble()).abs() < 1e-9
         ? '${d.round()}'
         : d.toStringAsFixed(1);
-  }
-
-  void _showDiagnostics(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('登录/取数诊断日志'),
-        content: SizedBox(
-          width: 460,
-          height: 360,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              DiagnosticLog.instance.entries.isEmpty
-                  ? '（暂无记录——用"教务网"模式登录即可产生步骤日志）'
-                  : DiagnosticLog.instance.dump(),
-              style: const TextStyle(
-                  fontFamily: 'monospace', fontSize: 12, height: 1.5),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Clipboard.setData(
-                  ClipboardData(text: DiagnosticLog.instance.dump()));
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-            child: const Text('复制并关闭'),
-          ),
-          TextButton(
-            onPressed: () {
-              DiagnosticLog.instance.clear();
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-            child: const Text('清空'),
-          ),
-        ],
-      ),
-    );
   }
 
   void _showCompliance(BuildContext context) {

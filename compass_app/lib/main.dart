@@ -140,7 +140,7 @@ class _FriendlyError extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Text('请到「设置」页点"登录诊断日志"复制反馈。\n'
+                  Text('请重新拉取一次数据；若仍出现，请把操作步骤反馈给我们。\n'
                       '通常重新拉取一次数据即可恢复。',
                       style: TextStyle(
                           fontSize: 12,
