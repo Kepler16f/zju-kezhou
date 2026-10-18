@@ -15,7 +15,12 @@ def api(u):
 
 deadline = time.time() + 2400
 while time.time() < deadline:
-    r = api(f"/repos/Kepler16f/zju-kezhou/actions/runs/{run_id}")
+    try:
+        r = api(f"/repos/Kepler16f/zju-kezhou/actions/runs/{run_id}")
+    except Exception as e:
+        print("poll retry:", repr(e)[:70])
+        time.sleep(20)
+        continue
     jobs = [j for j in r["jobs"]["jobs"] if not flt or flt.lower() in (j["name"] or "").lower()]
     rows = [(j["name"][:40], j["status"], j["conclusion"]) for j in jobs]
     print("status", r["status"], r.get("conclusion"))
