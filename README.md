@@ -113,6 +113,7 @@ App 内真实链路：ZJUAM CAS 登录（RSA 加密提交，iPlanetDirectoryPro�
 
 ## 贡献者
 
-| [![Kepler16f](https://avatars.githubusercontent.com/Kepler16f?s=64)](https://github.com/Kepler16f) | [![shiroiyoru142857](https://avatars.githubusercontent.com/shiroiyoru142857?s=64)](https://github.com/shiroiyoru142857) |
-|:---:|:---:|
-| **Kepler16f** | **shiroiyoru142857** |
+| [![Kepler16f](https://avatars.githubusercontent.com/Kepler16f?s=64)](https://github.com/Kepler16f) | [![shiroiyoru142857](https://avatars.githubusercontent.com/shiroiyoru142857?s=64)](https://github.com/shiroiyoru142857) | [![61025](https://avatars.githubusercontent.com/61025?s=64)](https://github.com/61025) |
+|:---:|:---:|:---:|
+| **Kepler16f** | **shiroiyoru142857** | **61025** |
+
