@@ -12,8 +12,8 @@
   选 1 门即整块达成，模块不再恒红；方案页显示选择提示。
 - **个性修读三大板块重复计分**：本专业进阶 / 跨专业学习（微辅修）/ 学生自主修读
   按「并列任选其一」只计一次要求学分，达成度取最优选项，总计不再 20+20+20。
-- **「工具」改为成绩页子选项卡**：底栏恢复 4 项（首页 / 方案 / 成绩 / 设置），
-  成绩页内分「成绩 / 工具」，并迁移旧版底栏顺序配置。
+- **「工具」改为学业页子选项卡**：底栏 4 项（学业 / 方案 / 选课 / 设置），
+  学业页内分「成绩 / 工具」，并迁移旧版底栏顺序配置。
 - **底栏与首页设置占位压缩**：底栏高度与标签收敛，设置页接口卡改为紧凑摘要行。
 - **登录诊断日志入口移除**：保留内部排障日志，不再向用户暴露入口。
 - **外语应修学分同步**：设置页数值输入真正生效，并同步到方案页外语板块标题、
@@ -31,6 +31,6 @@
 | Windows arm64 / x64 | KeZhouSetup-0.13.4-win-arm64.exe / -x64.exe |
 | Android arm64 / armv7 / x64 | app-arm64-v8a-release.apk 等 |
 | iOS（未签名 ipa，显示名 ClassArk） | kezhou-unsigned.ipa |
-| macOS arm64 / x64 | KeZhou-macos-*.zip |
-| Linux arm64 / x64 | KeZhou-linux-*.tar.gz |
+| macOS arm64 / x64 | KeZhou-macos-*.dmg（拖拽安装，含 /Applications 链接） |
+| Linux arm64 / x64 | KeZhou-linux-*.deb（dpkg -i 直装，kezhou 命令启动） |
 | 鸿蒙 NEXT（未签名 HAP） | compass_unsigned.hap |
