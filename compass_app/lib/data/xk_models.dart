@@ -12,21 +12,31 @@ library;
 ///  - 通用正方（xsxk/zzxkyzb）：轮次 xkkz_id × 类别 kklxdm；
 ///  - 浙大自主选课（xsxk/zzxkghb N253530）：入口=课程类别（dl 代码，如 EA=思政类、
 ///    53=心理健康类），xkkzId 存 dl、kklxdm 存 lx（bl=本类）。label=类别名。
+///
+/// 入口全参数透传（2026-10-18 #4，认定型课程）：除上述主键外，锚点还可能携带
+/// 其余参数——categroyClick 第 3 起实参、data-dl/data-lx 之外的其他 data-* 属性
+/// （如认定标志，具体键名待 LIVE 探针，docs §9）。本层只原样携带、绝不臆测语义，
+/// 由取数层决定如何透传。
 class XkRound {
   final String xkkzId; // 选课设置ID / 浙大 dl 类别码（观测键）
   final String kklxdm; // onclick 第一参数 / 浙大 lx（可能为空）
   final String? xklc; // 轮次编号：公开资料不能证实其参数位，拿不到就 null
   final String label; // 菜单可见文本（真实入口名，供 UI）
+  final List<String> extraArgs; // onclick 第 3 起字符串参数（语义无证据，只透传/留痕）
+  final Map<String, String> attrs; // 锚点 data-* 属性全集（dl/lx 除外；键小写、无 data- 前缀）
 
   const XkRound({
     required this.xkkzId,
     this.kklxdm = '',
     this.xklc,
     this.label = '',
+    this.extraArgs = const [],
+    this.attrs = const {},
   });
 
   @override
-  String toString() => 'XkRound($xkkzId, $kklxdm, $xklc, $label)';
+  String toString() =>
+      'XkRound($xkkzId, $kklxdm, $xklc, $label, args=$extraArgs, attrs=$attrs)';
 }
 
 /// 一条课程列表行（解析后）。

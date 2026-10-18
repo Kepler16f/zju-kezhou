@@ -2,8 +2,11 @@
 ///
 /// 红线与策略（设计评审结论，改动前先读）：
 ///  - 只读：仅调用选课查询接口；提交/退课等写操作绝不调用（docs/选课模块接入说明.md）；
-///  - 拉取策略（评审A8）：进入本页且已登录才按需拉取；单轮点选即拉；跨轮汇总为显式按钮
-///    （串行 + 间隔），禁止启动期扇出；IndexedStack 保活下以 active 门控；
+///  - 拉取策略（评审A8；2026-10-18 需求 #5 改口径）：进入本页且已登录才拉取入口；
+///    入口列表加载成功后**自动**对全部入口串行拉取（复用聚合逻辑：间隔 ≥1.1s、
+///    可取消、软封禁即停），页面默认呈现合并视图；「汇总全部入口」按钮保留为
+///    手动重新聚合入口；单轮点选即拉；仍禁止启动期扇出（IndexedStack 保活下以
+///    active 门控，自动聚合随页面激活触发而非 App 启动触发）；
 ///  - 三态文案（评审A6）：「已开放有数据 / 已开放但无结果 / 未开放或状态未知」三种如实显示；
 ///  - AI 解读（评审C）：出厂默认公益免费端点（无存档时），可切自有服务/关闭；首次发送前确认发送范围；越界提问直接回退固定文案；
 ///    输出页脚（kAiFooter）与免责声明（kDisclaimer）由本页硬拼接，模型无权删改。
@@ -220,6 +223,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         _selectedRoundId = rounds.isNotEmpty ? _rk(rounds.first) : null;
         _error = null;
         _demoLoaded = true;
+        // 需求 #5：演示数据同样默认全量（全部入口列表已就位）→ 默认呈现合并视图
+        _view = _View.merged;
         if (tt is Map) {
           _timetable = TimetableParseResult(
             slots: (tt['slots'] as List? ?? const [])
@@ -303,6 +308,13 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         _loadTimetable();
       }
       _publishAiContext(); // 入口刷新/清理后同步给全局助手
+      // 需求 #5（默认全量加载）：入口列表就绪即自动对全部入口串行拉取（复用
+      // _aggregateAll 的节流/退避纪律：间隔 ≥1.1s、可取消、软封禁即停），页面默认
+      // 呈现合并视图，加载中显示"已加载 x/y"；「汇总全部入口」保留为手动重新聚合。
+      if (r.rounds.isNotEmpty && mounted && widget.loggedIn && !_demoLoaded) {
+        setState(() => _view = _View.merged);
+        await _aggregateAll(auto: true);
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -386,10 +398,29 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     }
   }
 
-  /// 跨轮汇总：显式按钮触发，串行拉取 + 间隔，可取消（评审A8）。
-  /// 并发纪律（评审L1）：汇总期间只用开始时的参数快照；入口刷新换代即中止；
-  /// 分片等待让"取消"能及时生效；用户取消时不强制切换视图。
-  Future<void> _aggregateAll() async {
+  /// 入口复合键 → 展示名（失败清单/重试按钮用；找不到原入口时如实显示复合键）。
+  String _roundLabel(String rk) {
+    for (final r in _index?.rounds ?? const <XkRound>[]) {
+      if (_rk(r) == rk) return r.label.isEmpty ? r.xkkzId : r.label;
+    }
+    return rk;
+  }
+
+  /// 单入口重试（需求 #5：失败入口逐个标注、可单独重试；不整批重发）。
+  void _retryRound(String rk) {
+    for (final r in _index?.rounds ?? const <XkRound>[]) {
+      if (_rk(r) == rk) {
+        _loadRound(r, refresh: true);
+        return;
+      }
+    }
+  }
+
+  /// 跨轮汇总：入口加载后自动触发（需求 #5，auto=true），也可显式按钮重新聚合。
+  /// 串行拉取 + 间隔，可取消（评审A8）；并发纪律（评审L1）：汇总期间只用开始时的
+  /// 参数快照；入口刷新换代即中止；分片等待让"取消"能及时生效；用户取消时不强制
+  /// 切换视图；自动聚合在开始时已切到合并视图，结束时不再回切（不劫持用户浏览）。
+  Future<void> _aggregateAll({bool auto = false}) async {
     final rounds = _index?.rounds ?? const [];
     if (rounds.isEmpty || _aggregating || _loadingIndex) return;
     if (!widget.loggedIn) {
@@ -448,7 +479,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     if (mounted) {
       setState(() {
         _aggregating = false;
-        if (!_cancelAggregate) _view = _View.merged; // 取消时不强制换视图
+        // 手动聚合结束切合并视图；自动聚合开始时已切过，且不劫持用户随后的浏览选择
+        if (!_cancelAggregate && !auto) _view = _View.merged;
       });
       _publishAiContext();
     }
@@ -672,6 +704,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           children: [
             for (final r in rounds)
               ChoiceChip(
+                // 需求 #5：失败入口在分类视图也逐个标注（错误图标），点入即见重试按钮
+                avatar: _roundErrors.containsKey(_rk(r))
+                    ? const Icon(Icons.error_outline, size: 14, color: Colors.orange)
+                    : null,
                 label: Text(r.label.isEmpty ? '入口' : r.label),
                 selected: _rk(r) == _rk(selected),
                 // 汇总期间冻结轮切换：避免与批量拉取并发打同一入口（评审L1）
@@ -766,11 +802,18 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '已拉取 $fetched/$total 个入口'
-                  '${failed > 0 ? '（$failed 个暂不可用，可在「分类视图」里重试）' : ''}'
-                  '${_aggregating ? '（正在汇总 $_aggregateDone/$total…）' : ''}',
+                  // 需求 #5：默认自动全量聚合——加载中显示"已加载 x/y"
+                  _aggregating
+                      ? '正在自动汇总全部入口：已加载 $_aggregateDone/$total…（可取消）'
+                      : '已加载 $fetched/$total 个入口'
+                          '${failed > 0 ? '（$failed 个暂不可用，可在下方或「分类视图」单独重试）' : ''}',
                   style: const TextStyle(fontSize: 12),
                 ),
+                if (_aggregating) ...[
+                  const SizedBox(height: 6),
+                  LinearProgressIndicator(
+                      value: total > 0 ? _aggregateDone / total : null),
+                ],
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -795,6 +838,34 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                 if (_anyCacheFromLocal)
                   const Text('含本地缓存数据（可能过期，请点「刷新入口」后重试）',
                       style: TextStyle(fontSize: 11, color: Colors.orange)),
+                // 需求 #5：失败入口逐个标注 + 单独重试（汇总中不显示，避免与串行队列并发重发）
+                if (!_aggregating && _roundErrors.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  for (final e in _roundErrors.entries)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.error_outline,
+                              size: 14, color: Colors.orange),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text('${_roundLabel(e.key)}：${e.value}',
+                                style: const TextStyle(
+                                    fontSize: 11, color: Colors.orange)),
+                          ),
+                          TextButton.icon(
+                            onPressed: _loadingRounds.contains(e.key)
+                                ? null
+                                : () => _retryRound(e.key),
+                            icon: const Icon(Icons.refresh, size: 14),
+                            label: const Text('重试', style: TextStyle(fontSize: 11)),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
               ],
             ),
           ),
@@ -811,11 +882,15 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         ),
         const SizedBox(height: 8),
         if (merged.isEmpty)
-          _emptyCard(
-              failed > 0 && fetched == 0 ? '全部入口暂不可用' : '暂无汇总数据',
-              failed > 0 && fetched == 0
-                  ? '已尝试拉取但均未成功（${_roundErrors.values.first}）。点上方按钮重试。'
-                  : '点上方「汇总全部入口」拉取各入口课程后在此合并。')
+          _aggregating
+              ? _emptyCard('正在逐入口拉取课程…',
+                  '已加载 $_aggregateDone/$total 个入口；触发教务频率保护时会自动暂停，'
+                      '可点「取消」停止本轮。')
+              : _emptyCard(
+                  failed > 0 && fetched == 0 ? '全部入口暂不可用' : '暂无汇总数据',
+                  failed > 0 && fetched == 0
+                      ? '已尝试拉取但均未成功（${_roundErrors.values.first}）。点上方按钮重新聚合。'
+                      : '点上方「汇总全部入口」重新聚合各入口课程。')
         else
           ..._mergedCards(merged),
         if (_mergeNotes.isNotEmpty) ...[

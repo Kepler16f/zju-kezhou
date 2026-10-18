@@ -280,13 +280,22 @@ XkIndexParseResult parseXkIndexHtml(String html) {
       .replaceAll('&apos;', "'")
       .replaceAll('&quot;', '"')
       .replaceAll('&#34;', '"');
+  // 全参捕获（#4 认定型入口）：只锚定 queryCourse(、this 与「≥2 个字符串参数」，
+  // 参数个数不假设（公开实例有 4/5 参两种形态）；第 3 起实参原样进 extraArgs，
+  // 语义无证据不臆取（评审A1 纪律不变——xklc 仍置空）。
   final re = RegExp(
-      r"""queryCourse\s*\(\s*this\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]""",
+      r"""queryCourse\s*\(\s*this\s*((?:\s*,\s*['"][^'"]*['"]){2,})""",
       caseSensitive: false);
+  final quotedArgRe = RegExp("""['"]([^'"]*)['"]""");
   for (final m in re.allMatches(html)) {
     hits++;
-    final kklxdm = _unescape(m.group(1) ?? '');
-    final xkkz = _unescape(m.group(2) ?? '');
+    final args = [
+      for (final am in quotedArgRe.allMatches(m.group(1) ?? ''))
+        _unescape(am.group(1)!),
+    ];
+    final kklxdm = args.isNotEmpty ? args[0] : '';
+    final xkkz = args.length > 1 ? args[1] : '';
+    final extraArgs = args.length > 2 ? args.sublist(2) : const <String>[];
     // 去重键带类别：同 xkkz_id 跨类别复用是合法形态，只按 id 去重会静默丢入口（评审L2）
     if (xkkz.isEmpty || !seen.add('$xkkz\u0000$kklxdm')) continue;
     final label = _labelAfter(html, m.end);
@@ -295,6 +304,7 @@ XkIndexParseResult parseXkIndexHtml(String html) {
       kklxdm: kklxdm,
       xklc: null, // 参数位无证据，不臆取（评审A1）
       label: label.isEmpty ? '入口${rounds.length + 1}' : label,
+      extraArgs: extraArgs,
     ));
   }
   final hidden = <String, String>{};
@@ -318,42 +328,90 @@ XkIndexParseResult parseXkIndexHtml(String html) {
   // ── 浙大自主选课页（zzxkghb）：入口 = 课程类别树（LIVE 取证 2026-10-16）──
   // 锚点示例：<a class="category" data-dl="EA" data-lx="bl"
   //   onclick="categroyClick(this,'EA','bl')">思政类</a>
-  // 不再假设属性顺序/引号类型/无嵌套标签：逐 <a> 解析，属性顺序任意。
-  // #10（认定型课程不显示）：同一 dl 可挂多个 lx 子入口（docs §1.1 实测 lx=bl/zl；
+  // #10/#4（认定型课程不显示）：同一 dl 可挂多个 lx 子入口（docs §1.1 实测 lx=bl/zl；
   // 认定型子入口的 lx 取值/独立端点待探针确认），去重键必须带 lx——按 dl 单键去重
-  // 会把「必修/认定」类子入口整类吞掉。锚点也可能只带 data-dl/data-lx 而无
-  // categroyClick（认定页标记变体），故两条正则并集，onclick 有值时优先。
+  // 会把「必修/认定」类子入口整类吞掉。锚点还可能：
+  //  - 只带 data-dl/data-lx 而无 categroyClick（认定页标记变体）；
+  //  - 带 categroyClick 第 3 起实参或 data-dl/lx 之外的 data-* 属性（如认定标志，
+  //    具体键名待 LIVE 探针 docs §9）——全参捕获进 XkRound.extraArgs/attrs，
+  //    由取数层按名透传，解析层绝不臆测语义；
+  //  - 挂在非 <a> 元素上（<li>/<div> 类别树变体）。
+  // 故用「任意元素 + 回引用闭合」一条正则统一匹配：属性顺序任意、引号任意、标签名任意。
   final zjuAnchorRe = RegExp(
-      r'<a\b[^>]*(?:categroyClick|data-dl)[^>]*>.*?</a>',
+      r'<(\w+)\b[^>]*(?:categroyClick|data-dl)[^>]*>.*?</\1\s*>',
       caseSensitive: false,
       dotAll: true);
   final zjuAnchors = zjuAnchorRe.allMatches(html);
-  final zjuByDl = <String, ({String dl, String lx, String label})>{};
+  final zjuByDl =
+      <String, ({String dl, String lx, String label, List<String> extraArgs, Map<String, String> attrs})>{};
+  final zjuArgsRe = RegExp(
+      r"""categroyClick\s*\(\s*this\s*((?:\s*,\s*['"][^'"]*['"])+)""",
+      caseSensitive: false);
+  // data-* 属性扫描（openTag 内，双/单引号两套；\b 防 xdata- 误配）
+  final dataAttrDqRe =
+      RegExp(r'\bdata-([a-zA-Z0-9_-]+)\s*=\s*"([^"]*)"', caseSensitive: false);
+  final dataAttrSqRe =
+      RegExp(r"\bdata-([a-zA-Z0-9_-]+)\s*=\s*'([^']*)'", caseSensitive: false);
   for (final m in zjuAnchors) {
     final anchor = m.group(0)!;
     final gt = anchor.indexOf('>');
     if (gt < 0) continue;
     final openTag = anchor.substring(0, gt + 1);
-    final innerEnd = anchor.lastIndexOf('</a>');
+    final closeTag = '</${m.group(1)!}';
+    final innerEnd = anchor.toLowerCase().lastIndexOf(closeTag.toLowerCase());
     final inner = innerEnd > gt ? anchor.substring(gt + 1, innerEnd) : '';
     final onclick = _tagAttr(openTag, 'onclick') ?? '';
-    final args = RegExp(
-            r"""categroyClick\s*\(\s*this\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]""",
-            caseSensitive: false)
-        .firstMatch(onclick);
-    final dl = (args?.group(1) ?? _tagAttr(openTag, 'data-dl') ?? '').trim();
-    final lx = (args?.group(2) ?? _tagAttr(openTag, 'data-lx') ?? '').trim();
+    final argsMatch = zjuArgsRe.firstMatch(onclick);
+    final args = [
+      if (argsMatch != null)
+        for (final am in quotedArgRe.allMatches(argsMatch.group(1)!))
+          _unescape(am.group(1)!),
+    ];
+    final dl = (args.isNotEmpty ? args[0] : _tagAttr(openTag, 'data-dl') ?? '').trim();
+    final lx = (args.length > 1 ? args[1] : _tagAttr(openTag, 'data-lx') ?? '').trim();
+    final extraArgs = args.length > 2 ? args.sublist(2) : const <String>[];
+    // data-* 属性全集（dl/lx 走专用字段不重复存；键小写归一，值 unescape）
+    final attrs = <String, String>{};
+    for (final am in [...dataAttrDqRe.allMatches(openTag), ...dataAttrSqRe.allMatches(openTag)]) {
+      final name = am.group(1)?.toLowerCase();
+      if (name == null || name == 'dl' || name == 'lx') continue;
+      attrs[name] = _unescape(am.group(2) ?? '');
+    }
     final label = _unescape(
             inner.replaceAll(RegExp(r'<[^>]+>'), '').replaceAll(RegExp(r'\s+'), ' ').trim())
         .trim();
     if (dl.isEmpty) continue;
     final key = '$dl\u0000$lx'; // 同 dl 跨 lx 子入口不去重（#10），同 dl 同 lx 才合并
-    final existing = zjuByDl[key];
-    // 同一 (dl,lx) 出现多个锚点时，优先保留 lx 非空的那一个（子节点通常才挂课程）。
-    if (existing == null ||
-        (existing.lx.isEmpty && lx.isNotEmpty) ||
-        (existing.label.isEmpty && label.isNotEmpty)) {
-      zjuByDl[key] = (dl: dl, lx: lx, label: label.isEmpty ? dl : label);
+    final prev = zjuByDl[key];
+    if (prev == null) {
+      zjuByDl[key] = (
+        dl: dl,
+        lx: lx,
+        label: label.isEmpty ? dl : label,
+        extraArgs: extraArgs,
+        attrs: attrs,
+      );
+    } else {
+      // 同 (dl,lx) 多锚点：维持「lx 非空 / label 非空者胜」优先级，但属性与实参做
+      // 键级并集——绝不因锚点重复丢掉认定参数（#4）。
+      final useNew =
+          (prev.lx.isEmpty && lx.isNotEmpty) || (prev.label.isEmpty && label.isNotEmpty);
+      final base = useNew
+          ? (
+              dl: dl,
+              lx: lx.isNotEmpty ? lx : prev.lx,
+              label: label.isEmpty ? prev.label : label,
+              extraArgs: extraArgs,
+              attrs: attrs,
+            )
+          : prev;
+      zjuByDl[key] = (
+        dl: base.dl,
+        lx: base.lx,
+        label: base.label,
+        extraArgs: base.extraArgs.isNotEmpty ? base.extraArgs : extraArgs,
+        attrs: {...attrs, ...base.attrs}, // 先到者优先，仅补缺失键
+      );
     }
   }
   if (zjuByDl.isNotEmpty) {
@@ -361,7 +419,13 @@ XkIndexParseResult parseXkIndexHtml(String html) {
       ..clear()
       ..addAll([
         for (final e in zjuByDl.values)
-          XkRound(xkkzId: e.dl, kklxdm: e.lx, label: e.label),
+          XkRound(
+            xkkzId: e.dl,
+            kklxdm: e.lx,
+            label: e.label,
+            extraArgs: e.extraArgs,
+            attrs: e.attrs,
+          ),
       ]);
     issues.add('浙大自主选课模式：入口为课程类别（共 ${rounds.length} 类）。');
     return XkIndexParseResult(

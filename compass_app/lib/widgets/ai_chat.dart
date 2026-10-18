@@ -20,8 +20,9 @@
 ///    不得在此文件里"顺手"塞入页面原始数据或身份字段。
 ///  - 上下文摘要与识屏 OCR 只进 system 消息，**不渲染、不写入 history**，
 ///    用户气泡只显示原始提问；识屏首次发送前必须弹同意框，可随时关闭自动识屏。
-///  - 渲染侧兜底：assistant 气泡显示前一律过 sanitizeAiOutput（输出侧第二道
-///    防线），命中越界措辞即整条替换为边界文案。注意这只作用于「显示」——
+///  - 渲染侧兜底：assistant 气泡显示前一律过 sanitizeChatOutput（需求 #6：全局
+///    助手允许给具体候选与方向性建议，仅拦"替用户拍板成品课表/断言选上/越权
+///    承诺选课"三条硬红线）。注意这只作用于「显示」——
 ///    历史里存的仍是原文，下一轮 messages 会携带原文，故上面第一条同样约束
 ///    注入的上下文与用户自由输入（输入框提示语即为此而设）。
 library;
@@ -106,8 +107,9 @@ class AiChatController {
   })  : knowledgeBase = knowledgeBase ?? const EmptyAiKnowledgeBase(),
         _clientFactory = clientFactory ?? ((cfg) => AiClient(cfg));
 
-  /// 知识库检索接口（默认空实现；收到语料后替换即可）。
-  final AiKnowledgeBase knowledgeBase;
+  /// 知识库检索接口（默认空实现）。资产加载完成后由接线层替换
+  /// （需求 #6：内置浙大选课知识库，rootBundle 读 assets/knowledge/）。
+  AiKnowledgeBase knowledgeBase;
 
   /// 客户端工厂（单测注入假 sender 用；生产走默认 AiClient）。
   final AiClient Function(AiConfig config) _clientFactory;
@@ -475,9 +477,17 @@ class _AiChatSheetState extends State<AiChatSheet> {
                   : ListView.builder(
                       controller: _scroll,
                       padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-                      itemCount: bubbles.length,
-                      itemBuilder: (_, i) =>
-                          _bubble(theme, bubbles[i].$1, bubbles[i].$2),
+                      itemCount: bubbles.length + 1,
+                      itemBuilder: (_, i) => i < bubbles.length
+                          ? _bubble(theme, bubbles[i].$1, bubbles[i].$2)
+                          // 页脚硬拼接（需求 #6：全局助手可给建议，免责不可被模型删改）
+                          : Padding(
+                              padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
+                              child: Text(kAiChatFooter,
+                                  style: TextStyle(
+                                      fontSize: 10.5,
+                                      color: theme.colorScheme.onSurfaceVariant)),
+                            ),
                     ),
         ),
         if (ctrl.lastError != null)
@@ -631,10 +641,12 @@ class _AiChatSheetState extends State<AiChatSheet> {
       );
 
   /// 单条气泡：user 靠右 primary 底、assistant 靠左 surface 底；
-  /// assistant 显示前过 sanitizeAiOutput（输出侧第二道防线，见文件头契约）。
+  /// assistant 显示前过 sanitizeChatOutput（需求 #6：全局助手可给具体选项与
+  /// 方向性建议，只拦"替用户拍板课表/断言选上/越权承诺选课"三条硬红线；
+  /// 与选课页一次性解读的严格中立 sanitizeAiOutput 分口径）。
   Widget _bubble(ThemeData theme, String role, String content) {
     final isUser = role == 'user';
-    final text = isUser ? content : sanitizeAiOutput(content);
+    final text = isUser ? content : sanitizeChatOutput(content);
     final scheme = theme.colorScheme;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,

@@ -43,10 +43,10 @@ void main() {
     expect(find.text('方案'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
     expect(find.text('选课'), findsOneWidget);
-    // 审计页签已并入方案页（诉求 #13）；「工具」页签已并入学业页（GPA 模拟器），
-    // 均不再作为独立 tab 存在。
+    // 审计页签已并入方案页（诉求 #13）；「工具」自 2026-10-18 需求 #1 起
+    // 恢复为独立页签（学期走势 + GPA 模拟器迁入）。
     expect(find.text('审计'), findsNothing);
-    expect(find.text('工具'), findsNothing);
+    expect(find.text('工具'), findsWidgets);
     // 学业页空态引导 + 顶部日期学期栏（诉求 #8）
     expect(find.text('暂无学业数据'), findsOneWidget);
     expect(find.textContaining('今天是'), findsOneWidget);

@@ -52,10 +52,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# AppId 与既有本地安装包保持一致（dist\kezhou_x64.iss 与 packaging\build_windows_installer.sh
-# 用的都是 ...00001），这样新版会覆盖升级已有安装，而不会并排装出第二份。
-# 注意：CI 的 windows-x64 作业用的是 ...00002，两者会被系统视为两个不同产品。
-$AppId           = '8F4B1D5E-92A6-4C7B-B3E0-KEZHOU00001'
+# AppId 必须与 CI（.github/workflows/build-windows.yml）和本地 .sh 构建一致 = ...00002。
+# 2026-10-18 实测教训：本地曾用 ...00001，与 CI 的 ...00002 被视为两个不同产品，
+# 导致升级不覆盖旧版、控制面板并存两个"课舟"且旧版无法自动卸载。
+$AppId           = '8F4B1D5E-92A6-4C7B-B3E0-KEZHOU00002'
 $AppDisplayName  = '课舟'
 $AppPublisher    = 'KeZhou Team'
 $PortableDirName = 'KeZhou'

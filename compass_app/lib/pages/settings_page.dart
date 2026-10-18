@@ -833,10 +833,10 @@ class _InterfacePrefsCard extends StatelessWidget {
     this.onDefaultTabChange,
   });
 
-  /// 页签规范名（索引固定：0=学业 1=方案 2=选课 3=设置，与 main.dart 底栏一致）。
-  static const _tabNames = ['学业', '方案', '选课', '设置'];
+  /// 页签规范名（索引固定：0=学业 1=方案 2=选课 3=工具 4=设置，与 main.dart 底栏一致）。
+  static const _tabNames = ['学业', '方案', '选课', '工具', '设置'];
 
-  /// 解析顺序串为索引列表：非法项丢弃、去重；凑不齐四个一律回落默认顺序
+  /// 解析顺序串为索引列表：非法项丢弃、去重；凑不齐五个一律回落默认顺序
   /// （纯函数、不抛异常、宁缺勿猜）。
   static List<int> parseTabOrder(String raw) {
     final out = <int>[];

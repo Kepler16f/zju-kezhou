@@ -32,6 +32,29 @@ XkCourse c({
     );
 
 void main() {
+  group('XkRound 入口全参数透传（#4 认定型入口）', () {
+    test('默认无额外参数（既有构造点零改动）', () {
+      final plain = XkRound(xkkzId: 'EA');
+      expect(plain.extraArgs, isEmpty);
+      expect(plain.attrs, isEmpty);
+      expect(plain.kklxdm, '');
+    });
+
+    test('extraArgs/attrs 原样携带，不参与身份/合并（轮次仍是观测维度）', () {
+      final full = XkRound(
+        xkkzId: 'EA',
+        kklxdm: 'bl',
+        label: '思政类',
+        extraArgs: const ['rd'],
+        attrs: const {'sfrdk': '1'},
+      );
+      expect(full.extraArgs, ['rd']);
+      expect(full.attrs['sfrdk'], '1');
+      expect('$full', contains('rd'));
+      expect('$full', contains('sfrdk'));
+    });
+  });
+
   group('身份三档降级链', () {
     test('档1：kch_id + jxb_id + 课程名（三段均归一化，评审L2）', () {
       final x = c();

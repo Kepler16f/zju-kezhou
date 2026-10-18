@@ -112,6 +112,20 @@ void main() {
     expect(sanitizeAiOutput(legit), legit);
   });
 
+  // 需求 #6：全局助手分口径——可给具体候选与方向性建议，仅拦三条硬红线。
+  group('sanitizeChatOutput：全局助手宽松边界', () {
+    test('建议/具体选项放行（这正是用户要的）', () {
+      const ok = '缺口集中在专业选修，建议先看《机器学习》《数据库系统》：'
+          '二者都在本学期开课且不与你的课表冲突（选课规则 / 志愿）。';
+      expect(sanitizeChatOutput(ok), ok);
+    });
+    test('拍板成品课表/断言选上/越权承诺 → 聊天级回退文案', () {
+      expect(sanitizeChatOutput('你的课表如下：周一 数据结构…'), kAiChatBoundaryFallback);
+      expect(sanitizeChatOutput('这门课你一定能选上。'), kAiChatBoundaryFallback);
+      expect(sanitizeChatOutput('我已帮你选好了三门课。'), kAiChatBoundaryFallback);
+    });
+  });
+
   test('密钥脱敏：回显型网关把裸键写进 400 正文也会被结构性洗掉', () async {
     const key = 'sk-test-abcdef123456';
     const cfg = AiConfig(

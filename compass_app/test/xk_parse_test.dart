@@ -136,8 +136,10 @@ void main() {
       expect(r.rounds[0].xkkzId, 'ABC123');
       expect(r.rounds[0].xklc, isNull); // 不臆取轮次编号
       expect(r.rounds[0].label, '第一轮');
+      expect(r.rounds[0].extraArgs, ['1']); // 第 3 起实参只透传不臆测（#4）
       expect(r.rounds[1].kklxdm, '09');
       expect(r.rounds[1].label, '通识选修');
+      expect(r.rounds[1].extraArgs, ['2020', '2021']);
     });
 
     test('重复 xkkz_id 去重', () {
@@ -612,6 +614,94 @@ void main() {
         final r =
             parseXkCourseList('[{"kcmc":"中国书法"}]', xkkzId: '50');
         expect(r.courses.single.categories, isEmpty);
+      });
+
+      // ── #4 思政/军体等认定型大类空白：入口全参数捕获与透传 ──
+      // 根因链：解析层此前只取 categroyClick 前两参 + data-dl/data-lx，锚点上的
+      // 第三参/其余 data-* 属性（认定标志等）被静默丢弃；取数层只发固定参数集，
+      // 认定型入口缺参 → 服务端回 [] → 分类视图空白。静态无法确认真实键名
+      //（docs §9 待 LIVE 探针），本组只钉死「全参捕获 + 原样透传、绝不臆测语义」。
+      group('入口全参数透传（#4，认定型大类）', () {
+        test('categroyClick 第三参原样进 extraArgs，dl/lx 语义不变', () {
+          const html = '<a class="category" data-dl="EA" data-lx="bl" '
+                  'onclick="categroyClick(this,\'EA\',\'bl\',\'rd\')">思政类</a>';
+          final r = parseXkIndexHtml(html);
+          expect(r.zjuGhb, isTrue);
+          final round = r.rounds.single;
+          expect(round.xkkzId, 'EA');
+          expect(round.kklxdm, 'bl');
+          expect(round.label, '思政类');
+          expect(round.extraArgs, ['rd']);
+        });
+
+        test('data-dl/lx 之外的 data-* 属性进 attrs（键小写、去前缀）', () {
+          const html = '<a class="category" data-dl="EB" data-lx="bl" '
+                  'Data-Sfrdk="1" onclick="categroyClick(this,\'EB\',\'bl\')">军体类</a>';
+          final r = parseXkIndexHtml(html);
+          final round = r.rounds.single;
+          expect(round.attrs['sfrdk'], '1');
+          expect(round.attrs.containsKey('dl'), isFalse); // dl/lx 走专用字段不重复
+          expect(round.attrs.containsKey('lx'), isFalse);
+          expect(round.extraArgs, isEmpty);
+        });
+
+        test('非 <a> 元素挂 data-dl（类别树变体）同样解析为入口', () {
+          const html = '<li class="cat" data-dl="EB" data-lx="bl">军体类</li>';
+          final r = parseXkIndexHtml(html);
+          expect(r.zjuGhb, isTrue);
+          expect(r.rounds.single.xkkzId, 'EB');
+          expect(r.rounds.single.kklxdm, 'bl');
+          expect(r.rounds.single.label, '军体类');
+        });
+
+        test('同 (dl,lx) 多锚点：属性/实参并集，先到 label 保留', () {
+          const html = '<a data-dl="50" data-lx="bl">美育类</a>'
+              '<a data-dl="50" data-lx="bl" data-kcbs="1">美育类</a>';
+          final r = parseXkIndexHtml(html);
+          expect(r.rounds.length, 1);
+          final round = r.rounds.single;
+          expect(round.label, '美育类');
+          expect(round.attrs['kcbs'], '1');
+        });
+
+        test('军体/认定型行样式：无教学班列/无时间/容量空 → 保留，类别以入口 label 兜底', () {
+          final row = {'kcmc': '军事理论', 'kch': 'MIL1101', 'kcxzmc': ''};
+          final r =
+              parseXkCourseList('[${_json(row)}]', xkkzId: 'EB', label: '军体类');
+          expect(r.state, 'data');
+          final c = r.courses.single;
+          expect(c.identityTier, 3); // 无教学班标识：档3聚合，仍展示
+          expect(c.jxbmc, isEmpty);
+          expect(c.teacher, isEmpty);
+          expect(c.sksj, isEmpty);
+          expect(c.slots, isEmpty);
+          expect(c.cap, isNull); // 认定型页无容量列 → 未知，不当 0
+          expect(c.selected, isNull);
+          expect(c.categories, ['军体类']);
+          expect(c.tags, contains('军体类')); // tags 兼容口径保留入口名（引擎类别推断消费）
+        });
+
+        test('思政/军体桶：kcxzmc 为空的认定型行跨入口合并后类别齐全', () {
+          final sz = parseXkCourseList('[{"kcmc":"思想道德与法治","kch":"SZ1101"}]',
+                  xkkzId: 'EA', label: '思政类')
+              .courses
+              .single;
+          final jt = parseXkCourseList('[{"kcmc":"军事理论","kch":"MIL1101"}]',
+                  xkkzId: 'EB', label: '军体类')
+              .courses
+              .single;
+          final merged = mergeXkCourses([sz, jt]).courses;
+          expect(merged.length, 2);
+          expect(merged.map((m) => m.categories.first).toSet(), {'思政类', '军体类'});
+        });
+
+        test('时间列是占位符（"--"）的认定型行：slots 为空、行保留、留痕', () {
+          final r = parseXkCourseList('[{"kcmc":"形势与政策Ⅰ","kch":"SZ1201","sksj":"--"}]',
+              xkkzId: 'EA', label: '思政类');
+          expect(r.state, 'data');
+          expect(r.courses.single.slots, isEmpty);
+          expect(r.issues, isNotEmpty);
+        });
       });
     });
   });

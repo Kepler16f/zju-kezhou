@@ -1,6 +1,7 @@
 /// pages/scholar_page.dart — 学业页 v3：顶部日期·学期·周次栏（下接快捷卡，随内容滚动）
-/// + 考试周冲刺置顶卡 + 成绩额头条（点击进成绩详情页）+ GPA 数字格 + 学分看板 +
-/// 课堂分 + 学期走势（五分制，可收起）+ GPA 模拟器（原「工具」页并入，诉求 #2）。
+/// + 考试周冲刺置顶卡 + 成绩额头条（点击进成绩详情页）+ GPA 数字格 + 课堂分（素拓）。
+/// 2026-10-18 需求 #1：学期走势与 GPA 模拟器迁至独立「工具」页签（pages/tools_page.dart）；
+/// 需求 #2：学分看板区块下线（CreditBoardCard 组件保留于 widgets/scholar_cards.dart）。
 /// 空数据引导去"设置"页。
 library;
 
@@ -14,8 +15,6 @@ import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/exam.dart';
 import '../widgets/exam_sprint_card.dart';
-import '../widgets/gpa_simulator.dart';
-import '../widgets/line_chart.dart';
 import '../widgets/scholar_cards.dart';
 import 'grade_detail_page.dart';
 
@@ -48,7 +47,6 @@ class ScholarPage extends StatefulWidget {
 class _ScholarPageState extends State<ScholarPage> {
   // 日期栏跨午夜/跨周需自刷新：每小时重算一次足够，且成本低。
   late Timer _clock;
-  bool _trendOpen = false; // 走势卡默认收起（诉求：可收起/展开）
 
   @override
   void initState() {
@@ -113,17 +111,6 @@ class _ScholarPageState extends State<ScholarPage> {
     }
 
     final o = Analytics.overall(courses);
-    final cats = Analytics.creditByCategory(courses);
-    final trend = Analytics.semesterTrend(courses);
-    // semesterOrder 与 semesterTrend 内部同序（升序，unknown 最前），按下标配对。
-    final sems = Analytics.semesterOrder(courses);
-    // 走势默认五分制（任务包 B）：喂 five/cumulative_five，TrendChart 的
-    // term/cumulative 字段名本就与分制无关，line_chart.dart 无需改动。
-    final points = [
-      for (var i = 0; i < trend.length; i++)
-        TrendPoint(scholarTrendShortLabel(sems[i]), trend[i]['five']!,
-            trend[i]['cumulative_five']!)
-    ];
 
     return Column(
       children: [
@@ -214,10 +201,6 @@ class _ScholarPageState extends State<ScholarPage> {
                   ),
                 ),
                 if (choosed != null) _choosedCard(context, choosed),
-                const SectionHeader('学分看板（按课程性质）'),
-                // 口径（诉求 #4）：已获学分正常色；审计存在「已选未获学分」时
-                // 由 CreditBoardCard 追加蓝色注释（待 main.dart 接线传审计汇总数）。
-                CreditBoardCard(cats: cats),
                 const SectionHeader('课堂分（素拓）'),
                 Card(
                   child: practice.isEmpty
@@ -246,83 +229,6 @@ class _ScholarPageState extends State<ScholarPage> {
                           ),
                         ),
                 ),
-                // 学期走势：可收起卡片（诉求 #6），默认收起，标题行自带文案
-                //（不再用独立 SectionHeader）。收起时不构建曲线，省一次绘制。
-                Card(
-                  margin: const EdgeInsets.symmetric(vertical: 6),
-                  clipBehavior: Clip.antiAlias,
-                  child: Column(
-                    children: [
-                      InkWell(
-                        borderRadius: BorderRadius.circular(12),
-                        onTap: () => setState(() => _trendOpen = !_trendOpen),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              Icon(Icons.show_chart,
-                                  size: 18,
-                                  color:
-                                      Theme.of(context).colorScheme.primary),
-                              const SizedBox(width: 6),
-                              const Expanded(
-                                child: Text('学期走势（五分制）',
-                                    style: TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.bold)),
-                              ),
-                              AnimatedRotation(
-                                turns: _trendOpen ? 0.5 : 0.0,
-                                duration: const Duration(milliseconds: 200),
-                                child: const Icon(Icons.expand_more,
-                                    size: 20, color: Colors.grey),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      AnimatedSize(
-                        duration: const Duration(milliseconds: 200),
-                        alignment: Alignment.topCenter,
-                        child: _trendOpen
-                            ? Padding(
-                                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                                child: Column(
-                                  children: [
-                                    TrendChart(points: points),
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.center,
-                                      children: [
-                                        _legend(
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .primary,
-                                            '累计 GPA'),
-                                        const SizedBox(width: 12),
-                                        _legend(
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .tertiary,
-                                            '学期 GPA'),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              )
-                            : const SizedBox(width: double.infinity),
-                      ),
-                    ],
-                  ),
-                ),
-                const SectionHeader('GPA 模拟器'),
-                GpaSimulatorCard(courses: courses),
-                Text(
-                    '口径：GPA 排除弃修/待录/缓考/二级制/线上课；五分绩点取教务 jd，'
-                    '缺失时参考换算；正式认定以教务为准。'
-                    '${marks.isNotEmpty ? '已应用本地排除标记 ${marks.length} 门（仅学业视图，不影响审计）。' : ''}',
-                    style: const TextStyle(fontSize: 10, color: Colors.grey)),
               ],
             ),
           ),
@@ -571,26 +477,6 @@ class _ScholarPageState extends State<ScholarPage> {
     }
     return credits == 0 ? 0.0 : sum / credits;
   }
-
-  Widget _legend(Color c, String label) => Row(
-        children: [
-          Container(width: 18, height: 3, color: c),
-          const SizedBox(width: 4),
-          Text(label, style: const TextStyle(fontSize: 11)),
-        ],
-      );
-}
-
-/// 学期编码 → 走势图短标签（纯函数，测试锁定于 test/scholar_trend_test.dart）：
-/// '2023-A' → '23秋'，'2023-B' → '24春'，'2022-C' → '23短'。
-/// 先走 data/semester.dart 的 termCodeLabel（'2023-A'→'2023秋冬'），
-/// 再取年份后两位 + 季名首字压缩宽度；解析不了原样返回，'unknown' 显示 '?'。
-String scholarTrendShortLabel(String sem) {
-  if (sem == 'unknown') return '?';
-  final full = termCodeLabel(sem);
-  final m = RegExp(r'^(\d{2})(\d{2})([秋冬春短])').firstMatch(full);
-  if (m == null) return full; // 宁缺勿猜：认不出就显示全称
-  return '${m.group(2)}${m.group(3)}';
 }
 
 // ── 已选课程 ↔ 成绩单匹配（诉求 #6；纯函数，测试锁定于 test/match_normalize_test.dart）──

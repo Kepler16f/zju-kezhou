@@ -6,7 +6,10 @@
 ///  → 结构化展示（培养目标/要求、专业核心课、学分与课堂要求）
 ///  + 官方培养方案 PDF（下载/系统阅读器打开，各板块修读要求解析后内嵌展示）。
 /// 另内嵌：学业达成审计区（原「审计」页签并入，诉求 #13/#14/#2/#11）、
-/// 本学期已选计数（诉求 #8）、本学期课表周视图（诉求 #16）。
+/// 本学期已选计数（诉求 #8）、本学期课表周视图（诉求 #16）；
+/// 课程 chips 三态标色（2026-10-18 需求 #3）：绿=已修完（有成绩且通过计学分）、
+/// 蓝=在修（本学期已选/成绩待录）、橙=有记录未获学分（未过/缓考/弃修，需重修）、
+/// 灰=未修/未知——修复原「成绩单里出现过就标已修」把在修/未过混进已修的问题。
 /// 逐门课程明细表已移除（任务 10：教务不普遍开放，且信息与 PDF 板块重复）；
 /// 微辅修板块整支隐藏（诉求 #10：清单面向其他专业学生，与本人修读无关）。
 library;
@@ -29,7 +32,8 @@ import '../engine/selection.dart';
 // engine/matching.dart 只是引用方且未 re-export，引擎文件本任务不可改。
 import '../engine/timeline.dart' show getCloseMatches;
 import '../widgets/report_view.dart';
-import '../widgets/scholar_cards.dart' show SectionHeader;
+// ScholarPalette：绿/蓝口径色与学业页同源（绿=已获学分、蓝=已选上）。
+import '../widgets/scholar_cards.dart' show SectionHeader, ScholarPalette;
 import '../widgets/timetable_view.dart';
 import 'minor_plan_page.dart';
 
@@ -43,7 +47,8 @@ class CurriculumPlanPage extends StatefulWidget {
   final CredentialStore store;
   final bool loggedIn;
 
-  /// 已修课程（学业页的 _courses），用于把课程名标成"已修/未修"。
+  /// 已修课程（学业页的 _courses，成绩单行含 passed/original/credit_included），
+  /// 用于把课程名按「已修完/在修/未获学分」三态标定（2026-10-18 需求 #3）。
   final List<Map<String, dynamic>> transcript;
   final VoidCallback onGoSettings;
 
@@ -308,11 +313,26 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     }
   }
 
-  /// 成绩单课程名集合（trim 去空）：「已修」标定的对照基准。
-  Set<String> _transcriptNames() => widget.transcript
-      .map((c) => (c['name'] ?? '').toString().trim())
-      .where((n) => n.isNotEmpty)
-      .toSet();
+  /// 修读状态证据（2026-10-18 需求 #3）：成绩单 + 审计 plan_courses +
+  /// 本学期已选/课表一次收集；chips 随收起/展开频繁重建，先解析成
+  /// 名称→状态表（resolvePlanCourseStates），构建时查表 O(1)。
+  PlanCourseEvidence _courseEvidence() {
+    return collectPlanCourseEvidence(
+      transcript: widget.transcript,
+      choosedNames: [
+        for (final c in widget.choosed?.courses ?? const []) c.kcmc,
+      ],
+      timetableNames: [
+        for (final r in widget.timetable?.rows ?? const []) r.name,
+      ],
+      reportPlanCourses: [
+        for (final m in (widget.report?['summary'] as List? ?? const []))
+          if (m is Map)
+            ...(m['plan_courses'] as List? ?? const [])
+                .cast<Map<String, dynamic>>(),
+      ],
+    );
+  }
 
   // ── 视图 ────────────────────────────────────────────────────────────────
   @override
@@ -516,6 +536,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
 
   /// 本学期课表（诉求 #16）：教务模式拉到的周视图，内嵌方案页底部。
   /// rows 为空时显示 issues 首条或「本学期暂无课表」灰字（如实降级，不猜）。
+  /// 有课表时补一行灰字说明口径（2026-10-18 需求 #3）：课表课程即「在修」，
+  /// 成绩未出前不计入已取得学分（周视图自身按课程名配色，不占用三态标色）。
   Widget _timetableSection(TimetableParseResult tt) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -537,6 +559,12 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                   : TimetableView(rows: tt.rows),
             ),
           ),
+          if (tt.rows.isNotEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 2),
+              child: Text('课表所列均为本学期在修课程；成绩未出前不计入已取得学分。',
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
+            ),
         ],
       );
 
@@ -629,13 +657,15 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       );
 
   List<Widget> _planSections(PlanSummary p) {
-    // 「已修」标定（配合任务 5）：成绩单全等命中 + 名称相似度 ≥0.85 模糊命中。
-    // 一次性解析成集合：chips 随收起/展开频繁重建，查表 O(1)，避免重复算相似度。
-    final passed = resolvePassedNames([
+    // 修读状态标定（2026-10-18 需求 #3）：绿=已修完 / 蓝=在修 / 橙=未获学分需重修，
+    // 从原「已修」口径拆分（原逻辑把成绩单里出现过的课程一律标已修，
+    // 在修未出分/未通过的课混在其中）。全等 + 模糊 ≥0.85 同原口径，
+    // 一次性解析成 名称→状态 表：chips 随收起/展开频繁重建，查表 O(1)。
+    final states = resolvePlanCourseStates([
       ...p.zyhxkc,
       ...p.zyhxsjkc,
       ...p.qywkc,
-    ], _transcriptNames());
+    ], _courseEvidence());
     return [
       _card('方案概览', [
         _kv('专业', p.zymc),
@@ -689,16 +719,15 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       if (p.pyyq.isNotEmpty) _expandCard('培养要求', p.pyyq),
       if (p.zyhxkc.isNotEmpty)
         _card('专业核心课程（${p.zyhxkc.length} 门）', [
-          _chips(p.zyhxkc, passed),
+          _chips(p.zyhxkc, states),
           const SizedBox(height: 6),
-          const Text('高亮=你的成绩单里已出现同名或相近课程；逐门学分/学期见各板块修读要求或官方 PDF。',
-              style: TextStyle(fontSize: 11, color: Colors.grey)),
+          _stateLegend(),
         ]),
       if (p.zyhxsjkc.isNotEmpty)
         _card('专业核心实践课程（${p.zyhxsjkc.length} 门）',
-            [_chips(p.zyhxsjkc, passed)]),
+            [_chips(p.zyhxsjkc, states)]),
       if (p.qywkc.isNotEmpty)
-        _card('前沿与荣誉课程（${p.qywkc.length} 门）', [_chips(p.qywkc, passed)]),
+        _card('前沿与荣誉课程（${p.qywkc.length} 门）', [_chips(p.qywkc, states)]),
       if (_pdfSections != null && _pdfSections!.sections.isNotEmpty)
         _pdfSectionsCard(),
       if (p.bz.isNotEmpty) _expandCard('辅修/微辅修说明', p.bz),
@@ -733,11 +762,19 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   /// 子层级保持 _subBlock 样式。
   Widget _pdfSectionsCard() {
     final ps = _pdfSections!;
-    // 「已修」标定与 _planSections 同口径（全等 + 模糊 ≥0.85），对 PDF 全部
-    // 板块的课程名一次性解析，收起/展开重绘时只做查表。
-    final passed = resolvePassedNames(
-      [for (final s in ps.sections) ...s.courses.map((c) => c.name)],
-      _transcriptNames(),
+    // 修读状态标定与 _planSections 同口径（全等 + 模糊 ≥0.85 → 三态，
+    // 2026-10-18 需求 #3），对 PDF 全部板块的课程名一次性解析；认定类板块
+    // 补出的成绩单课程名一并纳入解析范围，收起/展开重绘时只做查表。
+    final certifiedNames = <String>{
+      for (final s in ps.sections)
+        for (final r in certifiedRowsForSection(s, widget.transcript)) r.name,
+    };
+    final states = resolvePlanCourseStates(
+      [
+        for (final s in ps.sections) ...s.courses.map((c) => c.name),
+        ...certifiedNames,
+      ],
+      _courseEvidence(),
     );
     final roots = _buildSectionTree(ps.sections);
     // 微辅修板块整支剔除（诉求 #10）：索引保持文档序，收起/展开状态键不受影响。
@@ -751,8 +788,9 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
           children: [
             const Text('各板块修读要求',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-            const Text('来自官方培养方案 PDF · 高亮=成绩单已出现同名或相近课程',
+            const Text('来自官方培养方案 PDF',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
+            _stateLegend(),
             if (ps.qualityNotes.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
@@ -762,7 +800,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
               ),
             for (var i = 0; i < roots.length; i++) ...[
               if (i > 0) const Divider(height: 16), // 一级板块之间的分隔
-              _moduleBlock(roots[i], passed),
+              _moduleBlock(roots[i], states),
             ],
           ],
         ),
@@ -773,7 +811,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   /// 一级板块：标题行（带 ▾ 整块收起/展开、橙色「N选M」规则徽章）+ 内容；
   /// 不再各套 Card（诉求 #14），说明命中「以下 N 种模块中的一种」时在
   /// 标题下加灰字并行选项提示（诉求 #11）。
-  Widget _moduleBlock(_SecNode node, Set<String> passed) {
+  Widget _moduleBlock(_SecNode node, Map<String, PlanCourseState> states) {
     final s = node.section;
     final open = !_collapsedSecs.contains(node.index);
     final courses = _countCourses(node);
@@ -848,11 +886,11 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (s.courses.isNotEmpty) ...[
-                  _courseChips(s.courses, passed),
+                  _courseChips(s.courses, states),
                   const SizedBox(height: 6),
                 ],
-                ..._certifiedChipBlock(s, passed),
-                for (final k in node.children) _subBlock(k, passed),
+                ..._certifiedChipBlock(s, states),
+                for (final k in node.children) _subBlock(k, states),
                 ..._notesBlock(s, node.index),
               ],
             ),
@@ -862,7 +900,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   }
 
   /// 二级及更深板块：卡内的可收起小节（同样带「N选M」规则徽章）。
-  Widget _subBlock(_SecNode node, Set<String> passed) {
+  Widget _subBlock(_SecNode node, Map<String, PlanCourseState> states) {
     final s = node.section;
     final open = !_collapsedSecs.contains(node.index);
     final courses = _countCourses(node);
@@ -927,11 +965,11 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (s.courses.isNotEmpty) ...[
-                    _courseChips(s.courses, passed),
+                    _courseChips(s.courses, states),
                     const SizedBox(height: 6),
                   ],
-                  ..._certifiedChipBlock(s, passed),
-                  for (final k in node.children) _subBlock(k, passed),
+                  ..._certifiedChipBlock(s, states),
+                  for (final k in node.children) _subBlock(k, states),
                   ..._notesBlock(s, node.index),
                 ],
               ),
@@ -991,35 +1029,22 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     ];
   }
 
-  /// 本学期已选课程名集合（在修，未出成绩）。
-  Set<String> _selectedNames() => widget.choosed?.courses
-          .map((c) => c.kcmc.trim())
-          .where((n) => n.isNotEmpty)
-          .toSet() ??
-      const <String>{};
-
-  Widget _courseChips(List<PdfCourseRow> courses, Set<String> passed) {
-    final selected = _selectedNames();
+  /// 方案课程 chips（PDF 板块课程行）：按 名称→状态 表标色，
+  /// 角标文字区分 已修完/在修/未过需重修（2026-10-18 需求 #3）。
+  Widget _courseChips(
+      List<PdfCourseRow> courses, Map<String, PlanCourseState> states) {
     return Wrap(
       spacing: 5,
       runSpacing: 4,
       children: [
         for (final c in courses)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(6),
-              color: selected.contains(c.name)
-                  ? Theme.of(context).colorScheme.tertiaryContainer
-                  : passed.contains(c.name)
-                      ? Theme.of(context).colorScheme.primaryContainer
-                      : Theme.of(context).colorScheme.surfaceContainerHighest,
-            ),
-            child: Text(
-                '${c.name} ${_num(c.credits)}分'
-                '${selected.contains(c.name) ? '（在修）' : ''}'
-                '${c.semester.isNotEmpty ? ' ${prettySemester(c.semester, gradeYear: _selected?.gradeYear ?? 0)}' : ''}',
-                style: const TextStyle(fontSize: 11)),
+          _stateChip(
+            '${c.name} ${_num(c.credits)}分'
+            '${c.semester.isNotEmpty ? ' ${prettySemester(c.semester, gradeYear: _selected?.gradeYear ?? 0)}' : ''}',
+            states[c.name] ?? PlanCourseState.unknown,
+            fontSize: 11,
+            hPad: 7,
+            vPad: 3,
           ),
       ],
     );
@@ -1027,16 +1052,28 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
 
   /// 认定类板块（美育/劳育/创新创业/心理健康，#13）在 PDF 里只有说明文字、
   /// 无课程表：把成绩单里同类课程（certifiedCategoryOf 命中该板块类别）显示为
-  /// 「已修」标亮 chips。板块自带课程表时 certifiedRowsForSection 返回空，不重复。
-  List<Widget> _certifiedChipBlock(PdfModuleSection s, Set<String> passed) {
+  /// 补充 chips。板块自带课程表时 certifiedRowsForSection 返回空，不重复。
+  /// 状态仍查 states 表（这些课程名已在 _pdfSectionsCard 纳入解析范围）：
+  /// 已获学分绿 / 待录蓝 / 未获学分橙，不再一律标已修（需求 #3）。
+  List<Widget> _certifiedChipBlock(
+      PdfModuleSection s, Map<String, PlanCourseState> states) {
     final rows = certifiedRowsForSection(s, widget.transcript);
     if (rows.isEmpty) return const [];
-    // chips 本身取自成绩单，直接并入已修集合（与 _transcriptNames 同口径）
     return [
-      _courseChips(rows, passed.union(_transcriptNames())),
+      _courseChips(rows, states),
       const SizedBox(height: 6),
     ];
   }
+
+  /// 三态图例（一行灰字，窄屏自动软换行）：与 chips 底色/角标一一对应。
+  Widget _stateLegend() => const Padding(
+        padding: EdgeInsets.only(top: 2),
+        child: Text(
+          '图例：绿=已修完（有成绩且通过计学分）· 蓝=在修（本学期已选/成绩待录）· '
+          '橙=有记录未获学分（未过/缓考/弃修，需重修）· 灰=未修/未知',
+          style: TextStyle(fontSize: 11, color: Colors.grey),
+        ),
+      );
 
   /// 「N选M」等修读约束的小徽章（诉求 #2/#11）：纯展示，规则识别在
   /// choiceBadgeText（引擎适配器的 detectChoiceRule），这里只负责样式。
@@ -1298,28 +1335,63 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         ),
       );
 
-  Widget _chips(List<String> names, Set<String> passed) {
-    final selected = _selectedNames();
+  Widget _chips(List<String> names, Map<String, PlanCourseState> states) {
     return Wrap(
       spacing: 6,
       runSpacing: 6,
       children: [
         for (final n in names)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(6),
-              color: selected.contains(n)
-                  ? Theme.of(context).colorScheme.tertiaryContainer
-                  : passed.contains(n)
-                      ? Theme.of(context).colorScheme.primaryContainer
-                      : Theme.of(context).colorScheme.surfaceContainerHighest,
-            ),
-            child: Text(selected.contains(n) ? '$n（在修）' : n,
-                style: const TextStyle(fontSize: 12)),
-          ),
-        ],
-      );
+          _stateChip(n, states[n] ?? PlanCourseState.unknown),
+      ],
+    );
+  }
+
+  /// 三态课程 chip（2026-10-18 需求 #3）：底色 + 文字角标区分修读状态，
+  /// 口径色与学业页/审计报告一致——绿=已获学分、蓝=已选上、
+  /// 橙=有记录未获学分（对齐报告三色黄 0xFFF59E0B）；灰=未修/未知（宁缺勿猜）。
+  /// maxLines:1，超长省略号收尾（窄屏不撑爆卡片）。
+  Widget _stateChip(
+    String base,
+    PlanCourseState state, {
+    double fontSize = 12,
+    double hPad = 8,
+    double vPad = 4,
+  }) {
+    final (Color bg, Color fg, String mark) = switch (state) {
+      PlanCourseState.earned => (
+          ScholarPalette.earnedGreen.withValues(alpha: 0.15),
+          ScholarPalette.earnedGreen,
+          '（已修完）',
+        ),
+      PlanCourseState.active => (
+          ScholarPalette.selectedBlue.withValues(alpha: 0.13),
+          ScholarPalette.selectedBlue,
+          '（在修）',
+        ),
+      PlanCourseState.noCredit => (
+          kPlanNoCreditColor.withValues(alpha: 0.16),
+          kPlanNoCreditColor,
+          '（未过需重修）',
+        ),
+      PlanCourseState.unknown => (
+          Theme.of(context).colorScheme.surfaceContainerHighest,
+          Theme.of(context).colorScheme.onSurface,
+          '',
+        ),
+    };
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(6),
+        color: bg,
+      ),
+      child: Text(
+        '$base$mark',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: fontSize, color: fg),
+      ),
+    );
   }
 
   static String _num(double v) => (v - v.roundToDouble()).abs() < 1e-9
@@ -1361,6 +1433,142 @@ Set<String> resolvePassedNames(
         getCloseMatches(n, possibilities, n: 1, cutoff: 0.85).isNotEmpty) {
       out.add(raw);
     }
+  }
+  return out;
+}
+
+// ── 方案课程修读状态三态标定（2026-10-18 需求 #3；纯函数，测试锁定于
+// test/plan_page_course_state_test.dart）──────────────────────────────────
+
+/// 橙=有记录未获学分（对齐审计报告三色黄 0xFFF59E0B；绿/蓝直接复用
+/// ScholarPalette 口径色：绿=已获学分、蓝=已选上）。
+const Color kPlanNoCreditColor = Color(0xFFF59E0B);
+
+/// 方案课程 chips 的修读状态：把原「成绩单里出现过就算已修」拆成三态，
+/// 修复在修未出分/未通过的课被混入「已修」标亮的问题（宁缺勿猜：无证据=unknown）。
+enum PlanCourseState {
+  /// 已修完：有成绩、通过且计入学分（绿）。
+  earned,
+
+  /// 在修：本学期已选/课表在修，或成绩待录未出分（蓝）。
+  active,
+
+  /// 已有记录未获学分：未过/缺考/缓考/弃修/无效等，需重修（橙）。
+  noCredit,
+
+  /// 无证据：未修/未知（灰）。
+  unknown,
+}
+
+/// 单条成绩单记录 → 修读状态（顶层纯函数、不抛异常；认不出返回 null 不强行归类）。
+/// 口径与引擎一致（engine/matching.dart 的 isPassed：passed 字段优先、缺省
+/// grade≥60；credit_included 缺省视为 true）：
+///  * earned：通过且计入学分；
+///  * active：original=「待录」（成绩未出，在修未出分）；
+///  * noCredit：有记录未获学分——不及格/不合格/缺考/F、百分制 >0 且未通过、
+///    弃修/缓考/无效（引擎同记 selected_no_credit），及「通过但学分被排除」；
+///  * 其余（无分数也无已知标记）→ null。
+PlanCourseState? transcriptRowState(Map<String, dynamic> r) {
+  final passedField = r['passed'];
+  final isPassed = passedField != null
+      ? passedField == true
+      : ((r['grade'] as num?)?.toDouble() ?? 0) >= 60;
+  if (isPassed && ((r['credit_included'] as bool?) ?? true)) {
+    return PlanCourseState.earned;
+  }
+  final original = '${r['original'] ?? ''}'.trim();
+  if (original == '待录') return PlanCourseState.active;
+  if (isPassed) return PlanCourseState.noCredit; // 通过但学分被排除：未获学分
+  final grade = (r['grade'] as num?)?.toDouble() ?? 0;
+  const noCreditMarks = {'不及格', '不合格', '缺考', 'F', '弃修', '缓考', '无效'};
+  if (noCreditMarks.contains(original) || (grade > 0 && !isPassed)) {
+    return PlanCourseState.noCredit;
+  }
+  return null;
+}
+
+/// 修读状态证据集合（课程名均 trim；同一门课多来源冲突时按
+/// earned > active > noCredit 优先级取，见 resolvePlanCourseStates）。
+class PlanCourseEvidence {
+  final Set<String> earned; // 已修完（有成绩且通过计学分）
+  final Set<String> active; // 在修（本学期已选/课表/成绩待录）
+  final Set<String> noCredit; // 有记录未获学分（未过/缓考/弃修等）
+  const PlanCourseEvidence({
+    this.earned = const {},
+    this.active = const {},
+    this.noCredit = const {},
+  });
+}
+
+/// 从四个数据源收集修读状态证据（顶层纯函数、不抛异常、宁缺勿猜）：
+///  * transcript 成绩单行：逐行 transcriptRowState 归类；
+///  * choosed 本学期已选 / timetable 本学期课表：在修证据（active）；
+///    若该课成绩已出且获学分，earned 优先级更高，不会被误标在修；
+///  * report 审计 plan_courses（引擎已按课号/相似度匹配）：passed=true →
+///    earned；passed=false 且 record.grade>0（确有分数）→ noCredit；
+///    grade 缺失/为 0 不猜（可能是待录，也可能是词语分映射 0）。
+PlanCourseEvidence collectPlanCourseEvidence({
+  List<Map<String, dynamic>> transcript = const [],
+  Iterable<String> choosedNames = const [],
+  Iterable<String> timetableNames = const [],
+  List<Map<String, dynamic>> reportPlanCourses = const [],
+}) {
+  final earned = <String>{};
+  final active = <String>{};
+  final noCredit = <String>{};
+  for (final r in transcript) {
+    final name = '${r['name'] ?? ''}'.trim();
+    if (name.isEmpty) continue;
+    final st = transcriptRowState(r);
+    if (st == PlanCourseState.earned) {
+      earned.add(name);
+    } else if (st == PlanCourseState.active) {
+      active.add(name);
+    } else if (st == PlanCourseState.noCredit) {
+      noCredit.add(name);
+    }
+  }
+  for (final n in choosedNames) {
+    final t = n.trim();
+    if (t.isNotEmpty) active.add(t);
+  }
+  for (final n in timetableNames) {
+    final t = n.trim();
+    if (t.isNotEmpty) active.add(t);
+  }
+  for (final c in reportPlanCourses) {
+    final name = '${c['name'] ?? ''}'.trim();
+    if (name.isEmpty) continue;
+    if (c['passed'] == true) {
+      earned.add(name);
+      continue;
+    }
+    final g = ((c['record'] as Map?)?['grade'] as num?)?.toDouble() ?? 0;
+    if (c['passed'] == false && g > 0) noCredit.add(name);
+  }
+  return PlanCourseEvidence(earned: earned, active: active, noCredit: noCredit);
+}
+
+/// 方案课程名 → 修读状态（顶层纯函数，供 UI 与单测共用）：对每个证据集合复用
+/// resolvePassedNames（全等 + 相似度 ≥0.85，与原「已修」标定同口径），同一门课
+/// 按 earned > active > noCredit 取最高优先级；无任何证据的名字也保留在结果里、
+/// 值为 unknown（宁缺勿猜：查不到就显示「未修/未知」）。
+Map<String, PlanCourseState> resolvePlanCourseStates(
+    Iterable<String> planNames, PlanCourseEvidence ev) {
+  final out = <String, PlanCourseState>{};
+  void mark(Set<String> source, PlanCourseState st) {
+    if (source.isEmpty) return;
+    for (final n in resolvePassedNames(planNames, source)) {
+      out.putIfAbsent(n, () => st); // 先标高优先级，低优先级不覆盖
+    }
+  }
+
+  mark(ev.earned, PlanCourseState.earned);
+  mark(ev.active, PlanCourseState.active);
+  mark(ev.noCredit, PlanCourseState.noCredit);
+  // 未命中任何证据的名字补 unknown（键保留方案侧原写法，chips 直接查表）。
+  for (final n in planNames) {
+    out.putIfAbsent(n, () => PlanCourseState.unknown);
   }
   return out;
 }

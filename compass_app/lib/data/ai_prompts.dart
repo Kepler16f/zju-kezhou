@@ -58,10 +58,22 @@ const String kAiBoundaryFallback =
     '我不能替你决定选哪门，也不能生成课表。可以帮你复述建议卡、整理要向导师/教务确认的问题；'
     '请携带本页建议卡与导师/教务确认。';
 
+/// 全局助手越界回退文案（需求 #6）：与选课页一次性解读的严格中立口径不同，
+/// 全局助手可以列举具体可选课程/给出方向性建议，但绝不替用户拍板成品课表、
+/// 不预测选上概率、不编造数据。命中下列硬红线时整段替换为此文案。
+const String kAiChatBoundaryFallback =
+    '这部分我不能替你拍板（成品课表/能否选上由教务筛选决定）。'
+    '我可以列出具体候选、讲清规则与冲突、并整理要和导师确认的问题——换个问法试试？';
+
 /// AI 输出页脚（UI 硬拼接，复制按钮同附）。
 const String kAiFooter =
     '以上解读由 AI 根据本机计算结果生成，仅供与导师/教务沟通参考；'
     '本工具不替你选课、不生成课表；正式认定以教务系统为准。';
+
+/// 全局助手页脚（需求 #6）：允许给具体建议，但保留免责与"以教务为准"。
+const String kAiChatFooter =
+    '以上为 AI 依据本机数据与内置选课知识库生成的参考，可能给你具体候选与建议；'
+    '正式选课与学业认定以教务系统和导师意见为准。';
 
 /// 候选列表脚注（排序不代表推荐）。
 const String kCandidatesOrderNote = '列表按课程代码排序，不代表推荐或优先次序。';
@@ -115,6 +127,7 @@ List<String> findBoundaryTriggers(String input) {
 /// 命中禁用倾向词/组合句式 → 整段替换为边界文案（宁可误杀：本机建议卡仍完整可用）。
 /// 规则与本文件 buildGuidanceSystemPrompt 硬规则 2/3 同源；「与当前课表重叠：周X 第N节」这类
 /// 引用既有 JSON 的冲突复述不受影响。
+/// （选课页一次性解读面板专用——那里的口径仍是"只翻译不推荐"。）
 String sanitizeAiOutput(String text) {
   final compact = text.replaceAll(RegExp(r'\s+'), '');
   const banned = [
@@ -128,6 +141,27 @@ String sanitizeAiOutput(String text) {
   if (RegExp(r'选\s*[A-CＡ-Ｃ]').hasMatch(text)) return kAiBoundaryFallback;
   if (compact.contains('课表如下') || compact.contains('选课方案') || compact.contains('三门课')) {
     return kAiBoundaryFallback;
+  }
+  return text;
+}
+
+/// 全局助手输出的边界（需求 #6，刻意比 [sanitizeAiOutput] 宽松）：
+/// 允许列举具体课程、给方向性建议（"先看 X，再看 Y"），这正是用户要的
+/// "给出具体选项而不是全部选上"；仍拦死三类硬红线——
+///  1) 替用户拍板的成品课表句式（「你的课表是/按这个选课」直接执行形态）；
+///  2) 预测能否选上/成功率的确定性断言（教务摇号结果不可预测）；
+///  3) 越权承诺（"我帮你选了/已为你选课"——本工具通道只读，绝无写能力）。
+/// 命中即整段替换为 [kAiChatBoundaryFallback]（宁可误杀；换问法通常可用）。
+String sanitizeChatOutput(String text) {
+  final compact = text.replaceAll(RegExp(r'\s+'), '');
+  const hardBanned = [
+    '你的课表如下', '课表已生成', '按此课表选', '直接按这个选',
+    '一定能选上', '必能选上', '肯定能选上', '保证选上',
+    '我已帮你选', '已替你选好', '帮你选好了', '替你选好了',
+    '已成功选课', '选课已提交',
+  ];
+  for (final b in hardBanned) {
+    if (compact.contains(b)) return kAiChatBoundaryFallback;
   }
   return text;
 }
@@ -231,8 +265,9 @@ String buildChatSystemPrompt({
    「当前数据中没有」，不得编造课程、成绩、学分、时间或规则。
 2. 引用课程名、学分、成绩、绩点、缺口数字时原样引用，不要自行加总、平均、换算或推算；
    需要计算时回答「请以本机页面显示的计算结果为准」。
-3. 不替用户做选课决定：不输出「推荐/建议选/优先/备选/更适合/容易选上/比较稳」等倾向词，
-   不对课程排序或贴好坏标签，不生成课表，不预测筛选/调剂结果。
+3. 选课类提问要给**具体选项**而不是罗列全部候选：结合本机缺口/先修/冲突数据与知识库规则，
+   明确说「先看哪几门、为什么」；但不得替用户拍板成品课表（最终选哪些由用户定），
+   不得断言能否选上/成功率（教务按规则筛选，结果不可预测）。
 4. 可以复述事实、解释概念、指出数据中的提示与冲突、列出向导师/教务核对的问题。
 5. 数据不足时先说明缺什么，再给出用户可以自己去哪里查看（如「学业页」「方案页」「选课页」）。
 6. 回答简洁，默认控制在 300 字以内；用户要求展开时再展开。

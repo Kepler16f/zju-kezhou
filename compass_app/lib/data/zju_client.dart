@@ -1733,6 +1733,15 @@ class ZjuClient {
   static String _cacheToken(String s) =>
       base64Url.encode(utf8.encode(s)).replaceAll('=', '');
 
+  /// 入口 data-* 附加参数的规范签名（键排序后 k=v 串）。空参数返回 ''——
+  /// 此时缓存键与旧版完全一致；非空时才追加键分量（同 dl/lx 但认定标志不同的
+  /// 两次请求不能互相覆盖缓存，#4）。
+  static String _xkAttrSignature(XkRound round) {
+    if (round.attrs.isEmpty) return '';
+    final keys = round.attrs.keys.toList()..sort();
+    return [for (final k in keys) '$k=${round.attrs[k]}'].join('\u0000');
+  }
+
   /// 上次选课入口是否来自缓存（UI 据此提示"离线/可能过期"）。
   bool lastXkIndexFromCache = false;
 
@@ -1748,8 +1757,9 @@ class ZjuClient {
       try {
         final obj = json.decode(cached);
         if (obj is! Map) return null;
-        // 缓存 schema 版本：旧版本可能把 zju_ghb/hidden 空值写坏，直接失效重拉。
-        if ((obj['v'] as num?)?.toInt() != 2) return null;
+        // 缓存 schema 版本：v3 起携带入口全参数（extra_args/attrs，#4 认定型入口）；
+        // 旧版本读不到这些参数会让认定类入口仍按缺参请求，直接失效重拉。
+        if ((obj['v'] as num?)?.toInt() != 3) return null;
         final rounds = <XkRound>[];
         for (final r in (obj['rounds'] as List? ?? const [])) {
           if (r is Map && '${r['xkkz_id'] ?? ''}'.isNotEmpty) {
@@ -1758,6 +1768,13 @@ class ZjuClient {
               kklxdm: '${r['kklxdm'] ?? ''}',
               xklc: '${r['xklc'] ?? ''}'.isEmpty ? null : '${r['xklc']}',
               label: '${r['label'] ?? ''}',
+              extraArgs: [
+                for (final a in (r['extra_args'] as List? ?? const [])) '$a'
+              ],
+              attrs: {
+                for (final e in ((r['attrs'] as Map?) ?? const {}).entries)
+                  '${e.key}': '${e.value}',
+              },
             ));
           }
         }
@@ -1816,7 +1833,7 @@ class ZjuClient {
         await store.saveCache(
             cacheKey,
             json.encode({
-              'v': 2,
+              'v': 3,
               'fetched_at': DateTime.now().millisecondsSinceEpoch,
               'xkxnm': parsed.xkxnm,
               'xkxqm': parsed.xkxqm,
@@ -1831,6 +1848,8 @@ class ZjuClient {
                     'kklxdm': x.kklxdm,
                     'xklc': x.xklc,
                     'label': x.label,
+                    'extra_args': x.extraArgs,
+                    'attrs': x.attrs,
                   }
               ],
             }));
@@ -1894,9 +1913,12 @@ class ZjuClient {
   }) async {
     final term =
         ((xkxnm ?? '').isNotEmpty && (xkxqm ?? '').isNotEmpty) ? '$xkxnm-$xkxqm' : '';
-    // 缓存键带 kklxdm：同一 dl 的 bl/zl 子入口不能互相覆盖。
+    // 缓存键带 kklxdm：同一 dl 的 bl/zl 子入口不能互相覆盖；带 data-* 附加参数签名：
+    // 同 (dl,lx) 但认定标志不同的请求也不能互相覆盖（#4，无附加参数时与旧键一致）。
+    final attrSig = _xkAttrSignature(round);
     final cacheKey = 'xk_${_cacheToken(term)}_${_cacheToken(round.xkkzId)}'
-        '_${_cacheToken(round.kklxdm)}';
+        '_${_cacheToken(round.kklxdm)}'
+        '${attrSig.isEmpty ? '' : '_${_cacheToken(attrSig)}'}';
     Future<XkListParseResult?> fromCache() async {
       final cached = await store.readCache(cacheKey);
       if (cached == null) return null;
@@ -2010,18 +2032,40 @@ class ZjuClient {
           'nd': '$now',
           'time': '0',
         });
+        // #4 认定型入口：锚点上 dl/lx 之外的 data-* 属性按名透传（如认定标志，
+        // 具体键名待 LIVE 探针，docs §9）。透传纪律（宁缺勿猜）：
+        //  - 只收合法参数名（字母开头 ≤32 位字母数字下划线）与非空值；
+        //  - 实测/计算键（dl/lx/xn/xq/nj/zydm/xnxq/kspage/jspage 等）永不被属性覆盖；
+        //  - xkmc/kcbs/jxjhh 是「宁全勿缺」的空占位（非实测键），允许被入口属性覆盖。
+        const reservedKeys = {
+          'dl', 'lx', 'xn', 'xq', 'nj', 'zydm', 'xnxq', 'kspage', 'jspage',
+          'doType', 'nd', 'time', 'gnmkdm', 'su', 'xkxnm', 'xkxqm',
+        };
+        final attrExtras = <String, String>{
+          for (final e in round.attrs.entries)
+            if (!reservedKeys.contains(e.key) &&
+                RegExp(r'^[a-zA-Z][a-zA-Z0-9_]{0,31}$').hasMatch(e.key) &&
+                e.value.trim().isNotEmpty)
+              e.key: e.value.trim(),
+        };
+        if (attrExtras.isNotEmpty) {
+          _log('选课列表',
+              detail: '${round.label}｜透传入口附加参数 ${attrExtras.keys.join(",")}');
+        }
         final body = <String, String>{
-          // 首页全部隐藏域先带上（rwlx/jg_id/xqh_id/filter_list 等），再覆盖关键项。
+          // 首页全部隐藏域先带上（rwlx/jg_id/xqh_id/filter_list 等），再覆盖关键项；
+          // 层级：隐藏域 < 空占位 < 入口 data-* 附加参数 < 实测固定键。
           ...hiddenFields,
-          'dl': round.xkkzId,
-          'lx': round.kklxdm.isEmpty ? 'bl' : round.kklxdm,
           'xkmc': '',
           'kcbs': '',
+          'jxjhh': '',
+          ...attrExtras,
+          'dl': round.xkkzId,
+          'lx': round.kklxdm.isEmpty ? 'bl' : round.kklxdm,
           'nj': nj,
           'xn': xn,
           'xq': xq,
           'zydm': zydm,
-          'jxjhh': '',
           'xnxq': '($xn-$xq)-',
           'kspage': '1',
           'jspage': '1000',
@@ -2081,7 +2125,8 @@ class ZjuClient {
         _log('选课列表',
             detail: '${round.label.isEmpty ? round.xkkzId : round.label}｜${parsed.state}'
                 '｜${parsed.courses.length} 条'
-                '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}');
+                '${parsed.issues.isEmpty ? '' : '｜${parsed.issues.first}'}'
+                '${round.extraArgs.isEmpty ? '' : '｜onclick额外参数 ${round.extraArgs.join(",")}'}');
       }
       return parsed;
     } on RateLimitedException {

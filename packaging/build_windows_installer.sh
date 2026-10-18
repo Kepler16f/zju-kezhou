@@ -12,9 +12,11 @@ DIST="$ROOT/dist"
 STAGE="$DIST/stage-win-$ARCH"
 
 # 1) 构建 Release（产物不存在或源码更新时）
+# SDK：默认 /d/flutter-3477（本机可用 arm64 worktree，含 --target-platform 交叉补丁）；
+# 旧 C:\flutter 分支的 flutter_tester 已损坏（Invalid SDK hash），勿作默认。
 if [ ! -f "$REL/kezhou.exe" ]; then
-  export PATH="/c/flutter/bin:$PATH"
-  (cd "$ROOT/compass_app" && flutter build windows --release --no-tree-shake-icons)
+  export PATH="${FLUTTER_BIN_DIR:-/d/flutter-3477/bin}:$PATH"
+  (cd "$ROOT/compass_app" && flutter build windows --release --target-platform windows-$([ "$ARCH" = "arm64" ] && echo arm64 || echo x64) --no-tree-shake-icons)
 fi
 [ -f "$REL/kezhou.exe" ] || { echo "未找到 $REL/kezhou.exe（先 flutter build windows）"; exit 1; }
 
@@ -49,7 +51,9 @@ esac
 cat > "$ISS" <<EOF
 ; 自动生成：build_windows_installer.sh — 勿手改
 [Setup]
-AppId={{8F4B1D5E-92A6-4C7B-B3E0-KEZHOU00001}
+; AppId 必须与 CI（.github/workflows/build-windows.yml）一致 = …00002；
+; 曾因本地 00001 / CI 00002 不一致导致两个"课舟"并存、旧版不自动卸载（2026-10-18 实测）。
+AppId={{8F4B1D5E-92A6-4C7B-B3E0-KEZHOU00002}
 AppName=课舟
 AppVersion=$VER
 AppPublisher=KeZhou Team
@@ -81,6 +85,19 @@ OUT="$DIST/KeZhouSetup-$VER-win-$ARCH.exe"
 cp "$OUT" "/c/Users/$USERNAME/Downloads/"
 echo "== 交付: $OUT（已复制到 Downloads）=="
 ls -la "$OUT" | awk '{print $5" bytes"}'
+
+# 需求 #7（2026-10-18）：每次构建交付后删掉上一版本地安装包——
+# dist/ 只留本次 Setup.exe；Downloads 只留 kezhou-<本次版本>/ 产物目录，
+# 其余 kezhou-* 旧版本目录整目录清除（Setup.exe 副本就在目录内，一并清掉）。
+find "$DIST" -maxdepth 1 -name 'KeZhouSetup-*.exe' ! -name "KeZhouSetup-$VER-win-$ARCH.exe" -delete 2>/dev/null || true
+DWN="/c/Users/$USERNAME/Downloads"
+find "$DWN" -maxdepth 1 -name 'KeZhouSetup-*.exe' ! -name "KeZhouSetup-$VER-win-$ARCH.exe" -delete 2>/dev/null || true
+for d in "$DWN"/kezhou-*; do
+  [ -d "$d" ] || continue
+  [ "$(basename "$d")" = "kezhou-$VER" ] && continue
+  rm -rf "$d"
+  echo "已清理上一版本地产物目录: $d"
+done
 
 # 本机自动安装（用户约定：arm64 版改好直接装上；SKIP_INSTALL=1 可跳过）
 # 注意：ps1 里不能硬编码中文用户名路径（PowerShell 5.1 按 GBK 读无 BOM 脚本会乱码），

@@ -1,4 +1,5 @@
-/// 课舟 App 主入口：底部导航四页签（学业/方案/选课/设置；审计并入方案页，原「工具」页签并入学业页）。
+/// 课舟 App 主入口：底部导航五页签（学业/方案/选课/工具/设置；审计并入方案页，
+/// 2026-10-18 需求 #1：学期走势与 GPA 模拟器自学业页拆出，恢复独立「工具」页签）。
 /// 数据流：设置页选源运行 → 状态持有 courses/report/practice/choosed/timetable → 各页消费。
 /// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（出厂默认关闭，悬浮入口点击时引导开启）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
@@ -14,6 +15,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData, rootBundle
 
 import 'data/ai_client.dart';
 import 'data/ai_config.dart';
+import 'data/ai_knowledge.dart';
 import 'data/ai_models.dart';
 import 'data/ai_prompts.dart';
 import 'data/credential_store.dart';
@@ -29,13 +31,14 @@ import 'engine/adapters.dart';
 import 'engine/audit.dart';
 import 'engine/course_marks.dart';
 import 'engine/exam.dart';
-// 课程类别打通（学分看板「未分类」修复）：用审计方案板块补全展示链路的 category。
+// 课程类别打通（「未分类」修复）：用审计方案板块补全展示链路的 category。
 import 'engine/plan_audit_adapter.dart' show applyPlanCategories;
 import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/teacher_review_page.dart';
+import 'pages/tools_page.dart';
 import 'widgets/ai_chat.dart';
 import 'widgets/boat_icon.dart';
 
@@ -189,11 +192,13 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // 页签索引常量（评审B：插入/调序只改这里，禁止散落裸数字）。
-  // 顺序：0 学业 / 1 方案 / 2 选课 / 3 设置（审计并入方案页，原「工具」页签并入学业页）
+  // 顺序：0 学业 / 1 方案 / 2 选课 / 3 工具 / 4 设置
+  // （审计并入方案页；2026-10-18 需求 #1：走势+模拟器独立成「工具」页签）。
   static const int tabScholar = 0;
   static const int tabPlan = 1;
   static const int tabSelect = 2;
-  static const int tabSettings = 3;
+  static const int tabTools = 3;
+  static const int tabSettings = 4;
 
   final _store = CredentialStore();
   late final ZjuClient _client = ZjuClient(_store);
@@ -203,8 +208,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   late final Future<void> _assetsReady; // 启动资产加载完成信号（运行审计前等待）
   int _tabIndex = tabScholar;
   // 2026-10-18 需求 #9：底栏元素排序 + 启动默认首页。规范索引固定
-  // 0=学业 1=方案 2=选课 3=设置；_tabOrder 存"显示第 k 位放哪个规范索引"。
-  String _tabOrder = '0,1,2,3';
+  // 0=学业 1=方案 2=选课 3=工具 4=设置；_tabOrder 存"显示第 k 位放哪个规范索引"。
+  String _tabOrder = '0,1,2,3,4';
   int _defaultTab = tabScholar;
   bool _userNavigated = false; // 用户点过底栏后，启动默认页不再抢占当前页
   int _teacherTab = 0; // 选课指导模式内页签：0=指导 1=设置（需求 #13：可进设置）
@@ -278,6 +283,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       plans[m] = await rootBundle.loadString('assets/golden/$m.json');
     }
     _engine = AuditEngine.fromJsonAssets(plans);
+    // 内置选课知识库（需求 #6）：加载失败只降级为无知识库，不阻断引擎就绪。
+    try {
+      final kbJson =
+          await rootBundle.loadString('assets/knowledge/zju_course_selection_2026.json');
+      _aiCtrl.knowledgeBase =
+          InMemoryAiKnowledgeBase.fromJson(json.decode(kbJson));
+    } catch (e) {
+      DiagnosticLog.instance.record('知识库加载', level: 'error', detail: '$e');
+    }
   }
 
   /// 恢复上次会话：凭证 → 学号回填 + 自动登录；会话缓存 → 数据即时展示。
@@ -296,7 +310,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // 缺失/损坏回落 none 同样视为关闭，绝不猜提供方。
     final aiCfg = await _store.loadAiConfig();
     if (mounted) setState(() => _aiConfig = aiCfg);
-    // 底栏排序与启动默认首页（2026-10-18 需求 #9）：损坏/缺省回落 '0,1,2,3'/学业。
+    // 底栏排序与启动默认首页（2026-10-18 需求 #9）：损坏/缺省回落 '0,1,2,3,4'/学业；
+    // 旧版「4 页签」存档（0..3 全排列）由 CredentialStore.loadTabOrder 自动迁移。
     final tabOrder = await _store.loadTabOrder();
     final defaultTab = await _store.loadDefaultTab();
     // 外语等级（需求 #5）：缺省 null（未选择，按方案原要求核算）。
@@ -524,8 +539,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       auditPlan = engine.findPlan(record['student']['major'] as String);
     } catch (_) {}
-    // 类别打通（学分看板「未分类」修复）：报告已在 engine.main 里算完，此处
-    // 改写 record 课程行只影响展示链路（学业页学分看板）与 _saveSession 落盘。
+    // 类别打通（「未分类」修复）：报告已在 engine.main 里算完，此处
+    // 改写 record 课程行只影响展示链路与 _saveSession 落盘（含分享包）。
     // 以审计方案的板块为唯一类别事实源，只补空/「未分类」，教务自带 kcxzmc 不动。
     if (auditPlan != null) {
       final filled = applyPlanCategories(
@@ -989,6 +1004,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (!_userNavigated) _tabIndex = i;
         });
         unawaited(_store.saveDefaultTab(i));
+        // 同步落一份当前页签序（新格式：五个 0..4 索引）：nav.cfg 里 tabOrder 的
+        // 形状兼作版本标记——loadDefaultTab 靠它区分存档 defaultTab==3 是
+        // 旧版「设置」（迁移为新索引 4）还是新版「工具」（原样保留）。
+        unawaited(_store.saveTabOrder(_tabOrder));
       },
       teacherMode: _teacherMode,
       foreignLevel: _foreignLevel,
@@ -1164,6 +1183,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               }
             },
           ),
+          ToolsPage(
+            courses: _coursesViewed,
+            marks: _marks,
+            onGoSettings: () => setState(() => _tabIndex = tabSettings),
+            onRefresh: () async => switch (_mode) {
+              DataMode.sample => _fromSample(),
+              DataMode.paste => _fromPaste(),
+              DataMode.zju => _fromZju(),
+            },
+          ),
           _settingsPage(),
         ],
         ),
@@ -1198,6 +1227,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   selectedIcon: const Icon(CourseSelectPage.tabIconSelected),
                   label: CourseSelectPage.tabLabel),
               3 => NavigationDestination(
+                  icon: const Icon(Icons.build_outlined),
+                  selectedIcon: const Icon(Icons.build),
+                  label: '工具'),
+              4 => NavigationDestination(
                   icon: const Icon(Icons.settings_outlined),
                   selectedIcon: const Icon(Icons.settings),
                   label: '设置'),

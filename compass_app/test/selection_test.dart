@@ -269,5 +269,24 @@ void main() {
       expect(r.candidates.single.planCategory, isNull);
       expect(r.candidates.single.categoryBasis, 'unknown');
     });
+
+    test('认定型入口（#4）：kcxzmc 为空时类别以入口 label 兜底进 tags，可归入方案思政模块', () {
+      // 思政/军体等认定型大类行常无课程性质字段（kcxzmc 空）；解析层把入口 label
+      // 兜底进 tags（xk_parse_test 钉死），引擎按标签探针归入方案模块类别。
+      final mods = [
+        {'module_id': 'sz', 'module_path': '通识教育/思政类'},
+      ];
+      final r = buildSelectionAdvice(SelectionRequest(
+        candidates: [
+          mc(xc('思想道德与法治', kch: 'SZ1101', tags: const ['思政类'])),
+        ],
+        planCourses: planM,
+        planModules: mods,
+        currentSemester: '2026-A',
+      ));
+      final a = r.candidates.single;
+      expect(a.planCategory, '通识教育/思政类');
+      expect(a.categoryBasis, 'tag');
+    });
   });
 }
