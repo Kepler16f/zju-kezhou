@@ -296,6 +296,15 @@ AiOutcome parseReply(int status, String body) {
   }
   final decoded = _tryDecode(body);
   if (decoded is! Map) {
+    // 公益端点（Pollinations）繁忙/限流时会以 HTTP 200 返回 HTML 错误页而不是 JSON
+    //（2026-10-18 用户实测"响应不是合法的 JSON 对象"）。判为 server 类可重试错误，
+    // chat() 自动重试一次，并给出比"解析失败"可读得多的文案。
+    final head = body.trimLeft();
+    if (head.startsWith('<') || head.toLowerCase().contains('<!doctype html')) {
+      return const AiFailure(AiFailKind.server,
+          '公益端点暂时返回了错误页（多为限流或过载），请稍候重试；'
+          '持续出现可在设置里换用自有 API Key');
+    }
     return const AiFailure(AiFailKind.badResponse, '响应不是合法的 JSON 对象，无法解析');
   }
   final map = decoded.cast<String, Object?>();
@@ -470,6 +479,14 @@ Future<void> _streamIsolateMain(List<Object?> args) async {
       port.send(<String, Object?>{'type': 'line', 'line': pending});
     }
     port.send(const <String, Object?>{'type': 'done'});
+  } on TimeoutException {
+    // pollinations 过载时会挂起 SSE 连接：首个字节迟迟不来，Stream.timeout 抛出
+    // 「TimeoutException after 0:01:00 …No stream event…」（2026-10-18 用户实测）。
+    // 换成可读中文；调用方（_chatStreaming）在未吐字时会自动降级非流式再试。
+    port.send(<String, Object?>{
+      'type': 'error',
+      'error': 'AI 服务响应超时（公益端点排队/过载），请稍候重试',
+    });
   } catch (e) {
     port.send(<String, Object?>{'type': 'error', 'error': '$e'});
   } finally {
@@ -511,7 +528,19 @@ class AiClient {
         buildRequest(config, system, messages, maxTokens, stream: streaming);
     final req = AiHttpRequest(url: url, headers: headers, body: bodyJson);
     if (deltaSink != null) {
-      return _chatStreaming(req, deltaSink);
+      final (streamed, emitted) = await _chatStreaming(req, deltaSink);
+      // 流式挂起降级（2026-10-18 用户实测 pollinations 超时"No stream event"）：
+      // 一个字都没吐出来就失败时，同一请求改非流式再走一次——非流式路径对排队更
+      // 宽容；已吐过字则绝不重来（会产生两段拼接的回答）。
+      if (streamed is AiFailure &&
+          !emitted &&
+          _isRetriable(streamed.kind)) {
+        final (nu, nh, nb) =
+            buildRequest(config, system, messages, maxTokens, stream: false);
+        final nreq = AiHttpRequest(url: nu, headers: nh, body: nb);
+        return _scrubKey(await _attempt(nreq), config.apiKey);
+      }
+      return streamed;
     }
     var attempt = 1;
     while (true) {
@@ -566,8 +595,9 @@ class AiClient {
     }
   }
 
-  /// 流式对话：SSE 增量解析 + 完整结果汇总。
-  Future<AiOutcome> _chatStreaming(
+  /// 流式对话：SSE 增量解析 + 完整结果汇总。返回 (结果, 是否已吐过字)——
+  /// 调用方据此决定"流式挂起时能否安全降级为非流式重试"（已吐字则不能重来）。
+  Future<(AiOutcome, bool)> _chatStreaming(
     AiHttpRequest req,
     void Function(String delta) onDelta,
   ) async {
@@ -709,7 +739,7 @@ class AiClient {
       final scrubbed = _scrubKey(outcome, config.apiKey);
       final retriable = scrubbed is AiFailure && _isRetriable(scrubbed.kind);
       // 已经吐过字就绝不重试：否则 UI 会收到重叠的两段回答。
-      if (!retriable || emitted || attempt >= 2) return scrubbed;
+      if (!retriable || emitted || attempt >= 2) return (scrubbed, emitted);
       attempt++;
       await Future<void>.delayed(_retryDelay);
     }

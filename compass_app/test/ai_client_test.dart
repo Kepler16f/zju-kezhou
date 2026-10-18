@@ -154,8 +154,13 @@ void main() {
           AiFailKind.empty);
     });
 
-    test('正文不是 JSON → badResponse', () {
+    test('200 但正文是 HTML 错误页 → server（公益端点限流/过载，可重试）', () {
       expect((parseReply(200, '<html>502 Bad Gateway</html>') as AiFailure).kind,
+          AiFailKind.server);
+    });
+
+    test('200 但正文是非 JSON 非 HTML 的乱码 → badResponse', () {
+      expect((parseReply(200, 'garbage-not-json') as AiFailure).kind,
           AiFailKind.badResponse);
     });
   });
@@ -584,6 +589,37 @@ void main() {
       );
       expect((out as AiReply).text, '完整回答');
       expect(deltas, ['完整回答']);
+    });
+
+    test('流式超时未吐字：降级非流式重试成功（sender 被调用）', () async {
+      final deltas = <String>[];
+      var nonStreamCalls = 0;
+      final client = AiClient(
+        _cfg(AiProvider.pollinations),
+        // 非流式兜底：返回整段 JSON
+        sender: (req) async {
+          nonStreamCalls++;
+          expect(req.body.contains('"stream":true'), isFalse,
+              reason: '降级请求应为非流式');
+          return const AiHttpReply(
+              200, '{"choices":[{"message":{"content":"降级成功"}}]}');
+        },
+        // 流式：一上来就 error（未 emit 任何 delta），触发降级
+        streamSender: (req) async* {
+          yield const AiStreamError('AI 服务响应超时（公益端点排队/过载），请稍候重试');
+        },
+      );
+      final out = await client.chat(
+        system: 's',
+        messages: const [
+          {'role': 'user', 'content': 'q'}
+        ],
+        onDelta: deltas.add,
+      );
+      expect((out as AiReply).text, '降级成功');
+      expect(nonStreamCalls, 1);
+      // 降级走非流式：内容不回调 delta，只作为最终文本返回
+      expect(deltas, isEmpty);
     });
   });
 
