@@ -32,4 +32,13 @@ void main() {
     const s = PdfModuleSection(title: '实践环节', level: 1);
     expect(choiceBadgeText(s), isNull);
   });
+
+  test('choiceBadgeText：多选一 → 明确「选 1 门即满足整块」', () {
+    const s = PdfModuleSection(
+      title: '通识核心课程组',
+      level: 3,
+      notes: ['本组课程多选一，修读1门即满足本组要求。'],
+    );
+    expect(choiceBadgeText(s), '规则：多选一（选 1 门即满足整块）');
+  });
 }

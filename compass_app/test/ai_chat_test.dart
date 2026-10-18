@@ -1,7 +1,6 @@
 // test/ai_chat_test.dart — 全局 AI 对话组件单测：控制器状态机 / 历史裁剪 /
-// 消息拼接 / 抽屉冒烟。全程零网络：未配置路径在 AiClient.chat 的 enabled 检查处
-// 即返回 AiFailure(notConfigured)，不触网；配置路径不在此文件覆盖（假 sender
-// 属 ai_client_test 的注入机制，本组件未暴露注入缝，冒烟只验 UI 与状态机）。
+// 消息拼接 / 抽屉冒烟。全程零网络：假 streamSender 直接回放 SSE 行，不触网。
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -11,9 +10,32 @@ import 'package:compass_app/data/ai_client.dart';
 import 'package:compass_app/data/ai_config.dart';
 import 'package:compass_app/widgets/ai_chat.dart';
 
+const AiConfig _cfg = AiConfig(
+  provider: AiProvider.openai,
+  baseUrl: 'https://api.example.com/v1',
+  apiKey: 'k-123456',
+  model: 'm-1',
+);
+
+Stream<AiStreamEvent> _replyStream(String text) async* {
+  yield const AiStreamMeta(200);
+  yield AiStreamLine('data: ${jsonEncode(<String, Object?>{
+        'choices': [
+          {
+            'delta': {'content': text}
+          }
+        ]
+      })}');
+}
+
+Stream<AiStreamEvent> _statusStream(int status, [String body = '{}']) async* {
+  yield AiStreamMeta(status);
+  yield AiStreamLine(body);
+}
+
 void main() {
   group('AiChatController.send（未配置零网络红线）', () {
-    test('未配置：返回 null、lastError 非空、history 不写入', () async {
+    test('未配置：返回 null、lastError 非空、失败 user 保留但 history 为空', () async {
       final ctrl = AiChatController();
       const unconfigured = AiConfig(); // provider==none，enabled==false
       final reply = await ctrl.send(unconfigured, 'hi');
@@ -21,96 +43,339 @@ void main() {
       expect(ctrl.lastError, isNotNull);
       expect(ctrl.lastError, isNotEmpty);
       expect(ctrl.history, isEmpty);
+      // 需求：失败不丢消息，user 气泡保留并标记 failed。
+      expect(ctrl.messages, hasLength(1));
+      expect(ctrl.messages.single.isUser, isTrue);
+      expect(ctrl.messages.single.status, AiChatMessageStatus.failed);
+      expect(ctrl.messages.single.error, ctrl.lastError);
       expect(ctrl.busy, isFalse); // 失败也必须复位忙碌态，防 UI 软锁死
     });
 
-    test('空文本与忙碌中直接返回 null，不碰历史也不设错误', () async {
+    test('空文本直接返回 null，不产生消息', () async {
       final ctrl = AiChatController();
       expect(await ctrl.send(const AiConfig(), '   '), isNull);
+      expect(ctrl.messages, isEmpty);
       expect(ctrl.history, isEmpty);
       expect(ctrl.lastError, isNull);
-      ctrl.busy = true;
-      expect(await ctrl.send(const AiConfig(), '有效问题'), isNull);
-      expect(ctrl.lastError, isNull); // 忙时短路不应清/写错误位
     });
 
-    test('clear 清空历史与错误；busy 时拒绝清空', () {
-      final ctrl = AiChatController()
-        ..history.add({'role': 'user', 'content': 'q'})
-        ..lastError = 'e';
-      ctrl.busy = true;
+    test('clear 清空消息与错误；busy 时拒绝清空', () async {
+      final gate = StreamController<AiStreamEvent>();
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (_) => gate.stream),
+      );
+      final pending = ctrl.send(_cfg, '在途问题');
+      await Future<void>.delayed(Duration.zero);
+      expect(ctrl.busy, isTrue);
       ctrl.clear();
-      expect(ctrl.history, hasLength(1)); // 在途请求未完成前不许清
-      ctrl.busy = false;
+      expect(ctrl.messages, isNotEmpty); // 在途请求未完成前不许清
+      ctrl.cancelActive();
+      await pending;
+      expect(ctrl.busy, isFalse);
       ctrl.clear();
+      expect(ctrl.messages, isEmpty);
       expect(ctrl.history, isEmpty);
       expect(ctrl.lastError, isNull);
+      unawaited(gate.close());
     });
   });
 
   group('AiChatController：上下文与流式', () {
-    const cfg = AiConfig(
-      provider: AiProvider.openai,
-      baseUrl: 'https://api.example.com/v1',
-      apiKey: 'k-123456',
-      model: 'm-1',
-    );
-
     test('contextSummary 只进 system，不写入用户气泡/历史', () async {
       String? capturedSystem;
       final ctrl = AiChatController(
-        clientFactory: (c) => AiClient(c, sender: (req) async {
+        clientFactory: (c) => AiClient(c, streamSender: (req) {
           final body = jsonDecode(req.body) as Map<String, dynamic>;
           final messages = body['messages'] as List;
           capturedSystem = (messages.first as Map)['content'] as String;
-          return const AiHttpReply(
-              200, '{"choices":[{"message":{"content":"回答"}}]}');
+          return _replyStream('回答');
         }),
       );
-      final reply = await ctrl.send(cfg, '我的问题',
-          contextSummary: '{"学业":{"绩点":4.2}}');
+      final reply =
+          await ctrl.send(_cfg, '我的问题', contextSummary: '{"学业":{"绩点":4.2}}');
       expect(reply, '回答');
       expect(capturedSystem, contains('"绩点":4.2'));
       expect(capturedSystem, isNot(contains('我的问题')));
       expect(ctrl.history.first['content'], '我的问题');
       expect(ctrl.history.first['content'], isNot(contains('绩点')));
+      expect(ctrl.history.last['content'], '回答');
     });
 
     test('流式：onDelta 逐段回调，历史写入完整回答', () async {
       final deltas = <String>[];
       final ctrl = AiChatController(
-        clientFactory: (c) => AiClient(c,
-            streamSender: (req) async* {
-              yield const AiStreamMeta(200);
-              yield const AiStreamLine(
-                  'data: {"choices":[{"delta":{"content":"你"}}]}');
-              yield const AiStreamLine(
-                  'data: {"choices":[{"delta":{"content":"好"}}]}');
-            }),
+        clientFactory: (c) => AiClient(c, streamSender: (req) async* {
+          yield const AiStreamMeta(200);
+          yield const AiStreamLine(
+              'data: {"choices":[{"delta":{"content":"你"}}]}');
+          yield const AiStreamLine(
+              'data: {"choices":[{"delta":{"content":"好"}}]}');
+        }),
       );
-      final reply = await ctrl.send(cfg, '打个招呼', onDelta: deltas.add);
+      final reply = await ctrl.send(_cfg, '打个招呼', onDelta: deltas.add);
       expect(reply, '你好');
       expect(deltas.join(), '你好');
       expect(ctrl.history.last['content'], '你好');
+      expect(ctrl.messages.last.status, AiChatMessageStatus.done);
     });
 
     test('screenText 只进 system，不写入用户气泡/历史', () async {
       String? capturedSystem;
       final ctrl = AiChatController(
-        clientFactory: (c) => AiClient(c, sender: (req) async {
+        clientFactory: (c) => AiClient(c, streamSender: (req) {
           final body = jsonDecode(req.body) as Map<String, dynamic>;
           final messages = body['messages'] as List;
           capturedSystem = (messages.first as Map)['content'] as String;
-          return const AiHttpReply(
-              200, '{"choices":[{"message":{"content":"看到了"}}]}');
+          return _replyStream('看到了');
         }),
       );
-      final reply = await ctrl.send(cfg, '屏幕上这个课是什么',
-          screenText: '课程名：高等数学');
+      final reply = await ctrl.send(_cfg, '屏幕上这个课是什么', screenText: '课程名：高等数学');
       expect(reply, '看到了');
       expect(capturedSystem, contains('课程名：高等数学'));
       expect(ctrl.history.first['content'], '屏幕上这个课是什么');
       expect(ctrl.history.first['content'], isNot(contains('高等数学')));
+    });
+
+    test('失败保留半截回答并标记 incomplete', () async {
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (req) async* {
+          yield const AiStreamMeta(200);
+          yield const AiStreamLine(
+              'data: {"choices":[{"delta":{"content":"半截"}}]}');
+          yield const AiStreamError('连接断开');
+        }),
+      );
+      final reply = await ctrl.send(_cfg, '会失败的问题');
+      expect(reply, isNull);
+      expect(ctrl.messages, hasLength(2));
+      final user = ctrl.messages.first;
+      final assistant = ctrl.messages.last;
+      expect(user.status, AiChatMessageStatus.failed);
+      expect(user.error, contains('连接断开'));
+      expect(assistant.content, '半截');
+      expect(assistant.status, AiChatMessageStatus.incomplete);
+      expect(assistant.error, contains('连接断开'));
+      expect(ctrl.history, isEmpty);
+    });
+
+    test('status=401 失败不重试且错误文案在 user 消息上', () async {
+      var calls = 0;
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (req) {
+          calls++;
+          return _statusStream(401, '{"error":{"message":"bad key"}}');
+        }),
+      );
+      final reply = await ctrl.send(_cfg, 'q');
+      expect(reply, isNull);
+      expect(calls, 1);
+      expect(ctrl.messages.single.status, AiChatMessageStatus.failed);
+      expect(ctrl.messages.single.error, contains('认证失败'));
+    });
+  });
+
+  group('AiChatController：撤回/重发/队列', () {
+    test('撤回 queued 消息会出队并回填 draft', () async {
+      final gate = StreamController<AiStreamEvent>();
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (_) => gate.stream),
+      );
+      final first = ctrl.send(_cfg, 'A');
+      await Future<void>.delayed(Duration.zero);
+      final second = ctrl.send(_cfg, 'B');
+      await Future<void>.delayed(Duration.zero);
+      expect(ctrl.queuedCount, 1);
+      final b = ctrl.messages.firstWhere((m) => m.content == 'B');
+      expect(b.status, AiChatMessageStatus.queued);
+      expect(ctrl.withdraw(b.id), 'B');
+      expect(ctrl.draft, 'B');
+      expect(ctrl.queuedCount, 0);
+      expect(ctrl.messages.any((m) => m.content == 'B'), isFalse);
+      expect(await second, isNull);
+      ctrl.cancelActive();
+      await first;
+      unawaited(gate.close());
+    });
+
+    test('撤回 failed 消息成功并清除它', () async {
+      final ctrl = AiChatController(
+        clientFactory: (c) =>
+            AiClient(c, streamSender: (_) => _statusStream(401)),
+      );
+      await ctrl.send(_cfg, '坏问题');
+      final failed = ctrl.messages.single;
+      expect(failed.isRetryable, isTrue);
+      expect(ctrl.withdraw(failed.id), '坏问题');
+      expect(ctrl.draft, '坏问题');
+      expect(ctrl.messages, isEmpty);
+      expect(ctrl.withdraw(failed.id), isNull); // 已移除，幂等返回 null
+    });
+
+    test('重试原地复用 user 气泡，回答插在该消息之后', () async {
+      var calls = 0;
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (_) {
+          calls++;
+          return calls == 1 ? _statusStream(401) : _replyStream('重试成功');
+        }),
+      );
+      await ctrl.send(_cfg, '原问题');
+      final user = ctrl.messages.single;
+      expect(user.status, AiChatMessageStatus.failed);
+
+      final retried = await ctrl.retry(user.id);
+      expect(retried, '重试成功');
+      expect(calls, 2);
+      expect(ctrl.messages.where((m) => m.isUser), hasLength(1));
+      expect(ctrl.messages.where((m) => m.isAssistant), hasLength(1));
+      expect(ctrl.messages.first.id, user.id);
+      expect(ctrl.messages.first.status, AiChatMessageStatus.done);
+      expect(ctrl.messages[1].content, '重试成功');
+      expect(ctrl.history, hasLength(2));
+    });
+
+    test('busy 时 FIFO 排队，prioritize 只调整下一条不抢占在途', () async {
+      final pending = <String, StreamController<AiStreamEvent>>{};
+      final started = <String>[];
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (req) {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          final messages = body['messages'] as List;
+          final question = (messages.last as Map)['content'] as String;
+          started.add(question);
+          final gate = StreamController<AiStreamEvent>();
+          pending[question] = gate;
+          return gate.stream;
+        }),
+      );
+
+      final a = ctrl.send(_cfg, 'A');
+      await Future<void>.delayed(Duration.zero);
+      final b = ctrl.send(_cfg, 'B');
+      final cMessage = ctrl.send(_cfg, 'C');
+      await Future<void>.delayed(Duration.zero);
+      expect(started, <String>['A']); // 在途请求未被抢占
+      expect(ctrl.queuedCount, 2);
+
+      final cBubble = ctrl.messages.firstWhere((m) => m.content == 'C');
+      expect(ctrl.prioritize(cBubble.id), isTrue);
+      expect(ctrl.queuedCount, 2);
+
+      pending['A']!
+        ..add(const AiStreamMeta(200))
+        ..add(const AiStreamLine(
+            'data: {"choices":[{"delta":{"content":"a"}}]}'));
+      await pending['A']!.close();
+      expect(await a, 'a');
+      await Future<void>.delayed(Duration.zero);
+      expect(started, <String>['A', 'C']); // C 置顶后先于 B
+      expect(ctrl.queuedCount, 1);
+
+      pending['C']!
+        ..add(const AiStreamMeta(200))
+        ..add(const AiStreamLine(
+            'data: {"choices":[{"delta":{"content":"c"}}]}'));
+      await pending['C']!.close();
+      expect(await cMessage, 'c');
+      await Future<void>.delayed(Duration.zero);
+      expect(started, <String>['A', 'C', 'B']);
+
+      pending['B']!
+        ..add(const AiStreamMeta(200))
+        ..add(const AiStreamLine(
+            'data: {"choices":[{"delta":{"content":"b"}}]}'));
+      await pending['B']!.close();
+      expect(await b, 'b');
+    });
+  });
+
+  group('AiChatController：未读计数', () {
+    test('关闭时每条回复/失败最多 +1，打开清零，关闭消耗一条', () async {
+      var failNext = false;
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (_) {
+          return failNext ? _statusStream(401) : _replyStream('ok');
+        }),
+      );
+      await ctrl.send(_cfg, 'q1');
+      expect(ctrl.unreadCount, 1);
+      await ctrl.send(_cfg, 'q2');
+      expect(ctrl.unreadCount, 2);
+
+      ctrl.markSheetOpened();
+      expect(ctrl.unreadCount, 0);
+      await ctrl.send(_cfg, 'q3');
+      expect(ctrl.unreadCount, 0); // 打开期间不累计
+
+      ctrl.markSheetClosed();
+      expect(ctrl.unreadCount, 0);
+
+      failNext = true;
+      await ctrl.send(_cfg, 'q4'); // 关闭时失败也 +1
+      expect(ctrl.unreadCount, 1);
+      ctrl.markSheetClosed();
+      expect(ctrl.unreadCount, 0);
+    });
+  });
+
+  group('AiCancelToken / AiClient', () {
+    test('取消流式后返回 cancelled，迟到 delta 被丢弃', () async {
+      final gate = StreamController<AiStreamEvent>();
+      final deltas = <String>[];
+      final token = AiCancelToken();
+      final client = AiClient(_cfg, streamSender: (_) => gate.stream);
+      final future = client.chat(
+        system: 's',
+        messages: const [
+          {'role': 'user', 'content': 'q'}
+        ],
+        onDelta: deltas.add,
+        cancelToken: token,
+      );
+      await Future<void>.delayed(Duration.zero);
+      token.cancel();
+      final outcome = await future;
+      expect((outcome as AiFailure).kind, AiFailKind.cancelled);
+
+      gate.add(
+          const AiStreamLine('data: {"choices":[{"delta":{"content":"迟到"}}]}'));
+      await Future<void>.delayed(Duration.zero);
+      expect(deltas, isEmpty); // subscription.cancel 后不再回调
+      unawaited(gate.close());
+    });
+
+    test('旧请求取消后启动新请求，旧流迟到事件不污染新消息', () async {
+      final gates = <StreamController<AiStreamEvent>>[];
+      final ctrl = AiChatController(
+        clientFactory: (c) => AiClient(c, streamSender: (_) {
+          final gate = StreamController<AiStreamEvent>();
+          gates.add(gate);
+          return gate.stream;
+        }),
+      );
+      final oldFuture = ctrl.send(_cfg, '旧问题');
+      await Future<void>.delayed(Duration.zero);
+      gates[0].add(const AiStreamLine(
+          'data: {"choices":[{"delta":{"content":"旧片段"}}]}'));
+      await Future<void>.delayed(Duration.zero);
+      ctrl.cancelActive();
+      await oldFuture;
+      final oldAssistant =
+          ctrl.messages.firstWhere((m) => m.isAssistant && m.content == '旧片段');
+      expect(oldAssistant.status, AiChatMessageStatus.incomplete);
+
+      final newFuture = ctrl.send(_cfg, '新问题');
+      await Future<void>.delayed(Duration.zero);
+      gates[0].add(
+          const AiStreamLine('data: {"choices":[{"delta":{"content":"污染"}}]}'));
+      gates[1].add(const AiStreamMeta(200));
+      gates[1].add(const AiStreamLine(
+          'data: {"choices":[{"delta":{"content":"新回答"}}]}'));
+      await gates[1].close();
+      expect(await newFuture, '新回答');
+      expect(ctrl.messages.any((m) => m.content.contains('污染')), isFalse);
+      expect(ctrl.messages.last.content, '新回答');
+      unawaited(gates[0].close());
     });
   });
 
@@ -218,11 +483,7 @@ void main() {
               height: 600,
               child: AiChatSheet(
                 controller: AiChatController(),
-                config: const AiConfig(
-                    provider: AiProvider.openai,
-                    baseUrl: 'https://api.example.com',
-                    apiKey: 'k',
-                    model: 'm'),
+                config: _cfg,
                 contextSummary: '模块A 缺口 3 分',
               ),
             ),
@@ -233,6 +494,29 @@ void main() {
       expect(find.textContaining('本次对话附带数据摘要'), findsNothing);
       expect(find.textContaining('模块A 缺口 3 分'), findsNothing);
       expect(find.text('发送'), findsOneWidget);
+    });
+
+    testWidgets('失败消息渲染重发/撤回操作', (tester) async {
+      final ctrl = AiChatController(
+        clientFactory: (c) =>
+            AiClient(c, streamSender: (_) => _statusStream(401)),
+      );
+      await ctrl.send(_cfg, '失败问题');
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 420,
+              height: 600,
+              child: AiChatSheet(controller: ctrl, config: _cfg),
+            ),
+          ),
+        ),
+      ));
+      expect(find.text('失败问题'), findsOneWidget);
+      expect(find.text('重发'), findsOneWidget);
+      expect(find.text('撤回'), findsOneWidget);
+      expect(find.textContaining('认证失败'), findsWidgets);
     });
   });
 }

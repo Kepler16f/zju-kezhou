@@ -1,7 +1,7 @@
 /// pages/settings_page.dart — 设置页（Helechron Option 风格）：分组卡片列表。
 /// 组：登录（教务网账号）/ 数据（数据源+方案+学期+运行）/ AI 解读 /
 /// 分享给指导教师（导出分享包 + 选课指导模式开关）/
-/// 界面（底栏元素排序 + 启动默认首页）/
+/// 界面（底栏顺序 + 启动默认首页，紧凑两行）/
 /// 桌面端（托盘·退出，按平台显示）/ 关于（版本·致谢·数据与合规）。
 /// 通用组已解散（任务 11）：「数据与合规」入口并入「关于」组。
 library;
@@ -445,18 +445,49 @@ class _SettingsPageState extends State<SettingsPage> {
                         ButtonSegment(value: 'L2', label: Text('L2·4.5分', style: TextStyle(fontSize: 12))),
                         ButtonSegment(value: 'L3', label: Text('L3·3分', style: TextStyle(fontSize: 12))),
                       ],
-                      selected: {widget.foreignLevel ?? ''},
+                      // 自定义学分（如 5.5）不属于任何档位：返回 null → 空选，
+                      // 绝不能把 '5.5' 塞进 selected（SegmentedButton 会断言崩溃）。
+                      selected: {_foreignSegment ?? ''},
+                      emptySelectionAllowed: true,
                       onSelectionChanged: widget.onForeignLevelChange == null
                           ? null
-                          : (s) => widget.onForeignLevelChange!(s.first.isEmpty ? null : s.first),
+                          : (s) => widget.onForeignLevelChange!(s.isEmpty || s.first.isEmpty ? null : s.first),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      widget.foreignLevel == null
-                          ? '未选择：外语模块按方案原要求学分计算（审计溯源里注明）。'
-                          : '已按 ${widget.foreignLevel} 折算：外语类模块要求学分封顶 '
-                              '${widget.foreignLevel == 'L1' ? 6 : widget.foreignLevel == 'L2' ? 4.5 : 3} 分。',
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    const SizedBox(height: 6),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 116,
+                          child: TextField(
+                            controller: _foreignCreditCtl,
+                            focusNode: _foreignCreditFocus,
+                            keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true),
+                            textInputAction: TextInputAction.done,
+                            onSubmitted: (_) => _commitForeignCredit(),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              labelText: '应修学分',
+                              suffixText: '分',
+                              border: OutlineInputBorder(),
+                            ),
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _effectiveForeignCredits == null
+                                ? '未填写：外语模块按方案原要求学分计算。'
+                                : '生效：外语类模块应修 '
+                                    '${_fmtCredit(_effectiveForeignCredits!)} 学分，'
+                                    '已同步到三色学分与培养方案页。',
+                            style:
+                                const TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -843,7 +874,8 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-/// 底栏布局偏好卡（诉求 #9）：页签排序（上下移）+ 启动默认首页（单选）。
+/// 底栏布局偏好卡（诉求 #9 / #5）：紧凑两行——底栏顺序（点开弹层上下移）
+/// + 启动默认首页（下拉选择）。原排序界面与配置说明均保留。
 /// 全受控组件：状态由主线持有（tabOrder / defaultTab 传入），回调未接线
 /// （null）时相应控件禁用，保证"看得见但没接线"时不产生假交互。
 class _InterfacePrefsCard extends StatelessWidget {
@@ -859,10 +891,10 @@ class _InterfacePrefsCard extends StatelessWidget {
     this.onDefaultTabChange,
   });
 
-  /// 页签规范名（索引固定：0=学业 1=方案 2=选课 3=工具 4=设置，与 main.dart 底栏一致）。
-  static const _tabNames = ['学业', '方案', '选课', '工具', '设置'];
+  /// 页签规范名（索引固定：0=学业 1=方案 2=选课 3=设置，与 main.dart 底栏一致）。
+  static const _tabNames = ['学业', '方案', '选课', '设置'];
 
-  /// 解析顺序串为索引列表：非法项丢弃、去重；凑不齐五个一律回落默认顺序
+  /// 解析顺序串为索引列表：非法项丢弃、去重；凑不齐四个一律回落默认顺序
   /// （纯函数、不抛异常、宁缺勿猜）。
   static List<int> parseTabOrder(String raw) {
     final out = <int>[];
@@ -878,15 +910,89 @@ class _InterfacePrefsCard extends StatelessWidget {
     return out;
   }
 
-  void _move(int pos, int delta) {
-    final order = parseTabOrder(tabOrder);
-    final j = pos + delta;
-    if (j < 0 || j >= order.length) return;
-    final next = [...order];
-    final t = next[pos];
-    next[pos] = next[j];
-    next[j] = t;
-    onTabOrderChange?.call(next.join(','));
+  static String _summary(List<int> order) =>
+      order.map((i) => _tabNames[i]).join(' → ');
+
+  /// 弹层里复用原有「上移 / 下移」排序界面：本地即时重排并同步上抛主线，
+  /// 关闭弹层后设置卡摘要随之刷新；回调未接线时按钮禁用、入口不可点。
+  Future<void> _openOrderSheet(BuildContext context) async {
+    var order = parseTabOrder(tabOrder);
+    final onChanged = onTabOrderChange;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('底栏元素排序',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 2),
+                const Text('调整底栏四个页签的显示顺序（改动立即生效并记住）',
+                    style: TextStyle(fontSize: 11, color: Colors.grey)),
+                const SizedBox(height: 4),
+                for (var i = 0; i < order.length; i++)
+                  Row(
+                    children: [
+                      const SizedBox(width: 4),
+                      SizedBox(
+                        width: 24,
+                        child: Text('${i + 1}.',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey)),
+                      ),
+                      Expanded(
+                          child: Text(_tabNames[order[i]],
+                              style: const TextStyle(fontSize: 13))),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '上移',
+                        onPressed: (i == 0 || onChanged == null)
+                            ? null
+                            : () {
+                                setSheet(() {
+                                  final t = order[i];
+                                  order[i] = order[i - 1];
+                                  order[i - 1] = t;
+                                });
+                                onChanged(order.join(','));
+                              },
+                        icon: const Icon(Icons.arrow_upward, size: 18),
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '下移',
+                        onPressed: (i == order.length - 1 || onChanged == null)
+                            ? null
+                            : () {
+                                setSheet(() {
+                                  final t = order[i];
+                                  order[i] = order[i + 1];
+                                  order[i + 1] = t;
+                                });
+                                onChanged(order.join(','));
+                              },
+                        icon: const Icon(Icons.arrow_downward, size: 18),
+                      ),
+                    ],
+                  ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('完成')),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -894,81 +1000,63 @@ class _InterfacePrefsCard extends StatelessWidget {
     final order = parseTabOrder(tabOrder);
     final homeTab =
         (defaultTab >= 0 && defaultTab < _tabNames.length) ? defaultTab : 0;
+    final scheme = Theme.of(context).colorScheme;
     return Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: Text('底栏元素排序',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+          ListTile(
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            leading: Icon(Icons.reorder, size: 20, color: scheme.primary),
+            title: const Text('底栏顺序',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            subtitle: Text(_summary(order),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            trailing: const Icon(Icons.chevron_right, size: 18),
+            onTap: onTabOrderChange == null
+                ? null
+                : () => _openOrderSheet(context),
           ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 2, 16, 4),
-            child: Text('调整底栏四个页签的显示顺序（改动立即生效并记住）',
-                style: TextStyle(fontSize: 11, color: Colors.grey)),
-          ),
-          for (var i = 0; i < order.length; i++)
-            Row(
-              children: [
-                const SizedBox(width: 20),
-                SizedBox(
-                  width: 28,
-                  child: Text('${i + 1}.',
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.grey)),
-                ),
-                Expanded(
-                  child: Text(_tabNames[order[i]],
-                      style: const TextStyle(fontSize: 13)),
-                ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: '上移',
-                  onPressed: (i == 0 || onTabOrderChange == null)
-                      ? null
-                      : () => _move(i, -1),
-                  icon: const Icon(Icons.arrow_upward, size: 18),
-                ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: '下移',
-                  onPressed: (i == order.length - 1 || onTabOrderChange == null)
-                      ? null
-                      : () => _move(i, 1),
-                  icon: const Icon(Icons.arrow_downward, size: 18),
-                ),
-                const SizedBox(width: 12),
-              ],
-            ),
           const Divider(height: 1, indent: 16),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: Text('启动默认首页',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-          ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 2, 16, 0),
-            child: Text('下次启动课舟时默认打开的页签',
+          ListTile(
+            dense: true,
+            visualDensity: VisualDensity.compact,
+            leading:
+                Icon(Icons.home_outlined, size: 20, color: scheme.primary),
+            title: const Text('默认页',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            subtitle: const Text('下次启动时打开',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
-          ),
-          // RadioListTile 用旧 groupValue/onChanged API：flutter-ohos 3.27（Dart 3.6）
-          // 既没有 RadioGroup，也没有 enabled 参数——禁用态一律走 onChanged:null
-          // （两版 SDK 通吃；3.47 仅 deprecation info）。
-          for (var i = 0; i < _tabNames.length; i++)
-            RadioListTile<int>(
-              dense: true,
-              visualDensity: VisualDensity.compact,
-              groupValue: homeTab,
-              value: i,
-              onChanged: onDefaultTabChange == null
-                  ? null
-                  : (v) {
-                      if (v != null) onDefaultTabChange?.call(v);
-                    },
-              title: Text(_tabNames[i], style: const TextStyle(fontSize: 13)),
+            trailing: DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                value: homeTab,
+                isDense: true,
+                borderRadius: BorderRadius.circular(10),
+                style: TextStyle(fontSize: 12.5, color: scheme.onSurface),
+                items: [
+                  for (var i = 0; i < _tabNames.length; i++)
+                    DropdownMenuItem(
+                        value: i,
+                        child: Text(_tabNames[i],
+                            style: const TextStyle(fontSize: 12.5))),
+                ],
+                onChanged: onDefaultTabChange == null
+                    ? null
+                    : (v) {
+                        if (v != null) onDefaultTabChange?.call(v);
+                      },
+              ),
             ),
-          const SizedBox(height: 8),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 9),
+            child: Text(
+                '配置说明：四项依次为学业 / 方案 / 选课 / 设置；顺序调整立即生效并记住，默认页用于下次启动。',
+                style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+          ),
         ],
       ),
     );

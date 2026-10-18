@@ -670,4 +670,177 @@ void main() {
       expect((p['modules'] as List).length, 4);
     });
   });
+
+  // ── 用户反馈 #3/#4：多选一 & 并列模块不重复计分 ─────────────────────────
+  group('多选一与并列模块（#3/#4）', () {
+    test('detectChoiceRule：多选一 / 任选其一 → 单门成组', () {
+      final r1 = detectChoiceRule('本组课程多选一，修读1门即满足本组要求。');
+      expect(r1, isNotNull);
+      expect(r1!.minCourses, 1);
+      expect(r1.singlePick, isTrue);
+      final r2 = detectChoiceRule('以下课程任选其一即可。');
+      expect(r2, isNotNull);
+      expect(r2!.singlePick, isTrue);
+      // 反例：任意选修不是数量约束
+      expect(detectChoiceRule('任意选修课程均可计入。'), isNull);
+    });
+
+    test('detectAlternativeModules：模块级任选其一', () {
+      const kids = [
+        PdfModuleSection(title: '本专业进阶模块', level: 2),
+        PdfModuleSection(title: '跨专业学习模块（微辅修）', level: 2),
+        PdfModuleSection(title: '学生自主修读模块', level: 2),
+      ];
+      final s = detectAlternativeModules(
+          kids, '以下三个模块中任选其一，满足其一即可认定。');
+      expect(s, isNotNull);
+      expect(s!.optionCount, 3);
+      // 课程级「多选一」不能升级成模块级并列（无「模块」二字）
+      expect(detectAlternativeModules(const [], '本组课程多选一'), isNull);
+    });
+
+    const personality = PlanPdfSections(sections: [
+      PdfModuleSection(title: '个性修读课程', level: 1, creditsRaw: '20'),
+      PdfModuleSection(
+        title: '本专业进阶模块',
+        level: 2,
+        creditsRaw: '20',
+        parentPath: '个性修读课程',
+        courses: [PdfCourseRow(code: 'A1001', name: '进阶课', credits: 20)],
+      ),
+      PdfModuleSection(
+        title: '跨专业学习模块（微辅修）',
+        level: 2,
+        creditsRaw: '20',
+        parentPath: '个性修读课程',
+        notes: ['以下三个模块中任选其一，满足其一即可认定。'],
+        courses: [PdfCourseRow(code: 'B1002', name: '跨专业课', credits: 20)],
+      ),
+      PdfModuleSection(
+        title: '学生自主修读模块',
+        level: 2,
+        creditsRaw: '20',
+        parentPath: '个性修读课程',
+        courses: [PdfCourseRow(code: 'C1003', name: '自主课', credits: 20)],
+      ),
+    ]);
+
+    test('并列模块：只生成一组、总要求 20 而非 60', () {
+      final p = planFileFromPdf(personality, major: 'm', grade: '2026');
+      final mods = (p['modules'] as List).cast<Map<String, dynamic>>();
+      expect(mods.length, 3);
+      for (final m in mods) {
+        expect(m['counts_toward_totals'], isFalse);
+        expect(m['alternative_group_id'], isNotNull);
+      }
+      final groups =
+          (p['alternative_groups'] as List).cast<Map<String, dynamic>>();
+      expect(groups.length, 1);
+      expect(groups.single['required_credits'], 20.0);
+      expect((groups.single['options'] as List).length, 3);
+      expect((p['meta'] as Map)['total_credits'], 20.0);
+    });
+
+    test('并列模块接入审计：任一选项达成即整组绿，totals 不重复计', () {
+      final p = planFileFromPdf(personality, major: 'm', grade: '2026');
+      final report = AuditEngine({}).build(<String, dynamic>{
+        'student': {
+          'major': 'm',
+          'grade': '2026',
+          'current_semester': '2026-A',
+        },
+        'courses': [
+          {
+            'course_id': 'A1001',
+            'name': '进阶课',
+            'credits': 20.0,
+            'semester': '2026-A',
+            'grade': 90,
+          },
+        ],
+      }, p);
+      final summary = (report['summary'] as List).cast<Map<String, dynamic>>();
+      expect(summary.length, 1);
+      final g = summary.single;
+      expect(g['alternative_group'], isTrue);
+      expect(g['required'], 20.0);
+      expect(g['earned'], 20.0);
+      expect(g['gap'], 0.0);
+      expect(g['color'], 'green');
+      expect((report['totals'] as Map)['required'], 20.0);
+      expect((report['totals'] as Map)['gap'], 0.0);
+    });
+
+    test('多选一：要求按最便宜一门折算，选一门即达成', () {
+      const ps = PlanPdfSections(sections: [
+        PdfModuleSection(title: '通识选修课程', level: 1, creditsRaw: '10.5'),
+        PdfModuleSection(
+          title: '通识核心课程组',
+          level: 2,
+          creditsRaw: '8',
+          parentPath: '通识选修课程',
+          notes: ['本组课程多选一，修读1门即满足本组要求。'],
+          courses: [
+            PdfCourseRow(code: 'C1', name: '甲', credits: 2),
+            PdfCourseRow(code: 'C2', name: '乙', credits: 2),
+            PdfCourseRow(code: 'C3', name: '丙', credits: 2),
+            PdfCourseRow(code: 'C4', name: '丁', credits: 2),
+          ],
+        ),
+      ]);
+      final p = planFileFromPdf(ps, major: 'm', grade: '2026');
+      final m = moduleOf(p, 'sec1-通识核心课程组');
+      expect(m['required_credits'], 2.0);
+      expect((m['choice_rule'] as Map)['single_pick'], isTrue);
+      final report = AuditEngine({}).build(<String, dynamic>{
+        'student': {
+          'major': 'm',
+          'grade': '2026',
+          'current_semester': '2026-A',
+        },
+        'courses': [
+          {
+            'course_id': 'C1',
+            'name': '甲',
+            'credits': 1.0,
+            'semester': '2026-A',
+            'grade': 85,
+          },
+        ],
+      }, p);
+      final row = ((report['summary'] as List).cast<Map<String, dynamic>>())
+          .firstWhere((r) => r['module_id'] == 'sec1-通识核心课程组');
+      expect(row['gap'], 0.0);
+      expect(row['color'], 'green');
+    });
+
+    test('混合父板块：子板块认领课程后父板块不再重复要求', () {
+      const ps = PlanPdfSections(sections: [
+        PdfModuleSection(
+          title: '通识选修课程',
+          level: 1,
+          creditsRaw: '10.5',
+          courses: [
+            PdfCourseRow(code: 'C1', name: '甲', credits: 2),
+            PdfCourseRow(code: 'C2', name: '乙', credits: 2),
+          ],
+        ),
+        PdfModuleSection(
+          title: '博雅技艺',
+          level: 2,
+          creditsRaw: '4',
+          parentPath: '通识选修课程',
+          courses: [
+            PdfCourseRow(code: 'C1', name: '甲', credits: 2),
+            PdfCourseRow(code: 'C2', name: '乙', credits: 2),
+          ],
+        ),
+      ]);
+      final p = planFileFromPdf(ps, major: 'm', grade: '2026');
+      final mods = (p['modules'] as List).cast<Map<String, dynamic>>();
+      expect(mods.map((m) => m['module_id']), ['sec1-博雅技艺']);
+      expect(mods.single['required_credits'], 4.0);
+      expect((p['meta'] as Map)['total_credits'], 4.0);
+    });
+  });
 }

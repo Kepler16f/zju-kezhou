@@ -29,7 +29,8 @@ String? _header(Map<String, String> headers, String name) {
   return null;
 }
 
-Map<String, dynamic> _json(String body) => jsonDecode(body) as Map<String, dynamic>;
+Map<String, dynamic> _json(String body) =>
+    jsonDecode(body) as Map<String, dynamic>;
 
 void main() {
   group('buildRequest（三家 provider 的 URL / 头 / body 形状）', () {
@@ -119,7 +120,8 @@ void main() {
     });
 
     test('none：不抛异常，返回空元组（chat 已在 enabled 处拦截）', () {
-      final (url, headers, body) = buildRequest(const AiConfig(), 's', const [], 100);
+      final (url, headers, body) =
+          buildRequest(const AiConfig(), 's', const [], 100);
       expect(url, '');
       expect(headers, isEmpty);
       expect(body, '');
@@ -155,7 +157,8 @@ void main() {
     });
 
     test('200 但正文是 HTML 错误页 → server（公益端点限流/过载，可重试）', () {
-      expect((parseReply(200, '<html>502 Bad Gateway</html>') as AiFailure).kind,
+      expect(
+          (parseReply(200, '<html>502 Bad Gateway</html>') as AiFailure).kind,
           AiFailKind.server);
     });
 
@@ -179,20 +182,20 @@ void main() {
     });
 
     test('stop_reason=refusal → refused（不重试）', () {
-      final out = parseReply(
-          200, '{"content":[],"stop_reason":"refusal"}');
+      final out = parseReply(200, '{"content":[],"stop_reason":"refusal"}');
       expect(out, isA<AiFailure>());
       expect((out as AiFailure).kind, AiFailKind.refused);
     });
 
     test('空内容 → empty', () {
       expect(
-          (parseReply(200, '{"content":[],"stop_reason":"end_turn"}') as AiFailure)
+          (parseReply(200, '{"content":[],"stop_reason":"end_turn"}')
+                  as AiFailure)
               .kind,
           AiFailKind.empty);
       expect(
-          (parseReply(
-                  200, '{"content":[{"type":"text","text":""}],"stop_reason":"end_turn"}')
+          (parseReply(200,
+                      '{"content":[{"type":"text","text":""}],"stop_reason":"end_turn"}')
                   as AiFailure)
               .kind,
           AiFailKind.empty);
@@ -218,6 +221,60 @@ void main() {
     });
   });
 
+  group('parseReply：宽松 JSON（#11 推荐课程响应）', () {
+    test('UTF-8 BOM 可直接解析', () {
+      final out = parseReply(
+          200, '\uFEFF{"choices":[{"message":{"content":"BOM 答案"}}]}');
+      expect((out as AiReply).text, 'BOM 答案');
+    });
+
+    test('SSE 多帧按序拼接 delta', () {
+      final body = 'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'
+          'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+          'data: [DONE]\n\n';
+      final out = parseReply(200, body);
+      expect((out as AiReply).text, '你好');
+    });
+
+    test('NDJSON 多行 JSON 提取第一个完整对象', () {
+      final body = '{"choices":[{"message":{"content":"第一帧回答"}}]}\n'
+          '{"id":"trailer","choices":[]}\n';
+      final out = parseReply(200, body);
+      expect((out as AiReply).text, '第一帧回答');
+    });
+
+    test('JSON 前后有代理杂质仍可提取', () {
+      final body = 'gateway noise 502\n'
+          '{"choices":[{"message":{"content":"杂质中提取"}}]}\n'
+          'upstream tail';
+      final out = parseReply(200, body);
+      expect((out as AiReply).text, '杂质中提取');
+    });
+
+    test('双编码 JSON 再解一次', () {
+      final inner = jsonEncode(<String, Object?>{
+        'choices': <Object?>[
+          <String, Object?>{
+            'message': <String, Object?>{'content': '双编码答案'},
+          },
+        ],
+      });
+      final out = parseReply(200, jsonEncode(inner));
+      expect((out as AiReply).text, '双编码答案');
+    });
+
+    test('纯乱码仍 badResponse，带脱敏响应开头', () {
+      final out =
+          parseReply(200, 'garbage-not-json sk-abcdef1234567890 and more');
+      final failure = out as AiFailure;
+      expect(failure.kind, AiFailKind.badResponse);
+      expect(failure.message, contains('响应开头'));
+      expect(failure.message, contains('garbage-not-json'));
+      expect(failure.message, contains('sk-***'));
+      expect(failure.message, isNot(contains('sk-abcdef1234567890')));
+    });
+  });
+
   group('parseReply：非 2xx 错误分类', () {
     test('401/403 → auth，且文案不含密钥', () {
       final unauthorized = parseReply(
@@ -231,8 +288,9 @@ void main() {
     test('429 → rateLimit；402 公益额度 → rateLimit', () {
       expect((parseReply(429, '{"error":"rate limited"}') as AiFailure).kind,
           AiFailKind.rateLimit);
-      final free = parseReply(
-          402, '{"status":402,"error":{"code":"FREE_LIMIT"}}') as AiFailure;
+      final free =
+          parseReply(402, '{"status":402,"error":{"code":"FREE_LIMIT"}}')
+              as AiFailure;
       expect(free.kind, AiFailKind.rateLimit);
       expect(free.message, contains('公益'));
     });
@@ -267,8 +325,10 @@ void main() {
     test('去首尾空白与尾部全部斜杠', () {
       expect(AiConfig.normalizeBaseUrl('  https://api.x.com/v1///  '),
           'https://api.x.com/v1');
-      expect(AiConfig.normalizeBaseUrl('https://api.x.com/'), 'https://api.x.com');
-      expect(AiConfig.normalizeBaseUrl('https://api.x.com'), 'https://api.x.com');
+      expect(
+          AiConfig.normalizeBaseUrl('https://api.x.com/'), 'https://api.x.com');
+      expect(
+          AiConfig.normalizeBaseUrl('https://api.x.com'), 'https://api.x.com');
       expect(AiConfig.normalizeBaseUrl('   '), '');
     });
 
@@ -300,10 +360,10 @@ void main() {
       expect(AiConfig.fromJson(<String, Object?>{'provider': 'gemini'}).enabled,
           isFalse);
       // 缺 provider 键同样回落 none（不猜提供方：猜错会把密钥发去错误域名）
-      expect(AiConfig.fromJson(<String, Object?>{'baseUrl': 'https://x'}).enabled,
-          isFalse);
       expect(
-          AiConfig.fromJson(<String, Object?>{'provider': 7}).provider,
+          AiConfig.fromJson(<String, Object?>{'baseUrl': 'https://x'}).enabled,
+          isFalse);
+      expect(AiConfig.fromJson(<String, Object?>{'provider': 7}).provider,
           AiProvider.none);
     });
 
@@ -385,7 +445,8 @@ void main() {
         _cfg(AiProvider.anthropic, base: 'https://api.anthropic.com'),
         sender: (req) async {
           calls++;
-          return const AiHttpReply(401, '{"error":{"message":"invalid x-api-key"}}');
+          return const AiHttpReply(
+              401, '{"error":{"message":"invalid x-api-key"}}');
         },
       );
       final out = await client.chat(
@@ -570,6 +631,28 @@ void main() {
       expect(deltas.join(), '第一段第二段');
     });
 
+    test('NDJSON 裸 JSON 行也按 delta/content 消费', () async {
+      final deltas = <String>[];
+      final client = AiClient(
+        _cfg(AiProvider.openai),
+        streamSender: (req) async* {
+          yield const AiStreamMeta(200);
+          yield const AiStreamLine('{"choices":[{"delta":{"content":"ND"}}]}');
+          yield const AiStreamLine(
+              '{"choices":[{"delta":{"content":"JSON"}}]}');
+        },
+      );
+      final out = await client.chat(
+        system: 's',
+        messages: const [
+          {'role': 'user', 'content': 'q'}
+        ],
+        onDelta: deltas.add,
+      );
+      expect((out as AiReply).text, 'NDJSON');
+      expect(deltas.join(), 'NDJSON');
+    });
+
     test('服务端忽略 stream、返回整段 JSON：兜底解析并回调一次', () async {
       final deltas = <String>[];
       final client = AiClient(
@@ -683,7 +766,8 @@ void main() {
         provider: AiProvider.pollinations,
       );
       expect(result.ok, isTrue);
-      expect(result.models.map((m) => m.id), containsAll(['openai', 'mistral']));
+      expect(
+          result.models.map((m) => m.id), containsAll(['openai', 'mistral']));
       expect(result.models.first.contextTokens, isNull);
       expect(result.models.first.contextLabel, '未知');
     });

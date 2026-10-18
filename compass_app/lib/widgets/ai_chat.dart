@@ -27,6 +27,7 @@
 ///    注入的上下文与用户自由输入（输入框提示语即为此而设）。
 library;
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -98,9 +99,85 @@ bool looksLikeScreenQuestion(String text) {
 
 /// 全局 AI 对话的会话状态：历史、忙碌标记与最近一次失败文案。
 ///
-/// 由接线层创建并长期持有（如 ValueNotifier<AiChatController> 或直接字段），
-/// 跨页面复用同一份对话；本组件不监听它，抽屉打开时才 setState 重绘。
-class AiChatController {
+/// 由接线层创建并长期持有，跨页面复用同一份对话；sheet 通过 ChangeNotifier
+/// 只监听、不持有在途文本，因此关闭抽屉不会中断请求。
+/// 单条消息的角色。
+enum AiChatMessageRole { user, assistant }
+
+/// 单条消息的生命周期。
+///
+/// queued：已入 FIFO 队列，等待当前请求结束；
+/// sending：用户消息正在请求（对应的 assistant 占位在生成中）；
+/// streaming：助手已被流式写入部分文本；
+/// done：完整成功；failed：用户消息发送失败（保留，可重试/撤回）；
+/// incomplete：请求中断后保留的半截助手回答。
+enum AiChatMessageStatus {
+  queued,
+  sending,
+  streaming,
+  done,
+  failed,
+  incomplete
+}
+
+/// 对话中的一条稳定消息。
+///
+/// id 在重试时保持不变的是 user 消息；每次尝试的 assistant 消息使用新 id。
+/// 状态与 content 由 [AiChatController] 单线程更新，sheet 只读渲染。
+class AiChatMessage {
+  AiChatMessage._({
+    required this.id,
+    required this.role,
+    required this.content,
+    required this.status,
+    this.error,
+  });
+
+  final String id;
+  final AiChatMessageRole role;
+  String content;
+  AiChatMessageStatus status;
+  String? error;
+
+  bool get isUser => role == AiChatMessageRole.user;
+  bool get isAssistant => role == AiChatMessageRole.assistant;
+  bool get isFailed => status == AiChatMessageStatus.failed;
+  bool get isQueued => status == AiChatMessageStatus.queued;
+  bool get isWithdrawable => isUser && (isQueued || isFailed);
+  bool get isRetryable => isUser && isFailed;
+  bool get isPrioritizable => isUser && isQueued;
+
+  Map<String, String> get historyEntry =>
+      <String, String>{'role': role.name, 'content': content};
+}
+
+/// 一次发送所需的不可变参数（重试沿用首次发送时的配置/上下文）。
+class _AiChatRequestMeta {
+  const _AiChatRequestMeta({
+    required this.config,
+    this.contextSummary,
+    this.screenText,
+    this.onDelta,
+  });
+
+  final AiConfig config;
+  final String? contextSummary;
+  final String? screenText;
+  final void Function(String delta)? onDelta;
+}
+
+/// 全局 AI 对话的会话状态：消息、队列、在途请求与未读计数。
+///
+/// 由接线层创建并长期持有（main.dart 里已有 `final _aiCtrl = AiChatController()`），
+/// 抽屉关闭后 controller 仍持有全部消息与流式文本，重新打开即可立即渲染。
+///
+/// 未读计数（父级 Badge 接线用）：
+///  - [unreadCount] 是 ChangeNotifier 上的计数；抽屉关闭时，每条助手回复或每次
+///    请求失败最多 +1（同一消息 id 只计一次）；
+///  - [markSheetOpened] 清零；[markSheetClosed] 按需求消耗一条计数（>0 时 -1）；
+///  - 父级只需 `AnimatedBuilder(animation: controller, ...)` / `ListenableBuilder`
+///    监听 controller，并把 [unreadCount] 接到 Badge 即可，无需改本组件。
+class AiChatController extends ChangeNotifier {
   AiChatController({
     AiKnowledgeBase? knowledgeBase,
     AiClient Function(AiConfig config)? clientFactory,
@@ -117,87 +194,392 @@ class AiChatController {
   /// 历史截断上限（同 [kAiChatHistoryLimit]）。
   static const int kHistoryLimit = kAiChatHistoryLimit;
 
-  /// 对话历史（不含 system），元素形状 {'role': 'user'|'assistant', 'content': '...'}。
-  /// 只存用户原始问题与模型回答——上下文摘要进 system，不落历史、不出现在气泡里。
-  final List<Map<String, String>> history = <Map<String, String>>[];
+  final List<AiChatMessage> _messages = <AiChatMessage>[];
+  final List<String> _queue = <String>[];
+  final Map<String, _AiChatRequestMeta> _requestMeta =
+      <String, _AiChatRequestMeta>{};
+  final Map<String, Completer<String?>> _waiters =
+      <String, Completer<String?>>{};
+  final Map<String, String> _assistantByUser = <String, String>{};
+  final Set<String> _unreadCounted = <String>{};
 
-  /// 是否有一次请求在途（抽屉 UI 据此转圈并禁用输入/发送）。
-  bool busy = false;
+  String? _activeId;
+  AiCancelToken? _activeCancel;
+  int _activeEpoch = 0;
+  int _sequence = 0;
+  bool _sheetOpen = false;
+  int _unreadCount = 0;
+  String? _lastError;
+  String _draft = '';
+  bool _consented = false;
+  bool _autoScreen = true;
+  bool _screenConsent = false;
+
+  /// 只读消息快照（按时间顺序，含排队/失败/未完成消息）。
+  List<AiChatMessage> get messages =>
+      List<AiChatMessage>.unmodifiable(_messages);
+
+  /// 已成功完成的历史派生视图（OpenAI messages 形状）。
+  ///
+  /// 失败/排队/未完成的 user 消息仍保留在 [messages] 里供撤回或重试，但不会进入
+  /// 下一次请求的上下文；只有 done 的 user/assistant 才构成真正的多轮历史。
+  List<Map<String, String>> get history =>
+      List<Map<String, String>>.unmodifiable(<Map<String, String>>[
+        for (final m in _messages)
+          if (m.status == AiChatMessageStatus.done) m.historyEntry,
+      ]);
+
+  /// 是否有一次请求在途（输入框不再因 busy 禁用，只用于标题栏 spinner/停止按钮）。
+  bool get busy => _activeId != null;
+
+  /// 等待发送的 FIFO 消息条数。
+  int get queuedCount => _queue.length;
+
+  /// 抽屉未打开期间累计的未读数（父级 Badge 数据源）。
+  int get unreadCount => _unreadCount;
+
+  /// 当前页面草稿（撤回时自动回填，sheet 读取后写入输入框）。
+  String get draft => _draft;
+  set draft(String value) {
+    if (_draft == value) return;
+    _draft = value;
+    notifyListeners();
+  }
 
   /// 最近一次失败的中文可读文案（AiClient 已保证不含密钥；null 表示无错误）。
-  String? lastError;
+  String? get lastError => _lastError;
+  set lastError(String? value) {
+    if (_lastError == value) return;
+    _lastError = value;
+    notifyListeners();
+  }
 
   /// 本次会话是否已确认发送范围（公益免费端点经入口弹窗开启后，首次发送仍需确认一次）。
-  bool consented = false;
+  bool get consented => _consented;
+  set consented(bool value) {
+    if (_consented == value) return;
+    _consented = value;
+    notifyListeners();
+  }
 
   /// 自动识屏：提问里出现「屏幕/当前页面/截图」等词时，自动读取屏幕文字。
   /// 首次发送屏幕内容前仍会弹一次 [kAiScreenNotice] 同意框。
-  bool autoScreen = true;
+  bool get autoScreen => _autoScreen;
+  set autoScreen(bool value) {
+    if (_autoScreen == value) return;
+    _autoScreen = value;
+    notifyListeners();
+  }
 
   /// 本次会话是否已同意发送屏幕文字（清空会话时重置）。
-  bool screenConsent = false;
+  bool get screenConsent => _screenConsent;
+  set screenConsent(bool value) {
+    if (_screenConsent == value) return;
+    _screenConsent = value;
+    notifyListeners();
+  }
+
+  /// 抽屉打开：清零未读。父级可在 showAiChat 前后调用（showAiChat 已自动调用）。
+  void markSheetOpened() {
+    _sheetOpen = true;
+    _unreadCount = 0;
+    notifyListeners();
+  }
+
+  /// 抽屉关闭：按需求消耗一条未读计数（没有未读时保持 0）。
+  void markSheetClosed() {
+    _sheetOpen = false;
+    if (_unreadCount > 0) _unreadCount--;
+    notifyListeners();
+  }
 
   /// 清空会话（抽屉标题行的「清空」按钮调用）。忙碌中清空不安全，先判 busy。
   void clear() {
     if (busy) return;
-    history.clear();
-    lastError = null;
-    consented = false; // 会话重置：发送范围确认也重来（与清除历史同语义）
-    screenConsent = false;
+    for (final waiter in _waiters.values) {
+      if (!waiter.isCompleted) waiter.complete(null);
+    }
+    _messages.clear();
+    _queue.clear();
+    _requestMeta.clear();
+    _waiters.clear();
+    _assistantByUser.clear();
+    _unreadCounted.clear();
+    _lastError = null;
+    _unreadCount = 0;
+    _draft = '';
+    _consented = false; // 会话重置：发送范围确认也重来（与清除历史同语义）
+    _screenConsent = false;
+    notifyListeners();
   }
 
-  /// 发送一轮对话：trimHistory(history) + 本轮 user 一起提交。
+  /// 发送一轮对话。空闲时立即开始；请求在途时进入 FIFO 队列并显示 queued。
   ///
-  /// [contextSummary] 是调用方已脱敏的本机数据摘要，会拼进 system 消息；
-  /// [screenText] 是本次识屏 OCR 文本，同样只进 system。两者都不会写入 history，
-  /// 也不会出现在用户气泡里（需求：补充上下文不展示）。
-  /// [onDelta] 非空时走流式请求，每段增量回调一次。
-  ///
-  /// 返回本次 assistant 回复文本；输入为空白、已有请求在途、或调用失败时返回
-  /// null——失败只设 [lastError]，**不写入 history**，保证下一轮 messages 与
-  /// 模型实际见过的内容一致，也让用户原样重发不会变成「回答自己的重复提问」。
+  /// 返回本次 user 消息对应的 assistant 文本（成功）或 null（失败/撤回）。
+  /// 调用方不必等待：controller 会在请求完成时更新消息并通过 ChangeNotifier 通知。
   Future<String?> send(
     AiConfig cfg,
     String userText, {
     String? contextSummary,
     String? screenText,
     void Function(String delta)? onDelta,
-  }) async {
+  }) {
     final content = userText.trim();
-    if (content.isEmpty || busy) return null;
-    busy = true;
-    lastError = null;
+    if (content.isEmpty) return Future<String?>.value(null);
+    final id = 'u${++_sequence}';
+    final message = AiChatMessage._(
+      id: id,
+      role: AiChatMessageRole.user,
+      content: content,
+      status: AiChatMessageStatus.queued,
+    );
+    final waiter = Completer<String?>();
+    _messages.add(message);
+    _requestMeta[id] = _AiChatRequestMeta(
+      config: cfg,
+      contextSummary: contextSummary,
+      screenText: screenText,
+      onDelta: onDelta,
+    );
+    _waiters[id] = waiter;
+    _queue.add(id);
+    notifyListeners();
+    unawaited(_pump());
+    return waiter.future;
+  }
+
+  /// 把队列中的消息移到队首。当前在途请求不被抢占，完成后优先发它。
+  bool prioritize(String messageId) {
+    final index = _queue.indexOf(messageId);
+    if (index < 0) return false;
+    if (index == 0) return true;
+    _queue.removeAt(index);
+    _queue.insert(0, messageId);
+    notifyListeners();
+    return true;
+  }
+
+  /// 撤回 queued/failed 的 user 消息，返回原文并写入 [draft] 供 sheet 回填输入框。
+  ///
+  /// 同时从发送队列移除；失败请求留下的半截 assistant 回答也一并移除，避免出现
+  /// 没有提问的孤立回答。成功消息不可撤回。
+  String? withdraw(String messageId) {
+    final message = _find(messageId);
+    if (message == null || !message.isUser || !message.isWithdrawable) {
+      return null;
+    }
+    _queue.remove(messageId);
+    _messages.remove(message);
+    final assistantId = _assistantByUser.remove(messageId);
+    if (assistantId != null) {
+      final assistant = _find(assistantId);
+      if (assistant != null &&
+          assistant.status == AiChatMessageStatus.incomplete) {
+        _messages.remove(assistant);
+      }
+    }
+    _requestMeta.remove(messageId);
+    _completeWaiter(messageId, null);
+    _draft = message.content;
+    notifyListeners();
+    return message.content;
+  }
+
+  /// 原地重试 failed 的 user 消息：不新增重复气泡，成功后 assistant 插在它后面。
+  ///
+  /// 请求在途时进入队列；[prioritize] 仍可继续调整它的位置。
+  Future<String?> retry(String messageId) {
+    final message = _find(messageId);
+    if (message == null || !message.isRetryable) {
+      return Future<String?>.value(null);
+    }
+    final meta = _requestMeta[messageId];
+    if (meta == null) return Future<String?>.value(null);
+    final waiter = Completer<String?>();
+    _completeWaiter(messageId, null);
+    _waiters[messageId] = waiter;
+    message.status = AiChatMessageStatus.queued;
+    message.error = null;
+    if (!_queue.contains(messageId)) _queue.add(messageId);
+    notifyListeners();
+    unawaited(_pump());
+    return waiter.future;
+  }
+
+  /// 停止当前在途请求。流式订阅会立即 cancel；迟到回调按 token/epoch 丢弃。
+  void cancelActive() {
+    _activeCancel?.cancel();
+  }
+
+  AiChatMessage? _find(String id) {
+    for (final m in _messages) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  bool _isActiveEpoch(String id, int epoch) =>
+      _activeId == id && _activeEpoch == epoch;
+
+  void _completeWaiter(String id, String? value) {
+    final waiter = _waiters.remove(id);
+    if (waiter != null && !waiter.isCompleted) waiter.complete(value);
+  }
+
+  void _countUnreadOnce(String key) {
+    if (_sheetOpen) return;
+    if (!_unreadCounted.add(key)) return;
+    _unreadCount++;
+  }
+
+  List<Map<String, String>> _historyBefore(AiChatMessage message) {
+    final index = _messages.indexOf(message);
+    if (index < 0) return <Map<String, String>>[];
+    return <Map<String, String>>[
+      for (final m in _messages.take(index))
+        if (m.status == AiChatMessageStatus.done) m.historyEntry,
+    ];
+  }
+
+  Future<void> _pump() async {
+    if (_activeId != null) return;
+    // 每轮都重新检查 active：notifyListeners 的同步监听者若再次 send，可能已启动
+    // 新的 _pump；这里必须让位，避免两个循环同时消费队列。
+    while (_activeId == null && _queue.isNotEmpty) {
+      final id = _queue.removeAt(0);
+      final message = _find(id);
+      if (message == null || message.status != AiChatMessageStatus.queued) {
+        continue;
+      }
+      await _run(id);
+    }
+  }
+
+  Future<void> _run(String id) async {
+    final user = _find(id);
+    final meta = _requestMeta[id];
+    if (user == null || meta == null) {
+      _completeWaiter(id, null);
+      return;
+    }
+    _activeId = id;
+    _activeEpoch++;
+    final epoch = _activeEpoch;
+    final cancelToken = AiCancelToken();
+    _activeCancel = cancelToken;
+    user.status = AiChatMessageStatus.sending;
+    user.error = null;
+    _lastError = null;
+
+    // 重试前移除上一次尝试留下的未完成回答，成功结果仍插在 user 原位之后。
+    final oldAssistantId = _assistantByUser.remove(id);
+    if (oldAssistantId != null) {
+      final oldAssistant = _find(oldAssistantId);
+      if (oldAssistant != null &&
+          oldAssistant.status == AiChatMessageStatus.incomplete) {
+        _messages.remove(oldAssistant);
+      }
+    }
+
+    final assistant = AiChatMessage._(
+      id: 'a${++_sequence}',
+      role: AiChatMessageRole.assistant,
+      content: '',
+      status: AiChatMessageStatus.streaming,
+    );
+    final userIndex = _messages.indexOf(user);
+    _messages.insert(userIndex + 1, assistant);
+    _assistantByUser[id] = assistant.id;
+    notifyListeners();
+
+    bool assistantStillPresent() => _messages.contains(assistant);
+
+    void settleFailure(String message) {
+      user.status = AiChatMessageStatus.failed;
+      user.error = message;
+      _lastError = message;
+      if (assistant.content.trim().isEmpty) {
+        _messages.remove(assistant);
+        _assistantByUser.remove(id);
+        _countUnreadOnce(user.id);
+      } else {
+        assistant.status = AiChatMessageStatus.incomplete;
+        assistant.error = message;
+        _countUnreadOnce(assistant.id);
+      }
+      _completeWaiter(id, null);
+      notifyListeners();
+    }
+
     try {
       // 知识库检索失败不得阻断对话：答疑是增强能力。
       var knowledge = const <AiKnowledgeSnippet>[];
       try {
-        knowledge = await knowledgeBase.retrieve(content);
+        knowledge = await knowledgeBase.retrieve(user.content);
       } catch (_) {/* 忽略：按无知识库片段继续 */}
+      if (!_isActiveEpoch(id, epoch)) {
+        _completeWaiter(id, null);
+        return;
+      }
+      if (cancelToken.isCancelled) {
+        settleFailure('已取消本次回答');
+        return;
+      }
       final system = buildChatSystemPrompt(
-        contextJson: contextSummary,
-        screenText: screenText,
+        contextJson: meta.contextSummary,
+        screenText: meta.screenText,
         knowledge: knowledge,
       );
-      final messages = trimHistory(history)
-        ..add(<String, String>{'role': 'user', 'content': content});
-      final outcome = await _clientFactory(cfg)
-          .chat(system: system, messages: messages, onDelta: onDelta);
-      if (outcome is AiReply) {
-        history
-          ..add(<String, String>{'role': 'user', 'content': content})
-          ..add(<String, String>{'role': 'assistant', 'content': outcome.text});
-        return outcome.text;
+      final messages = trimHistory(_historyBefore(user))
+        ..add(<String, String>{'role': 'user', 'content': user.content});
+      final outcome = await _clientFactory(meta.config).chat(
+        system: system,
+        messages: messages,
+        cancelToken: cancelToken,
+        onDelta: (delta) {
+          // 关键：旧 epoch / 已取消请求的迟到 delta 绝不写入新消息。
+          if (!_isActiveEpoch(id, epoch) || cancelToken.isCancelled) return;
+          if (!assistantStillPresent()) return;
+          assistant.content += delta;
+          assistant.status = AiChatMessageStatus.streaming;
+          notifyListeners();
+          meta.onDelta?.call(delta);
+        },
+      );
+      if (!_isActiveEpoch(id, epoch)) {
+        _completeWaiter(id, null);
+        return;
       }
-      lastError = (outcome as AiFailure).message;
-      return null;
+      if (outcome is AiReply) {
+        assistant.content = outcome.text;
+        assistant.status = AiChatMessageStatus.done;
+        assistant.error = null;
+        user.status = AiChatMessageStatus.done;
+        user.error = null;
+        _lastError = null;
+        _requestMeta.remove(id);
+        _completeWaiter(id, outcome.text);
+        _countUnreadOnce(assistant.id);
+        notifyListeners();
+        return;
+      }
+      final failure = outcome as AiFailure;
+      settleFailure(failure.message);
     } on Exception catch (e) {
-      // chat() 已把 Exception 翻译成 AiFailure，走到这里说明是意外（如注入的
-      // 假 sender 抛异常）；兜底成可读文案，绝不让忙碌态软锁死。Error 不捕——
-      // 编程缺陷应暴露（与 ai_client.dart 红线一致）。
-      lastError = '请求异常（$e）';
-      return null;
+      if (_isActiveEpoch(id, epoch)) {
+        // chat() 已把 Exception 翻译成 AiFailure，走到这里说明是意外（如注入的
+        // 假 sender 抛异常）；兜底成可读文案，绝不让忙碌态软锁死。Error 不捕——
+        // 编程缺陷应暴露（与 ai_client.dart 红线一致）。
+        settleFailure('请求异常（$e）');
+      } else {
+        _completeWaiter(id, null);
+      }
     } finally {
-      busy = false;
+      if (_isActiveEpoch(id, epoch)) {
+        _activeId = null;
+        _activeCancel = null;
+        notifyListeners();
+      }
     }
   }
 }
@@ -217,6 +599,7 @@ Future<void> showAiChat(
   String? contextSummary,
   String? Function()? contextProvider,
 }) {
+  controller.markSheetOpened();
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -241,7 +624,7 @@ Future<void> showAiChat(
         ),
       );
     },
-  );
+  ).whenComplete(controller.markSheetClosed);
 }
 
 /// AI 对话抽屉主体（多轮对话；「去设置」回调交给接线层决定跳转方式）。
@@ -284,23 +667,43 @@ class _AiChatSheetState extends State<AiChatSheet> {
   final TextEditingController _input = TextEditingController();
   final ScrollController _scroll = ScrollController();
 
-  /// 在途请求对应的 user 气泡文本（历史里成功才有，失败即撤，与 lastError 呼应）。
-  String? _pendingUserText;
-
-  /// 流式回复的已收到片段（只在当前请求在途时渲染；成功后转入 history）。
-  String? _streamingText;
-
   /// 识屏状态提示（只显示“正在读取/已读取”等状态，不显示屏幕正文）。
   String? _screenNote;
 
   /// 屏幕识别进行中（按钮转圈 + 禁用），完成后把文字填进输入框待用户确认。
   bool _capturing = false;
 
+  /// 正在走发送前的确认/识屏流程，防止重复触发；不阻塞在途请求。
+  bool _preparingSend = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onControllerChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant AiChatSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_onControllerChanged);
+      widget.controller.addListener(_onControllerChanged);
+    }
+  }
+
   @override
   void dispose() {
+    widget.controller.removeListener(_onControllerChanged);
     _input.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  /// 抽屉只监听 controller：关闭后请求继续，重新打开直接看到已产生消息/流式文本。
+  void _onControllerChanged() {
+    if (!mounted) return;
+    setState(() {});
+    _scrollToBottom();
   }
 
   bool get _configured => widget.config.enabled;
@@ -309,7 +712,7 @@ class _AiChatSheetState extends State<AiChatSheet> {
   /// 识别屏幕文字 → 填入输入框（用户可编辑/清空后再发送，绝不自动外发）。
   /// 屏幕内容可能含密码/个人信息，发送确认权始终在用户手里（文件头红线）。
   Future<void> _captureOcr() async {
-    if (_capturing || _busy) return;
+    if (_capturing) return;
     setState(() => _capturing = true);
     final r = await widget.capture();
     if (!mounted) return;
@@ -343,123 +746,154 @@ class _AiChatSheetState extends State<AiChatSheet> {
 
   Future<void> _send() async {
     final ctrl = widget.controller;
-    if (ctrl.busy || !_configured || _capturing) return;
+    if (!_configured || _capturing || _preparingSend) return;
     final raw = _input.text.trim();
     if (raw.isEmpty) return;
-    // 首次发送前确认发送范围（会话内一次；与选课页 _aiPanel 同口径——
-    // 公益免费端点出厂即启用后，合规上仍要保证"用户知道发出去的是什么"）。
-    if (!ctrl.consented) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('发送范围确认'),
-          // 全局助手会读取学业/方案/选课三块数据，口径与选课页一次性解读不同。
-          content: const Text(kAiChatSendNotice),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('取消')),
-            FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('同意并发送')),
-          ],
-        ),
-      );
-      if (ok != true || !mounted) return;
-      ctrl.consented = true;
-    }
-
-    // 识屏：提问指代屏幕时自动读取。首次必须显式同意；内容只进 system。
-    String? screenText;
-    var screenNote = '';
-    if (ctrl.autoScreen && looksLikeScreenQuestion(raw)) {
-      var allow = ctrl.screenConsent;
-      if (!allow) {
-        final choice = await showDialog<bool>(
+    _preparingSend = true;
+    try {
+      // 首次发送前确认发送范围（会话内一次；与选课页 _aiPanel 同口径——
+      // 公益免费端点出厂即启用后，合规上仍要保证"用户知道发出去的是什么"）。
+      if (!ctrl.consented) {
+        final ok = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('识屏发送确认'),
-            content: const Text(kAiScreenNotice),
+            title: const Text('发送范围确认'),
+            // 全局助手会读取学业/方案/选课三块数据，口径与选课页一次性解读不同。
+            content: const Text(kAiChatSendNotice),
             actions: [
               TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text('取消')),
-              TextButton(
                   onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('不读取，直接发送')),
+                  child: const Text('取消')),
               FilledButton(
                   onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('读取并发送')),
+                  child: const Text('同意并发送')),
             ],
           ),
         );
-        if (!mounted || choice == null) return;
-        if (choice) {
-          ctrl.screenConsent = true;
-          allow = true;
-        }
+        if (ok != true || !mounted) return;
+        ctrl.consented = true;
       }
-      if (allow) {
-        setState(() {
-          _capturing = true;
-          _screenNote = '正在读取屏幕…';
-        });
-        final r = await widget.capture();
-        if (!mounted) return;
-        setState(() => _capturing = false);
-        if (!r.isSuccess) {
-          ctrl.lastError = r.error;
-          setState(() => _screenNote = null);
-          return;
-        }
-        final t = r.text.trim();
-        if (t.isEmpty) {
-          screenNote = '屏幕上没有识别到文字';
-        } else {
-          screenText = t;
-          screenNote = '已读取屏幕文字（仅本次发送）';
-        }
-      }
-    }
 
-    _pendingUserText = raw;
-    _streamingText = '';
-    _screenNote = screenNote.isEmpty ? null : screenNote;
-    setState(() {}); // 立刻渲染 user 气泡 + 转圈
-    final freshContext =
-        widget.contextProvider?.call() ?? widget.contextSummary;
-    final reply = await ctrl.send(
-      widget.config,
-      raw,
-      contextSummary: freshContext,
-      screenText: screenText,
-      onDelta: (delta) {
-        if (!mounted) return;
-        setState(() => _streamingText = '${_streamingText ?? ''}$delta');
-        _scrollToBottom();
-      },
-    );
-    if (!mounted) return; // 等待期间抽屉可能已被关闭
-    setState(() {
-      _pendingUserText = null;
-      _streamingText = null;
-      if (reply != null) _input.clear();
-    });
-    _scrollToBottom();
+      // 识屏：提问指代屏幕时自动读取。首次必须显式同意；内容只进 system。
+      String? screenText;
+      var screenNote = '';
+      if (ctrl.autoScreen && looksLikeScreenQuestion(raw)) {
+        var allow = ctrl.screenConsent;
+        if (!allow) {
+          final choice = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('识屏发送确认'),
+              content: const Text(kAiScreenNotice),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('取消')),
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('不读取，直接发送')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('读取并发送')),
+              ],
+            ),
+          );
+          if (!mounted || choice == null) return;
+          if (choice) {
+            ctrl.screenConsent = true;
+            allow = true;
+          }
+        }
+        if (allow) {
+          setState(() {
+            _capturing = true;
+            _screenNote = '正在读取屏幕…';
+          });
+          final r = await widget.capture();
+          if (!mounted) return;
+          setState(() => _capturing = false);
+          if (!r.isSuccess) {
+            ctrl.lastError = r.error;
+            setState(() => _screenNote = null);
+            return;
+          }
+          final t = r.text.trim();
+          if (t.isEmpty) {
+            screenNote = '屏幕上没有识别到文字';
+          } else {
+            screenText = t;
+            screenNote = '已读取屏幕文字（仅本次发送）';
+          }
+        }
+      }
+
+      final freshContext =
+          widget.contextProvider?.call() ?? widget.contextSummary;
+      // 不 await：请求在途时也允许继续输入并排队；结果由 controller 通知。
+      unawaited(ctrl.send(
+        widget.config,
+        raw,
+        contextSummary: freshContext,
+        screenText: screenText,
+      ));
+      if (_input.text.trim() == raw) _input.clear();
+      if (!mounted) return;
+      setState(() => _screenNote = screenNote.isEmpty ? null : screenNote);
+      _scrollToBottom();
+    } finally {
+      _preparingSend = false;
+    }
   }
+
+  void _withdraw(AiChatMessage message) {
+    final text = widget.controller.withdraw(message.id);
+    if (text == null) return;
+    setState(() {
+      _input.text = text;
+      _input.selection = TextSelection.collapsed(offset: text.length);
+    });
+  }
+
+  void _retry(AiChatMessage message) {
+    unawaited(widget.controller.retry(message.id));
+  }
+
+  String? _statusLabel(AiChatMessage message) {
+    final error = message.error;
+    switch (message.status) {
+      case AiChatMessageStatus.queued:
+        return '排队中';
+      case AiChatMessageStatus.sending:
+        return '发送中…';
+      case AiChatMessageStatus.streaming:
+        return message.content.isEmpty ? '正在生成…' : '生成中…';
+      case AiChatMessageStatus.failed:
+        return error == null ? '发送失败' : '发送失败：$error';
+      case AiChatMessageStatus.incomplete:
+        return error == null ? '未完成' : '未完成：$error';
+      case AiChatMessageStatus.done:
+        return null;
+    }
+  }
+
+  Widget _actionButton(ThemeData theme, String label, VoidCallback onTap) =>
+      TextButton(
+        onPressed: onTap,
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          minimumSize: const Size(0, 30),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 12)),
+      );
 
   @override
   Widget build(BuildContext context) {
     final ctrl = widget.controller;
     final theme = Theme.of(context);
-    // 气泡列表 = 历史 + 在途提问 + 流式回复片段。
-    // 数据摘要只进 system，永远不在这里渲染（需求：补充上下文不展示给用户）。
-    final bubbles = <(String, String)>[
-      for (final m in ctrl.history)
-        (m['role'] ?? '', m['content'] ?? ''),
-      if (_pendingUserText != null) ('user', _pendingUserText!),
-      if ((_streamingText ?? '').isNotEmpty) ('assistant', _streamingText!),
-    ];
+    // 唯一数据源是 controller.messages：不再把在途文本存在 State 里，
+    // 因此关闭抽屉后请求继续，重新打开即可看到完整进度。
+    final bubbles = ctrl.messages;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -479,14 +913,15 @@ class _AiChatSheetState extends State<AiChatSheet> {
                       padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
                       itemCount: bubbles.length + 1,
                       itemBuilder: (_, i) => i < bubbles.length
-                          ? _bubble(theme, bubbles[i].$1, bubbles[i].$2)
+                          ? _bubble(theme, bubbles[i])
                           // 页脚硬拼接（需求 #6：全局助手可给建议，免责不可被模型删改）
                           : Padding(
                               padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
                               child: Text(kAiChatFooter,
                                   style: TextStyle(
                                       fontSize: 10.5,
-                                      color: theme.colorScheme.onSurfaceVariant)),
+                                      color:
+                                          theme.colorScheme.onSurfaceVariant)),
                             ),
                     ),
         ),
@@ -500,8 +935,8 @@ class _AiChatSheetState extends State<AiChatSheet> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
             child: Text(_screenNote!,
-                style: TextStyle(
-                    fontSize: 11, color: theme.colorScheme.primary)),
+                style:
+                    TextStyle(fontSize: 11, color: theme.colorScheme.primary)),
           ),
         _inputRow(theme),
       ],
@@ -522,10 +957,30 @@ class _AiChatSheetState extends State<AiChatSheet> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
             ),
+            if (widget.controller.queuedCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Text('${widget.controller.queuedCount} 条排队',
+                    style: TextStyle(
+                        fontSize: 11, color: theme.colorScheme.primary)),
+              ),
+            // 生成中 spinner 固定在标题栏，不再占用发送按钮。
+            if (_busy) ...[
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              IconButton(
+                tooltip: '停止生成',
+                icon: const Icon(Icons.stop_circle_outlined, size: 20),
+                onPressed: widget.controller.cancelActive,
+              ),
+            ],
             IconButton(
               tooltip: '清空对话',
               icon: const Icon(Icons.delete_outline),
-              onPressed: () => setState(widget.controller.clear),
+              onPressed: () => widget.controller.clear(),
             ),
             IconButton(
               tooltip: '关闭',
@@ -548,7 +1003,8 @@ class _AiChatSheetState extends State<AiChatSheet> {
               const SizedBox(height: 10),
               Text('还没有开启 AI 服务', style: theme.textTheme.titleMedium),
               const SizedBox(height: 6),
-              Text('在设置页「AI 解读」中配置提供方、接口地址与 API Key 后，'
+              Text(
+                  '在设置页「AI 解读」中配置提供方、接口地址与 API Key 后，'
                   '即可在这里与课舟对话。',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -573,10 +1029,9 @@ class _AiChatSheetState extends State<AiChatSheet> {
               tooltip: widget.controller.autoScreen
                   ? '自动识屏已开启：提问提到屏幕/当前页面时自动读取（点击关闭）'
                   : '自动识屏已关闭（点击开启）',
-              onPressed: (_configured && !_busy && !_capturing)
-                  ? () => setState(() =>
-                      widget.controller.autoScreen =
-                          !widget.controller.autoScreen)
+              onPressed: (_configured && !_capturing)
+                  ? () => setState(() => widget.controller.autoScreen =
+                      !widget.controller.autoScreen)
                   : null,
               icon: Icon(
                 Icons.screen_search_desktop,
@@ -589,9 +1044,7 @@ class _AiChatSheetState extends State<AiChatSheet> {
             IconButton(
               tooltip: '识别屏幕文字填入输入框（Windows 内置离线 OCR，不上传；'
                   '识别结果需你手动确认后发送）',
-              onPressed: (_configured && !_busy && !_capturing)
-                  ? _captureOcr
-                  : null,
+              onPressed: (_configured && !_capturing) ? _captureOcr : null,
               icon: _capturing
                   ? const SizedBox(
                       width: 18,
@@ -603,13 +1056,18 @@ class _AiChatSheetState extends State<AiChatSheet> {
               child: TextField(
                 key: const Key('aiChatInput'),
                 controller: _input,
-                enabled: _configured && !_busy,
+                // busy 不再禁用输入：发送会进入 FIFO 队列。
+                enabled: _configured && !_capturing,
                 minLines: 1,
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
                 onSubmitted: (_) => _send(), // 回车即发送
                 decoration: InputDecoration(
-                  hintText: _configured ? '提问（请勿输入个人信息）' : '未配置 AI，暂不可发送',
+                  hintText: !_configured
+                      ? '未配置 AI，暂不可发送'
+                      : _busy
+                          ? '可继续输入，发送后排队'
+                          : '提问（请勿输入个人信息）',
                   border: const OutlineInputBorder(),
                   isDense: true,
                   contentPadding:
@@ -621,20 +1079,10 @@ class _AiChatSheetState extends State<AiChatSheet> {
             SizedBox(
               width: 56,
               height: 40,
-              child: _busy
-                  // busy 时按钮位换成圈（尺寸锁定，避免行高跳动）。
-                  ? Center(
-                      child: SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              color: theme.colorScheme.primary)))
-                  : FilledButton(
-                      onPressed: _configured && !_busy && !_capturing
-                          ? _send
-                          : null,
-                      child: const Text('发送')),
+              child: FilledButton(
+                onPressed: _configured && !_capturing ? _send : null,
+                child: const Text('发送'),
+              ),
             ),
           ],
         ),
@@ -644,10 +1092,20 @@ class _AiChatSheetState extends State<AiChatSheet> {
   /// assistant 显示前过 sanitizeChatOutput（需求 #6：全局助手可给具体选项与
   /// 方向性建议，只拦"替用户拍板课表/断言选上/越权承诺选课"三条硬红线；
   /// 与选课页一次性解读的严格中立 sanitizeAiOutput 分口径）。
-  Widget _bubble(ThemeData theme, String role, String content) {
-    final isUser = role == 'user';
-    final text = isUser ? content : sanitizeChatOutput(content);
+  Widget _bubble(ThemeData theme, AiChatMessage message) {
+    final isUser = message.isUser;
+    final text = isUser ? message.content : sanitizeChatOutput(message.content);
     final scheme = theme.colorScheme;
+    final status = _statusLabel(message);
+    final actions = <Widget>[
+      if (message.isPrioritizable)
+        _actionButton(
+            theme, '置顶', () => widget.controller.prioritize(message.id)),
+      if (message.isRetryable)
+        _actionButton(theme, '重发', () => _retry(message)),
+      if (message.isWithdrawable)
+        _actionButton(theme, '撤回', () => _withdraw(message)),
+    ];
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -667,8 +1125,35 @@ class _AiChatSheetState extends State<AiChatSheet> {
         ),
         constraints:
             BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.82),
-        child: SelectableText(text,
-            style: const TextStyle(fontSize: 14, height: 1.5)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment:
+              isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            SelectableText(
+              text.isEmpty ? '…' : text,
+              style: const TextStyle(fontSize: 14, height: 1.5),
+            ),
+            if (status != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(status,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: (message.isFailed ||
+                              message.status == AiChatMessageStatus.incomplete)
+                          ? scheme.error
+                          : scheme.primary,
+                    )),
+              ),
+            if (actions.isNotEmpty)
+              Wrap(
+                alignment: isUser ? WrapAlignment.end : WrapAlignment.start,
+                spacing: 2,
+                children: actions,
+              ),
+          ],
+        ),
       ),
     );
   }

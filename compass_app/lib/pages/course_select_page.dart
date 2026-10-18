@@ -25,11 +25,21 @@ import '../data/semester.dart';
 import '../data/xk_models.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
+import '../engine/course_state.dart';
 import '../engine/disclaimer.dart';
 import '../engine/selection.dart';
 import '../engine/timeline.dart';
+import '../widgets/scholar_cards.dart' show ScholarPalette;
 
 enum _View { rounds, merged, advice }
+
+/// 已修/在修课程的防重复选择提示（纯文案，选课页点按气泡时展示）。
+String? courseRepeatHint(PlanCourseState state) => switch (state) {
+      PlanCourseState.earned => '该课程已修完并取得学分，无需重复选择。',
+      PlanCourseState.active => '该课程本学期已在修（已选未出分），请勿重复选择。',
+      PlanCourseState.noCredit => '该课程此前有记录但未获学分；如重修请先确认开课信息。',
+      PlanCourseState.unknown => null,
+    };
 
 class CourseSelectPage extends StatefulWidget {
   final ZjuClient client;
@@ -542,6 +552,90 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
 
   List<String> get _mergeNotes => _mergedAll().$2;
 
+  /// 与方案阅读页/审计报告同源的修读状态证据（需求 #2）。
+  PlanCourseEvidence _courseEvidence() => collectPlanCourseEvidence(
+        transcript: widget.transcript,
+        choosedNames: [
+          for (final c in widget.choosed?.courses ?? const <XkCourse>[]) c.kcmc,
+        ],
+        timetableNames: [
+          for (final r in widget.timetable?.rows ?? const []) r.name,
+        ],
+        reportPlanCourses: [
+          for (final m in (widget.report?['summary'] as List? ?? const []))
+            if (m is Map)
+              ...(m['plan_courses'] as List? ?? const [])
+                  .whereType<Map>()
+                  .map((e) => e.cast<String, dynamic>()),
+        ],
+      );
+
+  Map<String, PlanCourseState> _statesForNames(Iterable<String> names) =>
+      resolvePlanCourseStates(names, _courseEvidence());
+
+  PlanCourseState _stateOf(XkCourse c, Map<String, PlanCourseState> states) =>
+      states[c.kcmc] ?? PlanCourseState.unknown;
+
+  /// 只读页面没有提交选课动作；点按已修/在修课程仅给出防重复选择提示。
+  void _showCourseStateHint(PlanCourseState state) {
+    final message = courseRepeatHint(state);
+    if (message == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  /// 紧凑三态图例 + 统计（需求 #2）：在修只作蓝色提示，不计入已取得学分。
+  Widget _courseStateSummary(Iterable<String> names) {
+    // 平行班按课程名去重：统计口径是“门”，不是教学班条数。
+    final unique = <String>[];
+    final seen = <String>{};
+    for (final raw in names) {
+      final n = raw.trim();
+      if (n.isEmpty || !seen.add(n)) continue;
+      unique.add(n);
+    }
+    final states = _statesForNames(unique);
+    final counts = <PlanCourseState, int>{
+      PlanCourseState.earned: 0,
+      PlanCourseState.active: 0,
+      PlanCourseState.unknown: 0,
+    };
+    for (final n in unique) {
+      final display = courseDisplayState(states[n] ?? PlanCourseState.unknown);
+      counts[display] = (counts[display] ?? 0) + 1;
+    }
+    Widget item(String label, int n, Color color) => Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 4),
+            Text('$label ${n} 门', style: TextStyle(fontSize: 11, color: color)),
+          ],
+        );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 3,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          item('已修', counts[PlanCourseState.earned] ?? 0,
+              ScholarPalette.earnedGreen),
+          item('在修', counts[PlanCourseState.active] ?? 0,
+              ScholarPalette.selectedBlue),
+          item('未修', counts[PlanCourseState.unknown] ?? 0, Colors.grey),
+          const Text('在修不计入已取得学分',
+              style: TextStyle(fontSize: 11, color: Colors.grey)),
+        ],
+      ),
+    );
+  }
+
   /// 各来源留痕聚合（汇总/建议视图的过期与降级标注，评审L1）。
   List<String> get _allIssues {
     final seen = <String>{};
@@ -908,6 +1002,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           ),
         ),
         const SizedBox(height: 8),
+        if (merged.isNotEmpty)
+          _courseStateSummary([
+            for (final m in merged) m.base.kcmc,
+          ]),
         TextField(
           controller: _searchCtl,
           onChanged: (_) => setState(() {}),
@@ -962,30 +1060,69 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           .compareTo(b.base.kch.isEmpty ? b.base.kcmc : b.base.kch));
     final selectedKeys = _selectedCourseKeys();
     final ttSlots = (_timetable ?? widget.timetable)?.slots ?? const [];
-    return [
-      LayoutBuilder(builder: (context, cons) {
-        final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
-        return Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final m in sorted)
-              ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: maxW),
-                child: CourseBubble(
-                  course: m.base,
-                  conflict: ttSlots.isNotEmpty &&
-                      Timeline.slotsConflict(m.slots, ttSlots) != null,
-                  selected: _isCourseSelected(m.base, selectedKeys),
-                  // 诉求 #11：跨入口合并后的全部类别（去重保序）逐枚出 Chip
-                  categories: m.categories,
-                  extraTags: m.tags,
-                  extraDetails: _mergedDetails(m),
-                ),
-              ),
-          ],
+    final states = _statesForNames([for (final m in sorted) m.base.kcmc]);
+    final earned = q.isEmpty
+        ? sorted
+            .where((m) =>
+                courseDisplayState(_stateOf(m.base, states)) ==
+                PlanCourseState.earned)
+            .toList()
+        : const <XkMergedCourse>[];
+    final visible = q.isEmpty
+        ? sorted
+            .where((m) =>
+                courseDisplayState(_stateOf(m.base, states)) !=
+                PlanCourseState.earned)
+            .toList()
+        : sorted;
+
+    Widget grid(List<XkMergedCourse> items) => LayoutBuilder(
+          builder: (context, cons) {
+            final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
+            return Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final m in items)
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxW),
+                    child: CourseBubble(
+                      course: m.base,
+                      conflict: ttSlots.isNotEmpty &&
+                          Timeline.slotsConflict(m.slots, ttSlots) != null,
+                      selected: _isCourseSelected(m.base, selectedKeys),
+                      state: _stateOf(m.base, states),
+                      onTap: () =>
+                          _showCourseStateHint(_stateOf(m.base, states)),
+                      // 诉求 #11：跨入口合并后的全部类别（去重保序）逐枚出 Chip
+                      categories: m.categories,
+                      extraTags: m.tags,
+                      extraDetails: _mergedDetails(m),
+                    ),
+                  ),
+              ],
+            );
+          },
         );
-      }),
+    return [
+      if (visible.isNotEmpty) grid(visible),
+      if (earned.isNotEmpty)
+        ExpansionTile(
+          key: const PageStorageKey<String>('merged-earned-courses'),
+          tilePadding: EdgeInsets.zero,
+          initiallyExpanded: false,
+          title: Text('已修课程（${earned.length} 门）',
+              style:
+                  const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+          subtitle: const Text('默认弱化收起；搜索时仍会直接显示',
+              style: TextStyle(fontSize: 11, color: Colors.grey)),
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: grid(earned),
+            )
+          ],
+        ),
       if (filtered.length != merged.length)
         Padding(
           padding: const EdgeInsets.only(top: 4),
@@ -1056,6 +1193,9 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         ? advice.candidates
         : advice.candidates.where(isSelectableForPlan).toList();
     final hiddenCount = advice.candidates.length - visibleCandidates.length;
+    final candidateStates = _statesForNames([
+      for (final a in visibleCandidates) a.course.base.kcmc,
+    ]);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1106,7 +1246,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             ),
           ),
           const SizedBox(height: 8),
-          ..._candidateCards(visibleCandidates),
+          ..._candidateCards(visibleCandidates, candidateStates),
           if (visibleCandidates.isEmpty && !planMissing)
             _emptyCard('没有可选取且符合培养方案的课程',
                 '已取得、本学期已选、方案外、时间冲突、先修未完成或已满的课程未显示。'),
@@ -1118,7 +1258,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   }
 
   /// 建议卡列表：与课程列表同一套响应式网格（同一 gridColumns 断点、6 间距）。
-  List<Widget> _candidateCards(List<CandidateAnalysis> candidates) {
+  List<Widget> _candidateCards(
+      List<CandidateAnalysis> candidates, Map<String, PlanCourseState> states) {
     if (candidates.isEmpty) return const [];
     return [
       LayoutBuilder(
@@ -1132,7 +1273,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             runSpacing: gap,
             children: [
               for (final a in candidates)
-                SizedBox(width: cardW, child: _candidateCard(a)),
+                SizedBox(width: cardW, child: _candidateCard(a, states)),
             ],
           );
         },
@@ -1141,8 +1282,21 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   }
 
   /// 建议卡紧凑版（网格单元）：数据源/状态色沿用原口径，仅排版收紧。
-  Widget _candidateCard(CandidateAnalysis a) {
+  Widget _candidateCard(
+      CandidateAnalysis a, Map<String, PlanCourseState> states) {
     final b = a.course.base;
+    var courseState = states[b.kcmc] ?? PlanCourseState.unknown;
+    if (courseState == PlanCourseState.unknown && a.role == 'passed') {
+      courseState = PlanCourseState.earned;
+    } else if (courseState == PlanCourseState.unknown && a.role == 'selected') {
+      courseState = PlanCourseState.active;
+    }
+    final display = courseDisplayState(courseState);
+    final stateColor = switch (display) {
+      PlanCourseState.earned => ScholarPalette.earnedGreen,
+      PlanCourseState.active => ScholarPalette.selectedBlue,
+      _ => Colors.grey,
+    };
     final roleText = switch (a.role) {
       'gap' => '培养方案缺口课程',
       'passed' => '已取得',
@@ -1176,6 +1330,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                   ),
                 ),
                 const SizedBox(width: 4),
+                _tag(courseStateLabel(courseState), stateColor),
+                const SizedBox(width: 4),
                 _tag(
                     roleText,
                     a.role == 'gap'
@@ -1190,13 +1346,16 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
               [
                 if (b.teacher.isNotEmpty) '教师 ${b.teacher}',
                 if (b.sksj.isNotEmpty) '时间 ${b.sksj.replaceAll('星期', '')}',
+                if (b.xf != null) '${b.xf} 学分',
                 if (b.cap != null || b.selected != null)
                   '容量 ${b.cap ?? '-'}/已选 ${b.selected ?? '-'}',
                 offeredText,
               ].join('｜'),
               style: const TextStyle(fontSize: 11),
             ),
-            if (a.planCategory != null || b.tags.isNotEmpty)
+            if (a.planCategory != null ||
+                b.categories.isNotEmpty ||
+                b.tags.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 3),
                 child: Wrap(
@@ -1211,7 +1370,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                             ? Colors.orange.shade800
                             : Theme.of(context).colorScheme.primary,
                       ),
-                    for (final t in b.tags) _tag(t, Colors.teal),
+                    for (final t in {...b.categories, ...b.tags})
+                      _tag(t, Colors.teal),
                   ],
                 ),
               ),
@@ -1514,29 +1674,60 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     if (courses.isEmpty) return const [];
     final ttSlots = (_timetable ?? widget.timetable)?.slots ?? const [];
     final selectedKeys = _selectedCourseKeys();
-    return [
-      LayoutBuilder(
-        builder: (context, cons) {
-          final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
-          return Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final c in courses)
-                ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: maxW),
-                  child: CourseBubble(
-                    course: c,
-                    conflict: ttSlots.isNotEmpty &&
-                        Timeline.slotsConflict(c.slots, ttSlots) != null,
-                    selected: _isCourseSelected(c, selectedKeys),
-                    categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
+    final states = _statesForNames([for (final c in courses) c.kcmc]);
+    final earned = courses
+        .where((c) =>
+            courseDisplayState(_stateOf(c, states)) == PlanCourseState.earned)
+        .toList();
+    final visible = courses
+        .where((c) =>
+            courseDisplayState(_stateOf(c, states)) != PlanCourseState.earned)
+        .toList();
+
+    Widget grid(List<XkCourse> items) => LayoutBuilder(
+          builder: (context, cons) {
+            final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
+            return Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final c in items)
+                  ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxW),
+                    child: CourseBubble(
+                      course: c,
+                      conflict: ttSlots.isNotEmpty &&
+                          Timeline.slotsConflict(c.slots, ttSlots) != null,
+                      selected: _isCourseSelected(c, selectedKeys),
+                      state: _stateOf(c, states),
+                      onTap: () => _showCourseStateHint(_stateOf(c, states)),
+                      categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
+                    ),
                   ),
-                ),
-            ],
-          );
-        },
-      ),
+              ],
+            );
+          },
+        );
+    return [
+      _courseStateSummary([for (final c in courses) c.kcmc]),
+      if (visible.isNotEmpty) grid(visible),
+      if (earned.isNotEmpty)
+        ExpansionTile(
+          key: const PageStorageKey<String>('round-earned-courses'),
+          tilePadding: EdgeInsets.zero,
+          initiallyExpanded: false,
+          title: Text('已修课程（${earned.length} 门）',
+              style:
+                  const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+          subtitle: const Text('默认弱化收起；切到「汇总」可按课名搜索',
+              style: TextStyle(fontSize: 11, color: Colors.grey)),
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: grid(earned),
+            )
+          ],
+        ),
     ];
   }
 
@@ -1570,6 +1761,8 @@ class CourseBubble extends StatelessWidget {
   final XkCourse course;
   final bool conflict;
   final bool selected;
+  final PlanCourseState state;
+  final VoidCallback? onTap;
   final List<String> categories; // 类别标签（诉求 #11：可多枚，全部显示）
   final List<String> extraTags;
   final String? extraDetails;
@@ -1579,6 +1772,8 @@ class CourseBubble extends StatelessWidget {
     required this.course,
     this.conflict = false,
     this.selected = false,
+    this.state = PlanCourseState.unknown,
+    this.onTap,
     this.categories = const [],
     this.extraTags = const [],
     this.extraDetails,
@@ -1591,16 +1786,28 @@ class CourseBubble extends StatelessWidget {
         c.cap != null && c.selected != null && c.selected! >= c.cap!;
     final left =
         c.cap != null && c.selected != null ? c.cap! - c.selected! : null;
+    final effectiveState = state == PlanCourseState.unknown && selected
+        ? PlanCourseState.active
+        : state;
+    final display = courseDisplayState(effectiveState);
+    final stateColor = switch (display) {
+      PlanCourseState.earned => ScholarPalette.earnedGreen,
+      PlanCourseState.active => ScholarPalette.selectedBlue,
+      _ => Colors.grey,
+    };
+    final dimmed = display == PlanCourseState.earned;
     final allTags = <String>{...c.tags, ...extraTags};
     // Chip 去重（诉求 #11）：类别名在 tags 兼容口径里也会出现，同一文本只出一枚；
     // 类别 Chip 用独立色并放在最前，剩余标签按原有顺序跟上。
-    final seen = {...categories};
+    final seen = <String>{courseStateLabel(effectiveState), ...categories};
     final tags = <Widget>[
+      _miniTag(courseStateLabel(effectiveState), stateColor),
+      if (c.xf != null) _miniTag('${c.xf} 学分', Colors.blueGrey),
       for (final t in categories) _miniTag(t, Colors.indigo),
       if (c.jxbmc.isNotEmpty && seen.add(c.jxbmc))
         _miniTag(c.jxbmc, Colors.blueGrey),
       if (conflict && seen.add('冲突')) _miniTag('冲突', Colors.red),
-      if (selected && seen.add('本学期已选'))
+      if (display != PlanCourseState.active && selected && seen.add('本学期已选'))
         _miniTag('本学期已选', Colors.blue),
       if (isFull && seen.add('已满'))
         _miniTag('已满', Colors.orange)
@@ -1610,6 +1817,8 @@ class CourseBubble extends StatelessWidget {
         if (seen.add(t)) _miniTag(t, Colors.teal),
     ];
     final details = <String>[
+      '修读状态 ${courseStateLabel(effectiveState)}'
+          '${effectiveState == PlanCourseState.active ? '（已选未出分，不计入已修）' : ''}',
       if (c.kch.isNotEmpty) '课程号 ${c.kch}',
       if (c.xf != null) '学分 ${c.xf}',
       if (c.teacher.isNotEmpty) '教师 ${c.teacher}',
@@ -1623,37 +1832,53 @@ class CourseBubble extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Tooltip(
       message: details,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: selected
-              ? scheme.tertiaryContainer
-              : scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: conflict ? Colors.red : scheme.outlineVariant,
-            width: conflict ? 1.2 : 0.8,
-          ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(c.kcmc,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    fontSize: 12.5, fontWeight: FontWeight.bold)),
-            if (tags.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Wrap(
-                  spacing: 3,
-                  runSpacing: 2,
-                  children: tags,
-                ),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Opacity(
+          opacity: dimmed ? 0.62 : 1,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: display == PlanCourseState.active
+                  ? ScholarPalette.selectedBlue.withValues(alpha: 0.10)
+                  : selected
+                      ? scheme.tertiaryContainer
+                      : scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: conflict
+                    ? Colors.red
+                    : display == PlanCourseState.active
+                        ? ScholarPalette.selectedBlue.withValues(alpha: 0.45)
+                        : scheme.outlineVariant,
+                width: conflict ? 1.2 : 0.8,
               ),
-          ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(c.kcmc,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.bold,
+                        color: dimmed
+                            ? scheme.onSurface.withValues(alpha: 0.55)
+                            : null)),
+                if (tags.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Wrap(
+                      spacing: 3,
+                      runSpacing: 2,
+                      children: tags,
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );

@@ -124,13 +124,29 @@ final _tableHeadRe = RegExp(r'^课程号\s+课程名称\s+学分');
 final _ignoreRe = RegExp(
     r'^(浙江大学\s*Zhejiang University|课程设置与学分分布|培养阶段课程结构图|'
     r'培养方案修读指导性计划|类别\s+课程号|类别\s+项目序号|'
-    r'第[一二三四]学年|微辅修$|A\.跨专业课程至少1门)');
+    r'第[一二三四]学年|微辅修$)');
 
 /// 复位标记：辅修段与正文培养方案无继承关系。
 final _auxResetRe = RegExp(r'^辅修培养方案[：:]?$');
 
 /// 终止标记：其后是"修读指导性计划"（按学年重排的重复课程表）。
 final _stopRe = RegExp(r'^培养方案修读指导性计划$');
+
+/// 标题行归一化（用户反馈 #1：军体类被并进思政类、劳育类被并进美育类）。
+/// 实测方案 PDF 会用全角括号写标题与学分：`（2）军体类（8学分）`、
+/// `1.通识必修课程（62学分）`。旧正则只认 `(2)军体类 8学分`（半角括号 +
+/// 空格分隔的尾部学分），识别不了时该标题会落进正文说明，后续课程全部挂到
+/// 上一个板块——于是军体课混进思政类、劳育课混进美育类。
+/// 归一化只做两件事：全角括号转半角；把尾部 `（N学分）/（N门）` 改写成
+/// ` N学分/N门`（与既有正则的尾部约定一致）。正文里的括号不受影响。
+String _normalizeHeadingLine(String line) {
+  var s = line.replaceAll('（', '(').replaceAll('）', ')');
+  s = s.replaceAllMapped(
+      RegExp(r'\(\s*([\d.+\-]+)\s*学分\s*\)'), (m) => ' ${m.group(1)}学分');
+  s = s.replaceAllMapped(
+      RegExp(r'\(\s*(\d+)\s*门\s*\)'), (m) => ' ${m.group(1)}门');
+  return s;
+}
 
 // ── 解析 ──────────────────────────────────────────────────────────────────
 
@@ -159,7 +175,8 @@ PlanPdfSections parsePlanPdfText(String text) {
   final levelShift = hasHanziTop ? 0 : -1;
 
   ({String title, int level, String credits, String unit})? sectionOf(String line) {
-    var m = _lvl1Re.firstMatch(line);
+    final l = _normalizeHeadingLine(line);
+    var m = _lvl1Re.firstMatch(l);
     if (m != null) {
       final t = _cleanTitle(m.group(1)!);
       // 正文段落常以「一、……。……」开头（培养理念等），并非板块标题；
@@ -173,7 +190,7 @@ PlanPdfSections parsePlanPdfText(String text) {
         unit: '学分',
       );
     }
-    m = _lvl2Re.firstMatch(line);
+    m = _lvl2Re.firstMatch(l);
     if (m != null) {
       return (
         title: _cleanTitle(m.group(1)!),
@@ -182,7 +199,7 @@ PlanPdfSections parsePlanPdfText(String text) {
         unit: '学分',
       );
     }
-    m = _colonRe.firstMatch(line);
+    m = _colonRe.firstMatch(l);
     if (m != null) {
       return (
         title: _cleanTitle(m.group(1)!),
@@ -191,7 +208,7 @@ PlanPdfSections parsePlanPdfText(String text) {
         unit: '学分',
       );
     }
-    m = _lvl3Re.firstMatch(line);
+    m = _lvl3Re.firstMatch(l);
     if (m != null) {
       return (
         title: _cleanTitle(m.group(2)!),
@@ -200,7 +217,7 @@ PlanPdfSections parsePlanPdfText(String text) {
         unit: '学分',
       );
     }
-    m = _lvl4Re.firstMatch(line);
+    m = _lvl4Re.firstMatch(l);
     if (m != null) {
       final unit = m.group(4)!;
       final t = _cleanTitle(m.group(2)!);

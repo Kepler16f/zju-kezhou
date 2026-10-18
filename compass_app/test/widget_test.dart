@@ -10,10 +10,13 @@
 //
 // 断言作用域：IndexedStack 会构建全部子页，跨页共享的文案（如免责声明）必须用
 // find.descendant 限定在目标页内断言，否则新增页面会撞挂既有用例（设计评审B）。
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:compass_app/data/credential_store.dart';
 import 'package:compass_app/main.dart';
 import 'package:compass_app/pages/curriculum_plan_page.dart';
 
@@ -43,10 +46,11 @@ void main() {
     expect(find.text('方案'), findsOneWidget);
     expect(find.text('设置'), findsOneWidget);
     expect(find.text('选课'), findsOneWidget);
-    // 审计页签已并入方案页（诉求 #13）；「工具」自 2026-10-18 需求 #1 起
-    // 恢复为独立页签（学期走势 + GPA 模拟器迁入）。
+    // 审计页签已并入方案页（诉求 #13）；2026-10-18 需求 #5 起「工具」不再是
+    // 独立底栏页，而是学业页内的子选项卡。
     expect(find.text('审计'), findsNothing);
-    expect(find.text('工具'), findsWidgets);
+    expect(find.byType(NavigationDestination), findsNWidgets(4));
+    expect(find.text('工具'), findsOneWidget);
     // 学业页空态引导 + 顶部日期学期栏（诉求 #8）
     expect(find.text('暂无学业数据'), findsOneWidget);
     expect(find.textContaining('今天是'), findsOneWidget);
@@ -91,7 +95,7 @@ void main() {
     // 学业页有数据：切过去看 GPA 卡 + 成绩详情入口
     await tester.tap(find.text('学业'));
     await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('成绩'), findsOneWidget);
+    expect(find.text('成绩'), findsWidgets);
     expect(find.text('五分制'), findsOneWidget);
     expect(find.text('点击查看各学期成绩明细'), findsOneWidget);
     // 回归：样例记录缺 passed/gpa_included 时 GPA 曾整卡归零、已修门数曾显示 null
@@ -99,7 +103,7 @@ void main() {
     expect(find.text('null'), findsNothing);
 
     // 点成绩卡进详情页（按学期分组）
-    await tester.tap(find.text('成绩'));
+    await tester.tap(find.text('点击查看各学期成绩明细'));
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pump();
     expect(find.text('成绩明细'), findsOneWidget);
@@ -191,5 +195,50 @@ void main() {
     expect(find.textContaining('未启用：建议卡为本机计算'), findsOneWidget);
     expect(find.text('去设置'), findsWidgets);
     expect(find.textContaining('开启后仅发送'), findsNothing);
+  });
+
+  group('底栏偏好迁移（旧五列 → 新四列）', () {
+    late Directory tmp;
+
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('compass_nav_');
+    });
+
+    tearDown(() async {
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('旧五排列去掉工具位 3，设置 4 映射为 3', () async {
+      final store = CredentialStore(tmp);
+      await store.saveTabOrder('0,1,2,3,4');
+      expect(await store.loadTabOrder(), '0,1,2,3');
+
+      await store.saveTabOrder('2,0,3,4,1');
+      expect(await store.loadTabOrder(), '2,0,3,1');
+    });
+
+    test('旧五列默认页：工具 3→学业 0，设置 4→3', () async {
+      final store = CredentialStore(tmp);
+      await store.saveTabOrder('0,1,2,3,4');
+      await store.saveDefaultTab(3);
+      expect(await store.loadDefaultTab(), 0);
+      await store.saveDefaultTab(4);
+      expect(await store.loadDefaultTab(), 3);
+    });
+
+    test('新四排列默认页原样保留', () async {
+      final store = CredentialStore(tmp);
+      await store.saveTabOrder('2,1,0,3');
+      await store.saveDefaultTab(3);
+      expect(await store.loadDefaultTab(), 3);
+    });
+
+    test('非法/重复顺序回落默认，默认页回落学业', () async {
+      final store = CredentialStore(tmp);
+      await store.saveTabOrder('0,0,1,2');
+      expect(await store.loadTabOrder(), '0,1,2,3');
+      await store.saveDefaultTab(2);
+      expect(await store.loadDefaultTab(), 0);
+    });
   });
 }

@@ -114,6 +114,45 @@ List<Map<String, dynamic>> selectedRowsOf(XkListParseResult? choosed) {
   return out;
 }
 
+/// 已选课程 → 审计 `planned_courses`（用户反馈 #9）。
+///
+/// 与 [selectedRowsOf] 的区别：这里把已选行先按审计同一匹配口径对到方案课程，
+/// 能对上时回填方案课程号（course_id）——方案 PDF 用课程号、摘要方案用课程名，
+/// 统一成 course_id 后 AuditEngine 才能把「方案课程表里没列出的已选外语课」
+/// 计入对应模块的 selected_no_credit（在修，不计 earned）。
+/// 对不上方案的行原样保留（课程号为空时仍按名称展示），绝不猜测归属。
+/// 返回新 Map，不修改入参；[semester] 仅给缺学期的行补当前学期（供计划冲突检查）。
+List<Map<String, dynamic>> plannedCoursesFromChoosed(
+  XkListParseResult? choosed,
+  Map<String, dynamic>? plan, {
+  String? semester,
+}) {
+  final rows = selectedRowsOf(choosed);
+  if (rows.isEmpty) return const <Map<String, dynamic>>[];
+  final out = <Map<String, dynamic>>[
+    for (final r in rows)
+      <String, dynamic>{
+        ...r,
+        if (semester != null &&
+            '${r['semester'] ?? ''}'.trim().isEmpty)
+          'semester': semester,
+      },
+  ];
+  final planCourses = plan?['courses'];
+  if (planCourses is! List || planCourses.isEmpty) return out;
+  final (matched, _) = matchRecordToPlan(
+      out, <String, dynamic>{'courses': planCourses});
+  for (final pair in matched) {
+    final row = pair[0] as Map<String, dynamic>;
+    final pc = pair[1] as Map<String, dynamic>;
+    final cid = '${pc['course_id'] ?? ''}'.trim();
+    if (cid.isNotEmpty) row['course_id'] = cid;
+    if ('${row['name'] ?? ''}'.trim().isEmpty) row['name'] = pc['name'];
+    if (row['credits'] == null) row['credits'] = pc['credits'];
+  }
+  return out;
+}
+
 /// 已选课程 → 培养方案模块的在修学分（复用审计同一匹配口径）。
 Map<String, double> selectedCreditsByModule(
   List<Map<String, dynamic>> selectedRows,

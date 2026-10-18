@@ -13,6 +13,8 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../engine/course_state.dart';
+
 /// 审计报告的可嵌入展示：
 /// 顶部应修/已取得/缺口 totals 卡 + 三色模块瓦片 + 未匹配课程 + 风险提示 + 免责声明。
 class ReportSection extends StatelessWidget {
@@ -21,7 +23,16 @@ class ReportSection extends StatelessWidget {
   /// 渲染在 totals 卡正下方的附加行（方案页：本学期已选/在修学分，诉求 #8）。
   final Widget? belowTotals;
 
-  const ReportSection({super.key, required this.report, this.belowTotals});
+  /// 可选修读状态证据（成绩单/本学期已选/课表）。缺失时仅按报告 passed
+  /// 标“已修”，其余为“未修”；不影响任何 earned/gap 数值。
+  final PlanCourseEvidence? courseEvidence;
+
+  const ReportSection({
+    super.key,
+    required this.report,
+    this.belowTotals,
+    this.courseEvidence,
+  });
 
   static const _colors = {
     'green': Color(0xFF16A34A),
@@ -172,6 +183,58 @@ class ReportSection extends StatelessWidget {
     return d == d.roundToDouble() ? d.toStringAsFixed(0) : '$d';
   }
 
+  /// 报告课程 → 名称状态表：先取共享证据，再用报告自身 passed 兜底/升级。
+  Map<String, PlanCourseState> _statesForCourses(
+      List<Map<String, dynamic>> courses) {
+    final names = <String>[
+      for (final c in courses)
+        if ('${c['name'] ?? ''}'.trim().isNotEmpty) '${c['name'] ?? ''}'.trim(),
+    ];
+    final resolved = resolvePlanCourseStates(
+        names, courseEvidence ?? const PlanCourseEvidence());
+    final out = <String, PlanCourseState>{};
+    for (final c in courses) {
+      final name = '${c['name'] ?? ''}'.trim();
+      if (name.isEmpty) continue;
+      out[name] = c['passed'] == true
+          ? PlanCourseState.earned
+          : (resolved[name] ?? PlanCourseState.unknown);
+    }
+    return out;
+  }
+
+  Map<PlanCourseState, int> _stateCounts(
+      List<Map<String, dynamic>> courses, Map<String, PlanCourseState> states) {
+    final out = <PlanCourseState, int>{
+      PlanCourseState.earned: 0,
+      PlanCourseState.active: 0,
+      PlanCourseState.unknown: 0,
+    };
+    for (final c in courses) {
+      final name = '${c['name'] ?? ''}'.trim();
+      final display = courseDisplayState(c['passed'] == true
+          ? PlanCourseState.earned
+          : (states[name] ?? PlanCourseState.unknown));
+      out[display] = (out[display] ?? 0) + 1;
+    }
+    return out;
+  }
+
+  double _creditsForState(List<Map<String, dynamic>> courses,
+      Map<String, PlanCourseState> states, PlanCourseState target) {
+    final wanted = courseDisplayState(target);
+    var sum = 0.0;
+    for (final c in courses) {
+      final name = '${c['name'] ?? ''}'.trim();
+      final state = c['passed'] == true
+          ? PlanCourseState.earned
+          : (states[name] ?? PlanCourseState.unknown);
+      if (courseDisplayState(state) != wanted) continue;
+      sum += (c['credits'] as num?)?.toDouble() ?? 0;
+    }
+    return sum;
+  }
+
   /// 模块统计小项：灰标签 + 加粗数值（紧凑、可换行）。
   Widget _stat(String label, String value, Color valueColor) => Text.rich(
         TextSpan(
@@ -191,12 +254,18 @@ class ReportSection extends StatelessWidget {
   Widget _moduleTile(BuildContext context, Map<String, dynamic> m) {
     final color = _colors[m['color']] ?? Colors.grey;
     final onSurface = Theme.of(context).colorScheme.onSurface;
-    final stats = (m['course_stats'] as Map?) ?? const {};
+    final courses = (m['plan_courses'] as List? ?? const [])
+        .whereType<Map>()
+        .map((e) => e.cast<String, dynamic>())
+        .toList();
+    final states = _statesForCourses(courses);
+    final stateCounts = _stateCounts(courses, states);
+    final activeCredits =
+        _creditsForState(courses, states, PlanCourseState.active);
     final path = '${m['module_path'] ?? ''}';
     final title = '${m['title'] ?? _lastSegment(path)}';
-    // 口径（诉求 #4）：已取得学分绿色（绿=已获学分）；模块存在 selected_no_credit>0
-    // 时追加蓝色注释「另 N 门已选未获学分」（蓝=已选上），与 earned 分开呈现。
-    final selNoCredit = (m['selected_no_credit'] as num?)?.toInt() ?? 0;
+    // 口径（需求 #2/#4）：已修学分直接用引擎 earned；在修学分只做蓝色提示，
+    // 绝不相加到 earned，也不改变 gap。
     final earnedVal = (m['earned'] as num?) ?? 0;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
@@ -225,15 +294,21 @@ class ReportSection extends StatelessWidget {
                 runSpacing: 2,
                 children: [
                   _stat('应修', '${m['required']}', onSurface),
-                  _stat('已取得', '$earnedVal',
+                  _stat('已修学分', _fmtCredits(earnedVal),
                       earnedVal > 0 ? _colors['green']! : onSurface),
+                  _stat('在修学分', '${_fmtCredits(activeCredits)}（不计入已修）',
+                      _colors['blue']!),
                   _stat('缺口', '${m['gap']}',
                       (m['gap'] as num) > 0 ? _colors['red']! : onSurface),
-                  if (selNoCredit > 0)
-                    _stat('已选未获学分', '另 $selNoCredit 门', _colors['blue']!),
-                  _stat('方案课程', '${stats['total'] ?? 0} 门', onSurface),
-                  _stat('已取得课程', '${stats['passed'] ?? 0} 门', onSurface),
-                  _stat('待修课程', '${stats['pending'] ?? 0} 门', onSurface),
+                  _stat('方案课程', '${courses.length} 门', onSurface),
+                  _stat('已修课程', '${stateCounts[PlanCourseState.earned] ?? 0} 门',
+                      _colors['green']!),
+                  _stat('在修课程', '${stateCounts[PlanCourseState.active] ?? 0} 门',
+                      _colors['blue']!),
+                  _stat(
+                      '未修课程',
+                      '${stateCounts[PlanCourseState.unknown] ?? 0} 门',
+                      onSurface),
                 ],
               ),
             ],
@@ -241,13 +316,14 @@ class ReportSection extends StatelessWidget {
         ),
         trailing: Text('${m['gap']} 分',
             style: TextStyle(color: color, fontWeight: FontWeight.bold)),
-        children: [_moduleDetail(context, m)],
+        children: [_moduleDetail(context, m, states)],
       ),
     );
   }
 
   /// 展开内容：培养方案的详细要求 + 全部课程（含已取得），而不是只有 missing。
-  Widget _moduleDetail(BuildContext context, Map<String, dynamic> m) {
+  Widget _moduleDetail(BuildContext context, Map<String, dynamic> m,
+      Map<String, PlanCourseState> states) {
     final notes = (m['notes'] as List? ?? const []);
     final subRules = (m['sub_requirements'] as List? ?? const [])
         .whereType<Map>()
@@ -257,7 +333,7 @@ class ReportSection extends StatelessWidget {
         .whereType<Map>()
         .map((e) => e.cast<String, dynamic>())
         .toList();
-    final stats = (m['course_stats'] as Map?) ?? const {};
+    final stateCounts = _stateCounts(courses, states);
     final rule = m['choice_rule'] is Map
         ? (m['choice_rule'] as Map).cast<String, dynamic>()
         : null;
@@ -318,11 +394,12 @@ class ReportSection extends StatelessWidget {
           ],
           const SizedBox(height: 6),
           Text(
-              '方案课程清单（${stats['total'] ?? courses.length} 门'
-              '，已取得 ${stats['passed'] ?? 0} 门'
-              '，待修 ${stats['pending'] ?? 0} 门）',
-              style: const TextStyle(
-                  fontSize: 12.5, fontWeight: FontWeight.w600)),
+              '方案课程清单（${courses.length} 门'
+              '，已修 ${stateCounts[PlanCourseState.earned] ?? 0} 门'
+              '，在修 ${stateCounts[PlanCourseState.active] ?? 0} 门'
+              '，未修 ${stateCounts[PlanCourseState.unknown] ?? 0} 门）',
+              style:
+                  const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
           if (courses.isEmpty)
             const Padding(
               padding: EdgeInsets.only(top: 3),
@@ -330,27 +407,42 @@ class ReportSection extends StatelessWidget {
                   style: TextStyle(fontSize: 11.5, color: Colors.grey)),
             )
           else
-            for (final c in courses) _planCourseRow(c),
+            for (final c in courses) _planCourseRow(c, states),
         ],
       ),
     );
   }
 
-  Widget _planCourseRow(Map<String, dynamic> c) {
+  Widget _planCourseRow(
+      Map<String, dynamic> c, Map<String, PlanCourseState> states) {
+    final name = '${c['name'] ?? ''}'.trim();
     final passed = c['passed'] == true;
+    final state = passed
+        ? PlanCourseState.earned
+        : (states[name] ?? PlanCourseState.unknown);
+    final display = courseDisplayState(state);
     final closed = c['closed'] == true;
     final record = c['record'] is Map
         ? (c['record'] as Map).cast<String, dynamic>()
         : null;
     final terms = (c['terms'] as List? ?? const []).join('、');
+    final color = switch (display) {
+      PlanCourseState.earned => _colors['green']!,
+      PlanCourseState.active => _colors['blue']!,
+      _ => Colors.grey,
+    };
     final subtitle = <String>[
       '${c['credits'] ?? '?'} 学分',
-      if (passed)
-        '已取得'
+      if (display == PlanCourseState.earned)
+        '已获学分'
+      else if (display == PlanCourseState.active)
+        '已选未出分，不计入已修'
+      else if (state == PlanCourseState.noCredit)
+        '有记录未获学分，需重修'
       else if (closed)
         '学籍年限内已无开课窗口'
       else
-        '待修${terms.isEmpty ? '' : ' · 可选窗口 $terms'}',
+        '未修${terms.isEmpty ? '' : ' · 可选窗口 $terms'}',
       if (record != null && '${record['semester'] ?? ''}'.isNotEmpty)
         '${record['semester']}'
       else if (c['page'] != null)
@@ -360,21 +452,47 @@ class ReportSection extends StatelessWidget {
       dense: true,
       contentPadding: EdgeInsets.zero,
       leading: Icon(
-        passed
+        display == PlanCourseState.earned
             ? Icons.check_circle
-            : closed
-                ? Icons.lock
-                : Icons.schedule,
+            : display == PlanCourseState.active
+                ? Icons.schedule
+                : closed
+                    ? Icons.lock
+                    : Icons.radio_button_unchecked,
         size: 18,
-        color: passed
-            ? _colors['green']
-            : closed
-                ? _colors['red']
-                : _colors['yellow'],
+        color: color,
       ),
-      title: Text('${c['name'] ?? '未命名课程'}',
-          style: const TextStyle(fontSize: 12.5)),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text('${c['name'] ?? '未命名课程'}',
+                style: const TextStyle(fontSize: 12.5)),
+          ),
+          const SizedBox(width: 4),
+          _courseStateBadge(state),
+        ],
+      ),
       subtitle: Text(subtitle, style: const TextStyle(fontSize: 11)),
+    );
+  }
+
+  Widget _courseStateBadge(PlanCourseState state) {
+    final display = courseDisplayState(state);
+    final color = switch (display) {
+      PlanCourseState.earned => _colors['green']!,
+      PlanCourseState.active => _colors['blue']!,
+      _ => Colors.grey,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        courseStateLabel(state),
+        style: TextStyle(fontSize: 10.5, color: color),
+      ),
     );
   }
 

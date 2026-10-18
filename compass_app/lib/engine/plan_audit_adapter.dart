@@ -40,11 +40,16 @@ class ChoiceRule {
   final int? minCourses; // 「至少修读X门」，或 N 选 M 的 M
   final int? pickFrom; // 「N 选 M」的 N（二选一 → 2）
 
+  /// 「多选一 / 任选其一 / 只选一门」：单门成组——选 1 门即整个模块达成，
+  /// 要求学分按最便宜的一门折算（用户反馈 #3，不把整组学分全部相加）。
+  final bool singlePick;
+
   const ChoiceRule({
     required this.text,
     this.minCredits,
     this.minCourses,
     this.pickFrom,
+    this.singlePick = false,
   });
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -52,6 +57,7 @@ class ChoiceRule {
         'min_credits': minCredits,
         'min_courses': minCourses,
         'pick_from': pickFrom,
+        'single_pick': singlePick,
       };
 }
 
@@ -104,6 +110,13 @@ double requiredCreditsFrom(String creditsRaw) {
 ///    用「实践劳动」这类复合词限定。
 const _certifiedKeywords = <String, List<String>>{
   '心理健康类': ['心理', '适应与发展'],
+  // 军体类/思政类（#1）：用户反馈此前把军体课并进思政类、劳育课并进美育类。
+  // 课程名比板块标题更可靠：体育/军事理论/军训 → 军体类；思政课 → 思政类。
+  '军体类': ['体育', '军训', '军事', '体测', '体质'],
+  '思政类': [
+    '思想政治', '马克思主义', '毛泽东思想', '习近平', '思想道德',
+    '近现代史', '形势与政策',
+  ],
   '美育类': ['美术', '音乐', '艺术', '审美', '戏剧', '书法', '舞蹈', '美育'],
   '创新创业类': ['创新创业', '创业', '创新训练', '大创'],
   '劳育类': ['劳动', '劳育', '农事', '耕读', '实践劳动', '志愿服务'],
@@ -177,12 +190,48 @@ bool _isGenericSectionTitle(String title) {
   return false;
 }
 
+/// 课程名多数派认定的类别（军体/思政/美育/劳育…）：至少 2 门且占比 ≥60%。
+/// 用于纠正「板块标题漏识别导致课程并块」——军体课落进思政类、劳育课落进
+/// 美育类时，课程名多数派能把类别改回正确值（#1）。
+String? _dominantCertifiedCategory(List<PdfCourseRow> courses) {
+  if (courses.length < 2) return null;
+  final counts = <String, int>{};
+  var hits = 0;
+  for (final c in courses) {
+    final cat = certifiedCategoryOf(c.name);
+    if (cat == null) continue;
+    counts[cat] = (counts[cat] ?? 0) + 1;
+    hits++;
+  }
+  if (hits == 0) return null;
+  final best = counts.entries.reduce((a, b) => a.value >= b.value ? a : b);
+  if (best.value < 2 || best.value * 10 < courses.length * 6) return null;
+  return best.key;
+}
+
+/// 板块标题是否本身就是类别名（「思政类」「军体类」「美育类」…）。
+bool _isCategoryTitle(String title) {
+  final t = title.trim();
+  if (t.isEmpty) return false;
+  if (_certifiedKeywords.containsKey(t)) return true;
+  if (RegExp(r'类$').hasMatch(t) && t.length <= 12) return true;
+  return false;
+}
+
 /// 模块类别：优先认定类关键词，其次自身标题（level<=3 且非泛化规则），
 /// 最后沿 parentPath 从深到浅找最近的非泛化段。
 /// 这样报告路径可以是完整 `s.label`，学分看板类别仍落在「军体类/思政类」。
+/// 标题与课程名多数派冲突时以课程为准（#1：军体/思政、美育/劳育不再并桶）。
 String categoryOfSection(PdfModuleSection s, String? certified) {
   if (certified != null) return certified;
-  if (s.level <= 3 && !_isGenericSectionTitle(s.title)) return s.title;
+  final byCourse = _dominantCertifiedCategory(s.courses);
+  final title = s.title.trim();
+  if (_isCategoryTitle(title)) {
+    if (byCourse != null && byCourse != title) return byCourse;
+    return title;
+  }
+  if (s.level <= 3 && !_isGenericSectionTitle(title)) return title;
+  if (byCourse != null) return byCourse;
   final segments = s.parentPath
       .split(' · ')
       .map((e) => e.trim())
@@ -294,12 +343,32 @@ ChoiceRule? detectChoiceRule(String notesJoined) {
     }
   }
 
+  // #3：「多选一 / 任选其一 / 只选一门」= 选一门即满足整个模块。
+  // 不能退化成裸「任选」前缀——「任意选修」不是数量约束
+  // （test/engine_audit_test.dart 有反例守护）。
+  var singlePick = false;
+  final one = RegExp(r'(多选一|任选其一|任选一门|只选一门|选择其中一门|选其中一门)')
+      .firstMatch(text);
+  if (one != null) {
+    singlePick = true;
+  } else {
+    final pickN =
+        RegExp('(?:任选|只选|选择其中)\\s*($_cnNum)\\s*门').firstMatch(text);
+    final n = pickN == null ? null : _parseCount(pickN.group(1)!);
+    if (n == 1) singlePick = true;
+  }
+  if (singlePick) {
+    if (minCourses == null) minCourses = 1;
+    fragments.add(one?.group(0) ?? '任选1门');
+  }
+
   if (fragments.isEmpty) return null;
   return ChoiceRule(
     text: fragments.join('；'),
     minCredits: minCredits,
     minCourses: minCourses,
     pickFrom: pickFrom,
+    singlePick: singlePick,
   );
 }
 
@@ -307,13 +376,34 @@ ChoiceRule? detectChoiceRule(String notesJoined) {
 /// 否则 null。[siblings] 为该板块的直接子板块（并列选项，满足其一即可，诉求 #11）。
 AlternativeSignal? detectAlternativeModules(
     List<PdfModuleSection> siblings, String parentNotes) {
-  final m = RegExp('以下\\s*($_cnNum)\\s*种模块中的一种').firstMatch(parentNotes);
-  if (m == null) return null;
-  final n = _parseCount(m.group(1)!);
-  if (n == null || n < 2) return null; // 「一种」不构成并列可选
+  final text = parentNotes.trim();
+  if (text.isEmpty) return null;
+  // 模块级句式（必须出现「模块」二字，避免把「本组课程多选一」这类
+  // 课程级规则误升级成模块级并列选项）：
+  //  * 以下 N 种/个模块中的一种
+  //  * 以下 N 个模块（中）任选其一 / 任选一个
+  //  * 三个模块任选其一 / 多选一 / 只选一个
+  final patterns = <RegExp>[
+    RegExp('以下\\s*($_cnNum)\\s*(?:种|个)\\s*模块(?:中|里)?(?:的)?\\s*(?:一种|任选(?:其)?一|任选一个)'),
+    RegExp('($_cnNum)\\s*(?:种|个)\\s*模块(?:中|里)?(?:任选|选择|选)\\s*(?:其)?一'),
+    RegExp(r'模块.{0,12}(?:多选一|任选其一|任选一个|只选一个|选择一个模块)'),
+    RegExp(r'(?:多选一|任选其一|任选一个模块|只选一个模块)'),
+  ];
+  String? hit;
+  int? declared;
+  for (final re in patterns) {
+    final m = re.firstMatch(text);
+    if (m == null) continue;
+    hit = m.group(0);
+    if (m.groupCount >= 1) declared = _parseCount(m.group(1) ?? '');
+    break;
+  }
+  if (hit == null || !text.contains('模块')) return null;
+  final n = declared ?? siblings.length;
+  if (n < 2 && siblings.length < 2) return null; // 「一种」不构成并列可选
   return AlternativeSignal(
-    optionCount: n,
-    text: m.group(0)!,
+    optionCount: n < 2 ? siblings.length : n,
+    text: hit,
     optionTitles: siblings.map((s) => s.title).toList(),
   );
 }
@@ -449,9 +539,85 @@ Map<String, dynamic> planFileFromPdf(
   final modules = <Map<String, dynamic>>[];
   final courses = <Map<String, dynamic>>[];
   final takenIds = <String>{};
-  final seenCourses = <String>{}; // 同一课程跨板块重复出现时只保留首次归属
   var requiredSum = 0.0; // 与审计 totals.required 同口径（total_credits 兜底）
   final mixedTitles = <String>[]; // 混合父板块（要求改按直属课程和计），如实上报
+
+  // 模块 id 先按文档序一次性分配：并列选项组在父板块处出现，必须提前引用
+  // 各选项子树的模块 id（主循环边生成边引用会取不到）。
+  final moduleIds = <int, String>{};
+  for (var i = 0; i < ps.sections.length; i++) {
+    if (!flags[i]) continue;
+    moduleIds[i] = uniqueSlug(moduleSlug(ps.sections[i].title, i), takenIds);
+  }
+
+  // 并列选项组（用户反馈 #4：本专业进阶模块 / 跨专业学习模块（微辅修）/
+  // 学生自主修读模块 三选一）。识别信号是模块级说明（「以下N种模块中的一种」
+  // 「三个模块任选其一」「多选一」），不是课程级「N选M」。
+  // 组内各选项模块标 counts_toward_totals=false，由 AuditEngine 合成一条
+  // 组行（取最优选项计一次），避免 20+20+20 被加成 60。
+  final alternativeGroups = <Map<String, dynamic>>[];
+  final altMarkers = <int, Map<String, dynamic>>{};
+  for (var i = 0; i < ps.sections.length; i++) {
+    final childIdx = _childIndicesOf(ps, i);
+    if (childIdx.length < 2) continue;
+    final keptOptions = <int>[
+      for (final j in childIdx)
+        if (flags[j]) j,
+    ];
+    if (keptOptions.length < 2) continue;
+    final signal = detectAlternativeModules(
+      [for (final j in childIdx) ps.sections[j]],
+      [
+        ...ps.sections[i].notes,
+        for (final j in childIdx) ...ps.sections[j].notes,
+      ].join('\n'),
+    );
+    if (signal == null) continue;
+    final parent = ps.sections[i];
+    final groupId = '${moduleIds[i] ?? moduleSlug(parent.title, i)}-alt';
+    final declared = requiredCreditsFrom(parent.creditsRaw);
+    final optionReq = <double>[
+      for (final j in keptOptions) requiredCreditsFrom(ps.sections[j].creditsRaw),
+    ];
+    final groupRequired = declared > 0
+        ? declared
+        : optionReq.isEmpty
+            ? 0.0
+            : optionReq.reduce((a, b) => a > b ? a : b);
+    final options = <Map<String, dynamic>>[];
+    for (var k = 0; k < keptOptions.length; k++) {
+      final root = keptOptions[k];
+      final rootSec = ps.sections[root];
+      final ids = <String>[];
+      for (final e in moduleIds.entries) {
+        if (!_isSelfOrDescendant(ps, e.key, root)) continue;
+        ids.add(e.value);
+        altMarkers[e.key] = <String, dynamic>{
+          'alternative_group_id': groupId,
+          'alternative_group_path': parent.label,
+          'alternative_group_required': groupRequired,
+          'alternative_option_index': k,
+          'alternative_option_count': keptOptions.length,
+          'alternative_option_title': rootSec.title,
+          'counts_toward_totals': false,
+        };
+      }
+      options.add(<String, dynamic>{
+        'title': rootSec.title,
+        'required_credits': requiredCreditsFrom(rootSec.creditsRaw),
+        'module_ids': ids,
+      });
+    }
+    alternativeGroups.add(<String, dynamic>{
+      'group_id': groupId,
+      'title': parent.title,
+      'path': parent.label,
+      'required_credits': groupRequired,
+      'option_count': keptOptions.length,
+      'declared_option_count': signal.optionCount,
+      'options': options,
+    });
+  }
 
   // 「门」规则板块课程的家：并入最近可用的上级学分板块；并入不了（无祖先 /
   // 祖先被丢弃）的自建 required 0 模块，保证课程不丢、可被成绩单匹配。
@@ -473,17 +639,21 @@ Map<String, dynamic> planFileFromPdf(
     final s = ps.sections[i];
     final mixed = _hasKeptDescendant(ps, i, kept);
     // 「门」规则板块的课程表并入本板块核算（上级学分板块标注含这部分课）
+    // 最深板块优先：同一课程同时出现在父板块与子板块课程表时，归子板块
+    // （父板块只按剩余直属课程计要求，避免父子重复计费）。
     final ownCourses = <PdfCourseRow>[
-      ...s.courses,
+      for (final c in s.courses)
+        if (!_claimedByKeptDescendant(ps, flags, i, c)) c,
       for (final e in countHome.entries)
         if (e.value == i) ...ps.sections[e.key].courses,
     ];
     final certified = certifiedSectionCategory(s);
+    final rule = detectChoiceRule(s.notes.join('\n'));
     // 混合父板块的标注学分（如 30）是含子板块的总额，只按直属课程和计要求；
     // 叶子板块按标注首数字段（'3-6'→3，下限口径不变）。认定类板块无学分标注
     // 时从说明「要求学生修读N学分」抽（抽不到 0）；「门」板块绝不取 creditsRaw
     // （数字是门数，keptSectionFlags 已保证其不成模块，此处按 0 防御）。
-    final double requiredCredits;
+    var requiredCredits = 0.0;
     if (s.isCountRule) {
       requiredCredits = 0.0;
     } else if (mixed) {
@@ -494,14 +664,31 @@ Map<String, dynamic> planFileFromPdf(
     } else {
       requiredCredits = requiredCreditsFrom(s.creditsRaw);
     }
+    // 「多选一 / 任选其一」：选 1 门即满足整个模块，要求学分只按最便宜的
+    // 一门折算（#3）；标注若偏大，照抄会把已达成的模块误报缺口。
+    if (rule?.singlePick == true && rule?.minCourses == 1) {
+      var cheapest = double.infinity;
+      for (final c in ownCourses) {
+        if (c.credits > 0 && c.credits < cheapest) cheapest = c.credits;
+      }
+      if (cheapest.isFinite && cheapest < requiredCredits) {
+        requiredCredits = cheapest;
+      }
+    }
+    // 父板块直属课程全部被更深板块认领（且无自己的选择规则）：不再生成
+    // 一个「有要求、无课程」的空模块，避免审计恒红（#3/#4 重复计费修复）。
+    if (mixed && ownCourses.isEmpty && rule == null) continue;
     if (mixed && s.creditsRaw.trim().isNotEmpty) mixedTitles.add(s.title);
     requiredSum += requiredCredits;
 
-    final moduleId = uniqueSlug(moduleSlug(s.title, i), takenIds);
+    final moduleId = moduleIds[i]!;
     final courseIds = <String>[];
+    final seenInModule = <String>{};
     for (final c in ownCourses) {
       final key = c.code.isNotEmpty ? c.code : c.name.trim();
-      if (key.isNotEmpty && !seenCourses.add(key)) continue;
+      // 只在本模块内去重：同一课程多标签归属多个模块时按各模块分别计分
+      // （v1.4 口径，跨模块重复交给审计的 memberships 处理）。
+      if (key.isNotEmpty && !seenInModule.add(key)) continue;
       courseIds.add(c.code);
       courses.add(<String, dynamic>{
         'course_id': c.code,
@@ -518,7 +705,6 @@ Map<String, dynamic> planFileFromPdf(
     }
 
     final notesJoined = s.notes.join('\n');
-    final rule = detectChoiceRule(notesJoined);
     final children = _childrenOf(ps, i);
     final alt = detectAlternativeModules(children, notesJoined);
     final subRules = <Map<String, dynamic>>[
@@ -551,6 +737,7 @@ Map<String, dynamic> planFileFromPdf(
       if (subRules.isNotEmpty) 'sub_requirements': subRules,
       if (rule != null) 'choice_rule': rule.toJson(),
       if (alt != null) 'alternative': alt.toJson(),
+      if (altMarkers[i] != null) ...altMarkers[i]!,
       if (certified != null) 'certified_category': certified,
       if (s.isCountRule) 'count_rule': true,
     });
@@ -635,8 +822,29 @@ Map<String, dynamic> planFileFromPdf(
     modules
       ..clear()
       ..addAll(dedupedModules);
-    requiredSum = modules.fold<double>(
-        0, (sum, m) => sum + (m['required_credits'] as num).toDouble());
+    for (final g in alternativeGroups) {
+      final options = (g['options'] as List?) ?? const [];
+      for (final o in options) {
+        if (o is! Map) continue;
+        final ids = (o['module_ids'] as List?) ?? const [];
+        o['module_ids'] = <String>{
+          for (final id in ids) moduleRemap['$id'] ?? '$id',
+        }.toList();
+      }
+    }
+  }
+
+  // 并列选项组：组只计一次（组要求 + 组外模块），选项模块不再求和。
+  if (alternativeGroups.isNotEmpty) {
+    var sum = 0.0;
+    for (final m in modules) {
+      if (m['counts_toward_totals'] == false) continue;
+      sum += (m['required_credits'] as num).toDouble();
+    }
+    for (final g in alternativeGroups) {
+      sum += (g['required_credits'] as num?)?.toDouble() ?? 0;
+    }
+    requiredSum = sum;
   }
 
   // 成绩单归位（#13）：未命中任何方案课程的行，certifiedCategoryOf 命中认定类
@@ -703,6 +911,9 @@ Map<String, dynamic> planFileFromPdf(
     if (mixedTitles.isNotEmpty)
       '${mixedTitles.join('、')}同时含直属课程与子板块，要求学分按其直属课程'
           '学分和计（板块标注为含子板块的总额，照抄会重复计费）',
+    if (alternativeGroups.isNotEmpty)
+      '${alternativeGroups.length} 组并列模块（任选其一）按组计一次要求学分：'
+          '组内各选项不同时求和，达成度取最优选项',
   ];
 
   return <String, dynamic>{
@@ -719,7 +930,45 @@ Map<String, dynamic> planFileFromPdf(
     },
     'modules': modules,
     'courses': courses,
+    if (alternativeGroups.isNotEmpty) 'alternative_groups': alternativeGroups,
   };
+}
+
+/// [ps] 中板块 [i] 的直接子板块下标（parentPath == label）。
+List<int> _childIndicesOf(PlanPdfSections ps, int i) {
+  final label = ps.sections[i].label;
+  return <int>[
+    for (var j = 0; j < ps.sections.length; j++)
+      if (j != i && ps.sections[j].parentPath == label) j,
+  ];
+}
+
+/// [idx] 是否就是 [root] 或位于其子树内（用于并列选项组归属）。
+bool _isSelfOrDescendant(PlanPdfSections ps, int idx, int root) {
+  if (idx == root) return true;
+  final label = ps.sections[root].label;
+  final p = ps.sections[idx].parentPath;
+  return p == label || p.startsWith('$label · ');
+}
+
+String _courseKey(PdfCourseRow c) => c.code.isNotEmpty ? c.code : c.name.trim();
+
+/// 课程行是否已被某个**被保留的下级板块**认领（最深板块优先，防父子重复）。
+bool _claimedByKeptDescendant(
+    PlanPdfSections ps, List<bool> flags, int i, PdfCourseRow row) {
+  final key = _courseKey(row);
+  if (key.isEmpty) return false;
+  final label = ps.sections[i].label;
+  final prefix = '$label · ';
+  for (var j = 0; j < ps.sections.length; j++) {
+    if (j == i || !flags[j]) continue;
+    final p = ps.sections[j].parentPath;
+    if (p != label && !p.startsWith(prefix)) continue;
+    for (final c in ps.sections[j].courses) {
+      if (_courseKey(c) == key) return true;
+    }
+  }
+  return false;
 }
 
 /// [ps] 中 [s]（下标 [i]）的直接子板块（parentPath == s.label）。
@@ -801,7 +1050,10 @@ Map<String, String> coursesCategoryMap(
         : tailCategory(mid == null ? '' : (pathByModule['$mid'] ?? ''));
     final name = '${row['name'] ?? ''}'.trim();
     if (cat.isEmpty || name.isEmpty) continue;
-    out.putIfAbsent(name, () => cat);
+    // #1：课程名明确指向军体/思政/美育/劳育等认定类时，优先于板块类别。
+    // 板块标题漏识别会把军体课并进思政类、劳育课并进美育类；课程名更可靠。
+    final refined = certifiedCategoryOf(name) ?? cat;
+    out.putIfAbsent(name, () => refined);
   }
   return out;
 }
@@ -824,14 +1076,16 @@ int applyPlanCategories(
     final cur = '${c['category'] ?? ''}'.trim();
     if (cur.isNotEmpty && cur != '未分类') continue;
     final name = '${c['name'] ?? ''}'.trim();
+    final certified = certifiedCategoryOf(name);
     final cat = byName[name];
-    if (cat == null || cat.isEmpty) {
-      // 第二路：方案模块未命中（name 不在匹配结果里）→ 认定类关键词归类。
-      final certified = certifiedCategoryOf(name);
-      if (certified == null) continue;
+    if (certified != null) {
+      // 课程名认定类（军体/思政/美育/劳育…）优先：避免军体并入思政、
+      // 劳育并入美育（用户反馈 #1）。
       c['category'] = certified;
-    } else {
+    } else if (cat != null && cat.isNotEmpty) {
       c['category'] = cat;
+    } else {
+      continue;
     }
     filled++;
   }

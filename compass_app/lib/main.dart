@@ -1,5 +1,5 @@
-/// 课舟 App 主入口：底部导航五页签（学业/方案/选课/工具/设置；审计并入方案页，
-/// 2026-10-18 需求 #1：学期走势与 GPA 模拟器自学业页拆出，恢复独立「工具」页签）。
+/// 课舟 App 主入口：底部导航四页签（学业/方案/选课/设置；审计并入方案页，
+/// 2026-10-18 需求 #5：「工具」改为学业页内的「成绩 / 工具」子选项卡）。
 /// 数据流：设置页选源运行 → 状态持有 courses/report/practice/choosed/timetable → 各页消费。
 /// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（出厂默认关闭，悬浮入口点击时引导开启）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
@@ -33,12 +33,12 @@ import 'engine/course_marks.dart';
 import 'engine/exam.dart';
 // 课程类别打通（「未分类」修复）：用审计方案板块补全展示链路的 category。
 import 'engine/plan_audit_adapter.dart' show applyPlanCategories;
+import 'engine/selection.dart' show plannedCoursesFromChoosed;
 import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/teacher_review_page.dart';
-import 'pages/tools_page.dart';
 import 'widgets/ai_chat.dart';
 import 'widgets/boat_icon.dart';
 
@@ -192,13 +192,12 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // 页签索引常量（评审B：插入/调序只改这里，禁止散落裸数字）。
-  // 顺序：0 学业 / 1 方案 / 2 选课 / 3 工具 / 4 设置
-  // （审计并入方案页；2026-10-18 需求 #1：走势+模拟器独立成「工具」页签）。
+  // 顺序：0 学业 / 1 方案 / 2 选课 / 3 设置
+  // （审计并入方案页；2026-10-18 需求 #5：工具并入学业页子选项卡）。
   static const int tabScholar = 0;
   static const int tabPlan = 1;
   static const int tabSelect = 2;
-  static const int tabTools = 3;
-  static const int tabSettings = 4;
+  static const int tabSettings = 3;
 
   final _store = CredentialStore();
   late final ZjuClient _client = ZjuClient(_store);
@@ -208,8 +207,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   late final Future<void> _assetsReady; // 启动资产加载完成信号（运行审计前等待）
   int _tabIndex = tabScholar;
   // 2026-10-18 需求 #9：底栏元素排序 + 启动默认首页。规范索引固定
-  // 0=学业 1=方案 2=选课 3=工具 4=设置；_tabOrder 存"显示第 k 位放哪个规范索引"。
-  String _tabOrder = '0,1,2,3,4';
+  // 0=学业 1=方案 2=选课 3=设置；_tabOrder 存"显示第 k 位放哪个规范索引"。
+  String _tabOrder = '0,1,2,3';
   int _defaultTab = tabScholar;
   bool _userNavigated = false; // 用户点过底栏后，启动默认页不再抢占当前页
   int _teacherTab = 0; // 选课指导模式内页签：0=指导 1=设置（需求 #13：可进设置）
@@ -310,8 +309,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     // 缺失/损坏回落 none 同样视为关闭，绝不猜提供方。
     final aiCfg = await _store.loadAiConfig();
     if (mounted) setState(() => _aiConfig = aiCfg);
-    // 底栏排序与启动默认首页（2026-10-18 需求 #9）：损坏/缺省回落 '0,1,2,3,4'/学业；
-    // 旧版「4 页签」存档（0..3 全排列）由 CredentialStore.loadTabOrder 自动迁移。
+    // 底栏排序与启动默认首页（2026-10-18 需求 #9）：损坏/缺省回落 '0,1,2,3'/学业；
+    // 旧五页签存档（0..4 全排列，工具=3）由 CredentialStore.loadTabOrder 自动迁移。
     final tabOrder = await _store.loadTabOrder();
     final defaultTab = await _store.loadDefaultTab();
     // 外语等级（需求 #5）：缺省 null（未选择，按方案原要求核算）。
@@ -529,16 +528,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       setState(() => _notice = '培养方案尚未加载完成，请稍候重试');
       return;
     }
+    // 记录本次审计所用方案（runtime 优先；未知专业静默跳过——选课页对此按"无方案"降级）。
+    // 必须在 build 之前取到：已选课程要按方案课程号回填 planned_courses（#9）。
+    Map<String, dynamic>? auditPlan;
+    try {
+      auditPlan = engine.findPlan(record['student']['major'] as String);
+    } catch (_) {}
+    // 已选 ≠ 已获：只进 planned_courses（selected_no_credit），不并入成绩单。
+    record['planned_courses'] = plannedCoursesFromChoosed(
+      _choosed,
+      auditPlan,
+      semester: '${record['student']?['current_semester'] ?? ''}',
+    );
     final out = engine.main(record, action: _auditAction());
     if (out.containsKey('error')) {
       setState(() => _notice = out['error'].toString());
       return;
     }
-    // 记录本次审计所用方案（runtime 优先；未知专业静默跳过——选课页对此按"无方案"降级）
-    Map<String, dynamic>? auditPlan;
-    try {
-      auditPlan = engine.findPlan(record['student']['major'] as String);
-    } catch (_) {}
     // 类别打通（「未分类」修复）：报告已在 engine.main 里算完，此处
     // 改写 record 课程行只影响展示链路与 _saveSession 落盘（含分享包）。
     // 以审计方案的板块为唯一类别事实源，只补空/「未分类」，教务自带 kcxzmc 不动。
@@ -1004,9 +1010,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (!_userNavigated) _tabIndex = i;
         });
         unawaited(_store.saveDefaultTab(i));
-        // 同步落一份当前页签序（新格式：五个 0..4 索引）：nav.cfg 里 tabOrder 的
-        // 形状兼作版本标记——loadDefaultTab 靠它区分存档 defaultTab==3 是
-        // 旧版「设置」（迁移为新索引 4）还是新版「工具」（原样保留）。
+        // 同步落一份当前页签序（新格式：四个 0..3 索引）：nav.cfg 里 tabOrder 的
+        // 形状兼作版本标记——旧五排列（工具=3/设置=4）会由 CredentialStore 迁移。
         unawaited(_store.saveTabOrder(_tabOrder));
       },
       teacherMode: _teacherMode,
@@ -1031,11 +1036,45 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return {'foreign_lang_level': v};
   }
 
-  /// 外语等级变更后用同一份记录重算审计（无记录则跳过——首次审计自然带新值）。
+  /// 外语要求学分变更后用同一份记录重算审计（#8）。
+  /// 重启/离线缓存场景 _lastRecord 为空，但 _lastStudent/_courses/_auditPlan 已恢复：
+  /// 用缓存重建 record 再算，否则设置值只落库、页面仍是旧报告。
   Future<void> _recomputeAudit() async {
-    final rec = _lastRecord;
+    await _assetsReady;
+    final rec = _lastRecord ?? _rebuildRecordFromCache();
     if (rec == null) return;
+    final engine = _engine;
+    final plan = _auditPlan;
+    final major = '${rec['student']?['major'] ?? ''}'.trim();
+    // 重启后 runtime 方案只存在于缓存里，先注册回引擎再算。
+    if (engine != null && plan != null && major.isNotEmpty) {
+      engine.registerRuntimePlan(major, plan);
+    }
     await _runAudit(rec);
+  }
+
+  /// 用会话缓存重建审计 record（student + courses + 已选课程）。
+  Map<String, dynamic>? _rebuildRecordFromCache() {
+    final stu = _lastStudent;
+    if (stu == null || _courses.isEmpty) return null;
+    return <String, dynamic>{
+      'student': stu,
+      'courses': _courses,
+      'planned_courses': plannedCoursesFromChoosed(
+        _choosed,
+        _auditPlan,
+        semester: '${stu['current_semester'] ?? ''}',
+      ),
+    };
+  }
+
+  /// 设置页生效的外语应修学分：数字串直接用，L1/L2/L3 用引擎 caps（#8）。
+  double? get _foreignCreditsValue {
+    final v = _foreignLevel?.trim();
+    if (v == null || v.isEmpty) return null;
+    final n = double.tryParse(v);
+    if (n != null && n > 0) return n;
+    return kForeignLangCaps[v.toUpperCase()];
   }
 
   @override
@@ -1162,6 +1201,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             choosed: _choosed,
             timetable: _timetable,
             plan: _auditPlan,
+            foreignRequiredCredits: _foreignCreditsValue,
             onPlanSelected: (info) =>
                 setState(() => _matchedPlan = info),
           ),
@@ -1191,16 +1231,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               }
             },
           ),
-          ToolsPage(
-            courses: _coursesViewed,
-            marks: _marks,
-            onGoSettings: () => setState(() => _tabIndex = tabSettings),
-            onRefresh: () async => switch (_mode) {
-              DataMode.sample => _fromSample(),
-              DataMode.paste => _fromPaste(),
-              DataMode.zju => _fromZju(),
-            },
-          ),
           _settingsPage(),
         ],
         ),
@@ -1208,15 +1238,27 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       // 全局 AI 对话悬浮入口（诉求 #9）。上下文摘要由 buildAiContextJson 汇总
       // 学业/方案/审计/选课的脱敏子集（不含姓名/学号/凭证），只进 system 消息。
       // 未启用时入口先弹「是否开启 AI 解读」弹窗（_openAiChat 统一开闸）。
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _openAiChat(
-          // 每一轮发送前重新生成，聊天过程中数据更新后 AI 也能读到最新值。
-          contextProvider: _aiContextSummary,
+      // 未读提示（用户反馈 #10）：抽屉关闭期间助手回复/失败会在 controller
+      // 上累加 unreadCount，这里用 Material 自带 Badge 提示，打开抽屉即清零。
+      floatingActionButton: AnimatedBuilder(
+        animation: _aiCtrl,
+        builder: (context, child) => Badge.count(
+          count: _aiCtrl.unreadCount,
+          isLabelVisible: _aiCtrl.unreadCount > 0,
+          child: child,
         ),
-        tooltip: 'AI 助手',
-        child: const BoatIcon(size: 26),
+        child: FloatingActionButton(
+          onPressed: () => _openAiChat(
+            // 每一轮发送前重新生成，聊天过程中数据更新后 AI 也能读到最新值。
+            contextProvider: _aiContextSummary,
+          ),
+          tooltip: 'AI 助手',
+          child: const BoatIcon(size: 26),
+        ),
       ),
       bottomNavigationBar: NavigationBar(
+        height: 56,
+        labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
         selectedIndex: displayIndex < 0 ? 0 : displayIndex,
         onDestinationSelected: (i) => setState(() {
           _tabIndex = order[i];
@@ -1235,10 +1277,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   selectedIcon: const Icon(CourseSelectPage.tabIconSelected),
                   label: CourseSelectPage.tabLabel),
               3 => NavigationDestination(
-                  icon: const Icon(Icons.build_outlined),
-                  selectedIcon: const Icon(Icons.build),
-                  label: '工具'),
-              4 => NavigationDestination(
                   icon: const Icon(Icons.settings_outlined),
                   selectedIcon: const Icon(Icons.settings),
                   label: '设置'),

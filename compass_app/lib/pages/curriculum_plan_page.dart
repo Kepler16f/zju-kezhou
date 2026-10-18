@@ -26,16 +26,24 @@ import '../data/plan_pdf_parse.dart';
 import '../data/semester.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
+import '../engine/course_state.dart';
 import '../engine/plan_audit_adapter.dart';
 import '../engine/selection.dart';
-// getCloseMatches 实际定义在 engine/timeline.dart（difflib 移植，纯函数）；
-// engine/matching.dart 只是引用方且未 re-export，引擎文件本任务不可改。
-import '../engine/timeline.dart' show getCloseMatches;
 import '../widgets/report_view.dart';
 // ScholarPalette：绿/蓝口径色与学业页同源（绿=已获学分、蓝=已选上）。
 import '../widgets/scholar_cards.dart' show SectionHeader, ScholarPalette;
 import '../widgets/timetable_view.dart';
 import 'minor_plan_page.dart';
+
+// 兼容既有单测/调用方从本页导入状态函数；实现已抽到 engine/course_state.dart。
+export '../engine/course_state.dart'
+    show
+        PlanCourseEvidence,
+        PlanCourseState,
+        collectPlanCourseEvidence,
+        resolvePassedNames,
+        resolvePlanCourseStates,
+        transcriptRowState;
 
 class CurriculumPlanPage extends StatefulWidget {
   /// 底部导航用（main.dart 只引用这里，不散落中文标签）。
@@ -58,6 +66,11 @@ class CurriculumPlanPage extends StatefulWidget {
   /// 本学期已选课程（在修未出成绩，诉求 #8）：state=='data' 时展示计数行。
   final XkListParseResult? choosed;
 
+  /// 设置页生效的「外语应修学分」（null=按方案原要求）。
+  /// 用户反馈 #8：设置值必须同步到方案页各处（含外语类板块标题），
+  /// 不能只改三色学分而方案卡还显示 PDF 原文「3-6学分」。
+  final double? foreignRequiredCredits;
+
   /// 本学期课表（诉求 #16）：非空时页面底部内嵌周视图。
   final TimetableParseResult? timetable;
 
@@ -76,6 +89,7 @@ class CurriculumPlanPage extends StatefulWidget {
     this.transcript = const [],
     this.report,
     this.choosed,
+    this.foreignRequiredCredits,
     this.timetable,
     this.plan,
     this.onPlanSelected,
@@ -396,6 +410,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
               child: ReportSection(
                 report: report,
                 belowTotals: _choosedLine(),
+                courseEvidence: _courseEvidence(),
               ),
             ),
           ],
@@ -853,10 +868,10 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                     ],
                   ),
                 ),
-                if (s.creditsRaw.isNotEmpty)
+                if (_creditsLabel(s) != null)
                   Padding(
                     padding: const EdgeInsets.only(left: 8),
-                    child: Text(s.isCountRule ? '${s.creditsRaw} 门' : '${s.creditsRaw} 学分',
+                    child: Text(_creditsLabel(s)!,
                         style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
@@ -879,6 +894,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             child: Text('以下 ${alt.optionCount} 类为并行选项，满足其一即可',
                 style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
           ),
+        if (alt != null && _groupRowFor(s) != null)
+          _groupStatusLine(_groupRowFor(s)!),
         if (open)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 2, 2, 6),
@@ -889,6 +906,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                   _courseChips(s.courses, states),
                   const SizedBox(height: 6),
                 ],
+                ..._selectedOnlyChips(s, states),
                 ..._certifiedChipBlock(s, states),
                 for (final k in node.children) _subBlock(k, states),
                 ..._notesBlock(s, node.index),
@@ -906,6 +924,16 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     final courses = _countCourses(node);
     final primary = Theme.of(context).colorScheme.primary;
     final badge = choiceBadgeText(s);
+    // 二级及更深的「以下 N 个模块任选其一 / 多选一」也要显式提示，
+    // 否则用户只看到若干子块，不知道满足其一即可（用户反馈 #3）。
+    final alt = node.children.isEmpty
+        ? null
+        : detectAlternativeModules(
+            [for (final k in node.children) k.section],
+            [
+              ...s.notes,
+              for (final k in node.children) ...k.section.notes,
+            ].join('\n'));
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: Column(
@@ -938,10 +966,10 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                       ],
                     ),
                   ),
-                  if (s.creditsRaw.isNotEmpty)
+                  if (_creditsLabel(s) != null)
                     Padding(
                       padding: const EdgeInsets.only(left: 8),
-                      child: Text(s.isCountRule ? '${s.creditsRaw} 门' : '${s.creditsRaw} 学分',
+                      child: Text(_creditsLabel(s)!,
                           style: TextStyle(
                               fontSize: 12.5,
                               fontWeight: FontWeight.w700,
@@ -958,6 +986,12 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
               ),
             ),
           ),
+          if (alt != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 2, 4),
+              child: Text('以下 ${alt.optionCount} 个模块为并行选项，满足其一即可',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            ),
           if (open)
             Padding(
               padding: const EdgeInsets.only(left: 16, bottom: 4),
@@ -968,6 +1002,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                     _courseChips(s.courses, states),
                     const SizedBox(height: 6),
                   ],
+                  ..._selectedOnlyChips(s, states),
                   ..._certifiedChipBlock(s, states),
                   for (final k in node.children) _subBlock(k, states),
                   ..._notesBlock(s, node.index),
@@ -1026,6 +1061,83 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             ],
           ),
         ),
+    ];
+  }
+
+  /// 并列选项组的审计结果（按组 path 对齐 summary 的组行）。
+  /// 用于在方案页直接显示「当前达成哪个选项」，体现选择关系（#4）。
+  Map<String, dynamic>? _groupRowFor(PdfModuleSection s) {
+    final summary = widget.report?['summary'];
+    if (summary is! List) return null;
+    for (final r in summary) {
+      if (r is Map &&
+          r['alternative_group'] == true &&
+          '${r['module_path'] ?? ''}'.trim() == s.label.trim()) {
+        return r.cast<String, dynamic>();
+      }
+    }
+    return null;
+  }
+
+  Widget _groupStatusLine(Map<String, dynamic> g) {
+    final options =
+        (g['options'] as List? ?? const []).cast<Map<String, dynamic>>();
+    final best = options.isEmpty ? null : options.first;
+    final color = '${g['color'] ?? ''}';
+    final earned = (g['earned'] as num?)?.toDouble() ?? 0;
+    final required = (g['required'] as num?)?.toDouble() ?? 0;
+    final c = color == 'green'
+        ? ScholarPalette.earnedGreen
+        : (color == 'yellow' ? const Color(0xFFF59E0B) : Colors.red);
+    final text = color == 'green'
+        ? '已达成：${best?['title'] ?? '其中一个选项'}（${_num(earned)}/${_num(required)} 学分）'
+        : '尚未达成任一选项；最优选项「${best?['title'] ?? '-'}」还差 '
+            '${_num(((g['gap'] as num?)?.toDouble() ?? 0))} 学分';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 2, 6),
+      child: Text(text,
+          style: TextStyle(fontSize: 11.5, color: c, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  /// 板块学分文案：外语类优先显示设置页生效值（#8），其余照方案原文。
+  String? _creditsLabel(PdfModuleSection s) {
+    if (s.isCountRule) {
+      return s.creditsRaw.trim().isEmpty ? null : '${s.creditsRaw} 门';
+    }
+    final f = widget.foreignRequiredCredits;
+    if (f != null && isForeignSection(s)) return '应修 ${_num(f)} 学分';
+    return s.creditsRaw.trim().isEmpty ? null : '${s.creditsRaw} 学分';
+  }
+
+  /// 已选但不在方案课程表里的课程（#9）：外语类最常见（方案只写
+  /// 「L1应修6学分」不给课表）。按课名/类别归入外语板块，蓝色「已选」。
+  List<Widget> _selectedOnlyChips(
+      PdfModuleSection s, Map<String, PlanCourseState> states) {
+    final choosed = widget.choosed;
+    if (choosed == null || !isForeignSection(s)) return const [];
+    final planNames = <String>{for (final c in s.courses) c.name.trim()};
+    final seen = <String>{};
+    final chips = <Widget>[];
+    for (final c in choosed.courses) {
+      final n = c.kcmc.trim();
+      if (n.isEmpty || planNames.contains(n) || !seen.add(n)) continue;
+      final hit = n.contains('英语') ||
+          n.contains('外语') ||
+          c.categories.any((x) => x.contains('外语') || x.contains('英语'));
+      if (!hit) continue;
+      chips.add(_stateChip(
+        '$n ${_num(c.xf ?? 0)}分 · 已选（方案外）',
+        PlanCourseState.active,
+        fontSize: 11,
+        hPad: 7,
+        vPad: 3,
+      ));
+    }
+    if (chips.isEmpty) return const [];
+    return [
+      Wrap(spacing: 5, runSpacing: 4, children: chips),
+      const SizedBox(height: 6),
     ];
   }
 
@@ -1405,8 +1517,14 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
 /// （test/plan_page_badges_test.dart）。
 String? choiceBadgeText(PdfModuleSection s) {
   final rule = detectChoiceRule(s.notes.join(' '));
-  return rule == null ? null : '规则：${rule.text}';
+  if (rule == null) return null;
+  // #3：把「选一门即满足整块」说清楚，避免用户以为要把整组修完。
+  if (rule.singlePick) return '规则：${rule.text}（选 1 门即满足整块）';
+  return '规则：${rule.text}';
 }
+
+/// 橙=有记录未获学分（对齐审计报告三色黄 0xFFF59E0B）。
+const Color kPlanNoCreditColor = Color(0xFFF59E0B);
 
 /// 「微辅修」板块判据（顶层纯函数，供 UI 与单测共用；诉求 #10 / 任务 7）：
 /// 板块标题或上级链（parentPath，含全部祖先标题）出现「微辅修」即命中。
@@ -1416,162 +1534,14 @@ String? choiceBadgeText(PdfModuleSection s) {
 bool isMinorElectiveSection(PdfModuleSection s) =>
     s.title.contains('微辅修') || s.parentPath.contains('微辅修');
 
-/// 方案课程名「已修」解析（顶层纯函数，供 UI 与单测共用；配合任务 5）：
-/// 返回 names 中视为已修的子集（保留原写法，chips 构建时直接查表）——
-/// 成绩单全等命中优先，另用 difflib 风格相似度（getCloseMatches，cutoff 0.85）
-/// 兜底：成绩单与方案的写法略有出入（如「大学英语（II）」vs「大学英语II」）
-/// 也算已修。纯函数、不抛异常、宁缺勿猜：无命中一律视为未修。
-Set<String> resolvePassedNames(
-    Iterable<String> names, Set<String> transcriptNames) {
-  if (transcriptNames.isEmpty) return const {};
-  final possibilities = transcriptNames.toList();
-  final out = <String>{};
-  for (final raw in names) {
-    final n = raw.trim();
-    if (n.isEmpty) continue;
-    if (transcriptNames.contains(n) ||
-        getCloseMatches(n, possibilities, n: 1, cutoff: 0.85).isNotEmpty) {
-      out.add(raw);
-    }
-  }
-  return out;
-}
-
-// ── 方案课程修读状态三态标定（2026-10-18 需求 #3；纯函数，测试锁定于
-// test/plan_page_course_state_test.dart）──────────────────────────────────
-
-/// 橙=有记录未获学分（对齐审计报告三色黄 0xFFF59E0B；绿/蓝直接复用
-/// ScholarPalette 口径色：绿=已获学分、蓝=已选上）。
-const Color kPlanNoCreditColor = Color(0xFFF59E0B);
-
-/// 方案课程 chips 的修读状态：把原「成绩单里出现过就算已修」拆成三态，
-/// 修复在修未出分/未通过的课被混入「已修」标亮的问题（宁缺勿猜：无证据=unknown）。
-enum PlanCourseState {
-  /// 已修完：有成绩、通过且计入学分（绿）。
-  earned,
-
-  /// 在修：本学期已选/课表在修，或成绩待录未出分（蓝）。
-  active,
-
-  /// 已有记录未获学分：未过/缺考/缓考/弃修/无效等，需重修（橙）。
-  noCredit,
-
-  /// 无证据：未修/未知（灰）。
-  unknown,
-}
-
-/// 单条成绩单记录 → 修读状态（顶层纯函数、不抛异常；认不出返回 null 不强行归类）。
-/// 口径与引擎一致（engine/matching.dart 的 isPassed：passed 字段优先、缺省
-/// grade≥60；credit_included 缺省视为 true）：
-///  * earned：通过且计入学分；
-///  * active：original=「待录」（成绩未出，在修未出分）；
-///  * noCredit：有记录未获学分——不及格/不合格/缺考/F、百分制 >0 且未通过、
-///    弃修/缓考/无效（引擎同记 selected_no_credit），及「通过但学分被排除」；
-///  * 其余（无分数也无已知标记）→ null。
-PlanCourseState? transcriptRowState(Map<String, dynamic> r) {
-  final passedField = r['passed'];
-  final isPassed = passedField != null
-      ? passedField == true
-      : ((r['grade'] as num?)?.toDouble() ?? 0) >= 60;
-  if (isPassed && ((r['credit_included'] as bool?) ?? true)) {
-    return PlanCourseState.earned;
-  }
-  final original = '${r['original'] ?? ''}'.trim();
-  if (original == '待录') return PlanCourseState.active;
-  if (isPassed) return PlanCourseState.noCredit; // 通过但学分被排除：未获学分
-  final grade = (r['grade'] as num?)?.toDouble() ?? 0;
-  const noCreditMarks = {'不及格', '不合格', '缺考', 'F', '弃修', '缓考', '无效'};
-  if (noCreditMarks.contains(original) || (grade > 0 && !isPassed)) {
-    return PlanCourseState.noCredit;
-  }
-  return null;
-}
-
-/// 修读状态证据集合（课程名均 trim；同一门课多来源冲突时按
-/// earned > active > noCredit 优先级取，见 resolvePlanCourseStates）。
-class PlanCourseEvidence {
-  final Set<String> earned; // 已修完（有成绩且通过计学分）
-  final Set<String> active; // 在修（本学期已选/课表/成绩待录）
-  final Set<String> noCredit; // 有记录未获学分（未过/缓考/弃修等）
-  const PlanCourseEvidence({
-    this.earned = const {},
-    this.active = const {},
-    this.noCredit = const {},
-  });
-}
-
-/// 从四个数据源收集修读状态证据（顶层纯函数、不抛异常、宁缺勿猜）：
-///  * transcript 成绩单行：逐行 transcriptRowState 归类；
-///  * choosed 本学期已选 / timetable 本学期课表：在修证据（active）；
-///    若该课成绩已出且获学分，earned 优先级更高，不会被误标在修；
-///  * report 审计 plan_courses（引擎已按课号/相似度匹配）：passed=true →
-///    earned；passed=false 且 record.grade>0（确有分数）→ noCredit；
-///    grade 缺失/为 0 不猜（可能是待录，也可能是词语分映射 0）。
-PlanCourseEvidence collectPlanCourseEvidence({
-  List<Map<String, dynamic>> transcript = const [],
-  Iterable<String> choosedNames = const [],
-  Iterable<String> timetableNames = const [],
-  List<Map<String, dynamic>> reportPlanCourses = const [],
-}) {
-  final earned = <String>{};
-  final active = <String>{};
-  final noCredit = <String>{};
-  for (final r in transcript) {
-    final name = '${r['name'] ?? ''}'.trim();
-    if (name.isEmpty) continue;
-    final st = transcriptRowState(r);
-    if (st == PlanCourseState.earned) {
-      earned.add(name);
-    } else if (st == PlanCourseState.active) {
-      active.add(name);
-    } else if (st == PlanCourseState.noCredit) {
-      noCredit.add(name);
-    }
-  }
-  for (final n in choosedNames) {
-    final t = n.trim();
-    if (t.isNotEmpty) active.add(t);
-  }
-  for (final n in timetableNames) {
-    final t = n.trim();
-    if (t.isNotEmpty) active.add(t);
-  }
-  for (final c in reportPlanCourses) {
-    final name = '${c['name'] ?? ''}'.trim();
-    if (name.isEmpty) continue;
-    if (c['passed'] == true) {
-      earned.add(name);
-      continue;
-    }
-    final g = ((c['record'] as Map?)?['grade'] as num?)?.toDouble() ?? 0;
-    if (c['passed'] == false && g > 0) noCredit.add(name);
-  }
-  return PlanCourseEvidence(earned: earned, active: active, noCredit: noCredit);
-}
-
-/// 方案课程名 → 修读状态（顶层纯函数，供 UI 与单测共用）：对每个证据集合复用
-/// resolvePassedNames（全等 + 相似度 ≥0.85，与原「已修」标定同口径），同一门课
-/// 按 earned > active > noCredit 取最高优先级；无任何证据的名字也保留在结果里、
-/// 值为 unknown（宁缺勿猜：查不到就显示「未修/未知」）。
-Map<String, PlanCourseState> resolvePlanCourseStates(
-    Iterable<String> planNames, PlanCourseEvidence ev) {
-  final out = <String, PlanCourseState>{};
-  void mark(Set<String> source, PlanCourseState st) {
-    if (source.isEmpty) return;
-    for (final n in resolvePassedNames(planNames, source)) {
-      out.putIfAbsent(n, () => st); // 先标高优先级，低优先级不覆盖
-    }
-  }
-
-  mark(ev.earned, PlanCourseState.earned);
-  mark(ev.active, PlanCourseState.active);
-  mark(ev.noCredit, PlanCourseState.noCredit);
-  // 未命中任何证据的名字补 unknown（键保留方案侧原写法，chips 直接查表）。
-  for (final n in planNames) {
-    out.putIfAbsent(n, () => PlanCourseState.unknown);
-  }
-  return out;
-}
+/// 外语类板块判据（与 engine/audit.dart isForeignLangModule 同口径）：
+/// 标题或上级链命中「外语/英语」。用于把设置页「外语应修学分」同步到
+/// 方案页显示（#8），以及把方案外已选外语课补成蓝色 chip（#9）。
+bool isForeignSection(PdfModuleSection s) =>
+    s.title.contains('外语') ||
+    s.title.contains('英语') ||
+    s.parentPath.contains('外语') ||
+    s.parentPath.contains('英语');
 
 /// 认定类板块无课程表时，从成绩单里找可标亮「已修」的课程行（顶层纯函数，
 /// 供 UI 与单测共用；#13）。判定与引擎适配器同源：certifiedSectionCategory
@@ -1630,10 +1600,21 @@ List<_SecNode> _buildSectionTree(List<PdfModuleSection> secs) {
 /// 微辅修板块整支剔除（诉求 #10，判据见 isMinorElectiveSection）：命中板块
 /// 连同其全部子块一并移除；节点 index 保持文档序，收起/展开状态键不受影响。
 /// 就地修改并返回传入列表（_buildSectionTree 每次构建新建节点，无共享风险）。
-List<_SecNode> _pruneMinorSections(List<_SecNode> nodes) {
-  nodes.removeWhere((n) => isMinorElectiveSection(n.section));
+List<_SecNode> _pruneMinorSections(List<_SecNode> nodes,
+    {bool keepMinor = false}) {
+  // 「跨专业学习模块（微辅修）」可能正是「个性修读」三选一的一个选项：
+  // 此时整支必须保留，否则用户看不到可选模块（用户反馈 #4）。
+  nodes.removeWhere((n) => !keepMinor && isMinorElectiveSection(n.section));
   for (final n in nodes) {
-    _pruneMinorSections(n.children);
+    final alt = n.children.length < 2
+        ? null
+        : detectAlternativeModules(
+            [for (final k in n.children) k.section],
+            [
+              ...n.section.notes,
+              for (final k in n.children) ...k.section.notes,
+            ].join('\n'));
+    _pruneMinorSections(n.children, keepMinor: keepMinor || alt != null);
   }
   return nodes;
 }

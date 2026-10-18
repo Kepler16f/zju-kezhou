@@ -91,6 +91,48 @@ class AiStreamError extends AiStreamEvent {
 /// 流式发送器契约：默认实现把收发放进后台 isolate；单测可注入同步流。
 typedef AiStreamSender = Stream<AiStreamEvent> Function(AiHttpRequest req);
 
+/// 请求取消令牌（纯 Dart，无第三方依赖）。
+///
+/// 流式请求会在 [cancel] 时取消底层 [StreamSubscription]，并丢弃取消后到达的
+/// 迟到事件；非流式请求无法中断已经交给 sender 的 Future，但结果返回后会被
+/// 丢弃。调用方用 [isCancelled] 或监听回调做最后一道 attempt/epoch 校验。
+class AiCancelToken {
+  bool _cancelled = false;
+  final Set<void Function()> _listeners = <void Function()>{};
+
+  bool get isCancelled => _cancelled;
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    final listeners = List<void Function()>.of(_listeners);
+    _listeners.clear();
+    for (final listener in listeners) {
+      listener();
+    }
+  }
+
+  void addListener(void Function() listener) {
+    if (_cancelled) {
+      listener();
+      return;
+    }
+    _listeners.add(listener);
+  }
+
+  void removeListener(void Function() listener) {
+    _listeners.remove(listener);
+  }
+}
+
+/// 取消令牌触发的异常（保留给需要中断 async 流程的调用方）。
+class AiCancelledException implements Exception {
+  const AiCancelledException();
+
+  @override
+  String toString() => '已取消本次回答';
+}
+
 /// 失败分类：决定 UI 该提示「改配置」「稍后再试」还是「重试按钮」。
 enum AiFailKind {
   /// 401/403：密钥无效或无权限。重试无意义，只能引导用户改配置。
@@ -122,6 +164,9 @@ enum AiFailKind {
 
   /// 尚未配置提供方/地址/密钥，请求根本没发出去。
   notConfigured,
+
+  /// 调用方通过 [AiCancelToken] 主动取消，迟到结果已被丢弃。
+  cancelled,
 }
 
 /// 调用结果基类：sealed 保证调用方 switch 时不会漏掉分支。
@@ -294,20 +339,24 @@ AiOutcome parseReply(int status, String body) {
   if (status < 200 || status >= 300) {
     return _failureForStatus(status, body);
   }
-  final decoded = _tryDecode(body);
-  if (decoded is! Map) {
+  // HTML 错误页优先判型（有些代理页里也夹着 JSON 片段，不能被宽松解码误吞）。
+  final head = _stripBom(body).trimLeft();
+  if (head.startsWith('<') || head.toLowerCase().contains('<!doctype html')) {
     // 公益端点（Pollinations）繁忙/限流时会以 HTTP 200 返回 HTML 错误页而不是 JSON
     //（2026-10-18 用户实测"响应不是合法的 JSON 对象"）。判为 server 类可重试错误，
     // chat() 自动重试一次，并给出比"解析失败"可读得多的文案。
-    final head = body.trimLeft();
-    if (head.startsWith('<') || head.toLowerCase().contains('<!doctype html')) {
-      return const AiFailure(AiFailKind.server,
-          '公益端点暂时返回了错误页（多为限流或过载），请稍候重试；'
-          '持续出现可在设置里换用自有 API Key');
-    }
-    return const AiFailure(AiFailKind.badResponse, '响应不是合法的 JSON 对象，无法解析');
+    return const AiFailure(
+        AiFailKind.server,
+        '公益端点暂时返回了错误页（多为限流或过载），请稍候重试；'
+        '持续出现可在设置里换用自有 API Key');
   }
-  final map = decoded.cast<String, Object?>();
+  final decoded = _tryDecode(body);
+  final map = _asObjectMap(decoded);
+  if (map == null) {
+    final snippet = _redact(_snippet(body, maxRunes: 120));
+    final tail = snippet.isEmpty ? '' : '（响应开头：$snippet）';
+    return AiFailure(AiFailKind.badResponse, '响应不是合法的 JSON 对象，无法解析$tail');
+  }
   if (map['stop_reason'] == 'refusal') {
     return const AiFailure(AiFailKind.refused, '模型拒绝回答本次请求，请调整提问内容后重试');
   }
@@ -517,7 +566,11 @@ class AiClient {
     required List<Map<String, String>> messages,
     int maxTokens = 8192,
     void Function(String delta)? onDelta,
+    AiCancelToken? cancelToken,
   }) async {
+    if (cancelToken?.isCancelled ?? false) {
+      return const AiFailure(AiFailKind.cancelled, '已取消本次回答');
+    }
     if (!config.enabled) {
       return const AiFailure(AiFailKind.notConfigured,
           '尚未配置 AI 服务：请在设置中填写提供方、以 http(s):// 开头的接口地址与 API Key');
@@ -528,25 +581,39 @@ class AiClient {
         buildRequest(config, system, messages, maxTokens, stream: streaming);
     final req = AiHttpRequest(url: url, headers: headers, body: bodyJson);
     if (deltaSink != null) {
-      final (streamed, emitted) = await _chatStreaming(req, deltaSink);
+      final (streamed, emitted) =
+          await _chatStreaming(req, deltaSink, cancelToken);
+      if (cancelToken?.isCancelled ?? false) {
+        return const AiFailure(AiFailKind.cancelled, '已取消本次回答');
+      }
       // 流式挂起降级（2026-10-18 用户实测 pollinations 超时"No stream event"）：
       // 一个字都没吐出来就失败时，同一请求改非流式再走一次——非流式路径对排队更
       // 宽容；已吐过字则绝不重来（会产生两段拼接的回答）。
-      if (streamed is AiFailure &&
-          !emitted &&
-          _isRetriable(streamed.kind)) {
+      if (streamed is AiFailure && !emitted && _isRetriable(streamed.kind)) {
         final (nu, nh, nb) =
             buildRequest(config, system, messages, maxTokens, stream: false);
         final nreq = AiHttpRequest(url: nu, headers: nh, body: nb);
-        return _scrubKey(await _attempt(nreq), config.apiKey);
+        final fallback = _scrubKey(await _attempt(nreq), config.apiKey);
+        if (cancelToken?.isCancelled ?? false) {
+          return const AiFailure(AiFailKind.cancelled, '已取消本次回答');
+        }
+        return fallback;
       }
       return streamed;
     }
     var attempt = 1;
     while (true) {
+      if (cancelToken?.isCancelled ?? false) {
+        return const AiFailure(AiFailKind.cancelled, '已取消本次回答');
+      }
       // 结构性脱敏兜底：失败文案里凡出现完整 apiKey 一律替换（不依赖网关排版猜测；
       // 正则黑名单只作第二层——实测有 app- 前缀 / 引号紧贴 Bearer / 键含 +/ 等绕过形态）
       final outcome = _scrubKey(await _attempt(req), config.apiKey);
+      // 非流式 transport 一旦交给 sender 就无法中断；但取消后必须丢弃结果，
+      // 不能让迟到的回答进入 UI 或触发重试。
+      if (cancelToken?.isCancelled ?? false) {
+        return const AiFailure(AiFailKind.cancelled, '已取消本次回答');
+      }
       final retriable = outcome is AiFailure && _isRetriable(outcome.kind);
       if (!retriable || attempt >= 2) {
         return outcome;
@@ -600,118 +667,153 @@ class AiClient {
   Future<(AiOutcome, bool)> _chatStreaming(
     AiHttpRequest req,
     void Function(String delta) onDelta,
+    AiCancelToken? cancelToken,
   ) async {
     var attempt = 1;
     while (true) {
+      if (cancelToken?.isCancelled ?? false) {
+        return (const AiFailure(AiFailKind.cancelled, '已取消本次回答'), false);
+      }
+      final epoch = attempt;
       final text = StringBuffer();
       final raw = StringBuffer();
       var emitted = false;
       var status = 0;
       var model = '';
       var refused = false;
+      var canceledByToken = false;
       String? streamError;
+      final finished = Completer<void>();
+      StreamSubscription<AiStreamEvent>? subscription;
+
+      void finish() {
+        if (!finished.isCompleted) finished.complete();
+      }
+
+      void cancelNow() {
+        canceledByToken = true;
+        unawaited(subscription?.cancel());
+        finish();
+      }
 
       void emit(String delta) {
         if (delta.isEmpty) return;
+        if (canceledByToken || epoch != attempt) return;
         text.write(delta);
         emitted = true;
         onDelta(delta);
       }
 
-      try {
-        await for (final event in _streamSender(req)) {
+      void handle(AiStreamEvent event) {
+        // 取消/重试后的迟到事件一律丢弃：token + attempt(epoch) 双重校验。
+        if (canceledByToken || epoch != attempt) return;
+        if (cancelToken?.isCancelled ?? false) {
+          cancelNow();
+          return;
+        }
+        try {
           if (event is AiStreamMeta) {
             status = event.status;
-            continue;
+            return;
           }
           if (event is AiStreamError) {
             streamError = redactAiSecrets(event.message);
-            break;
+            unawaited(subscription?.cancel());
+            finish();
+            return;
           }
-          if (event is! AiStreamLine) continue;
+          if (event is! AiStreamLine) return;
           final line = event.line;
           raw.writeln(line);
-          final trimmed = line.trimLeft();
-          if (!trimmed.startsWith('data:')) continue;
-          final data = trimmed.substring(5).trim();
-          if (data.isEmpty || data == '[DONE]') continue;
-          final decoded = _tryDecode(data);
-          if (decoded is! Map) continue;
-          final map = decoded.cast<String, Object?>();
+          final trimmed = _stripBom(line);
+          final String payload;
+          if (trimmed.startsWith('data:')) {
+            payload = trimmed.substring(5).trim();
+          } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            // 需求 #11：部分网关的流式响应是 NDJSON（每行一个裸 JSON），
+            // 不能只认 SSE 的 data: 前缀，否则 text 为空会误走非流式兜底。
+            payload = trimmed;
+          } else {
+            return;
+          }
+          if (payload.isEmpty || payload == '[DONE]') return;
+          final map = _asObjectMap(_decodeJsonPayload(payload));
+          if (map == null) return;
           final type = '${map['type'] ?? ''}';
 
-          // Anthropic 事件
-          if (type == 'content_block_delta') {
-            final delta = map['delta'];
-            if (delta is Map &&
-                delta['type'] == 'text_delta' &&
-                delta['text'] is String) {
-              emit(delta['text'] as String);
-            }
-            continue;
-          }
+          // Anthropic 元数据/终止事件
           if (type == 'message_start') {
             final message = map['message'];
             if (message is Map && message['model'] is String) {
               model = message['model'] as String;
             }
-            continue;
+            return;
           }
           if (type == 'message_delta') {
             final delta = map['delta'];
             if (delta is Map && '${delta['stop_reason']}' == 'refusal') {
               refused = true;
             }
-            continue;
+            return;
           }
           if (type == 'error' || type == 'overloaded_error') {
             final err = map['error'];
             streamError = err is Map
                 ? redactAiSecrets('${err['message'] ?? err}')
                 : redactAiSecrets('$err');
-            continue;
+            return;
           }
-          if (type == 'message_stop') continue;
+          if (type == 'message_stop') return;
 
-          // Dify 事件
+          // Dify 错误事件；文本增量交给下方统一的 _streamDeltaText。
           final difyEvent = map['event'];
-          if (difyEvent is String) {
-            if (difyEvent == 'message' ||
-                difyEvent == 'agent_message' ||
-                difyEvent == 'message_replace') {
-              final answer = map['answer'];
-              if (answer is String) emit(answer);
-            } else if (difyEvent == 'error') {
-              streamError = redactAiSecrets('${map['message'] ?? '模型返回错误'}');
-            }
-            continue;
+          if (difyEvent == 'error') {
+            streamError = redactAiSecrets('${map['message'] ?? '模型返回错误'}');
+            return;
           }
 
-          // OpenAI 兼容事件（含 Pollinations）
+          // OpenAI 兼容事件（含 Pollinations）的模型名。
           final choices = map['choices'];
           if (choices is List && choices.isNotEmpty) {
-            final first = choices.first;
-            if (first is Map) {
-              final modelName = map['model'];
-              if (modelName is String && modelName.isNotEmpty) model = modelName;
-              final delta = first['delta'];
-              if (delta is Map && delta['content'] is String) {
-                emit(delta['content'] as String);
-              }
-              final message = first['message'];
-              if (message is Map && message['content'] is String) {
-                emit(message['content'] as String);
-              }
-            }
-            continue;
+            final modelName = map['model'];
+            if (modelName is String && modelName.isNotEmpty) model = modelName;
           }
 
-          // 少数网关直接回 {"answer": "..."} / {"content": "..."}。
-          final answer = map['answer'] ?? map['content'];
-          if (answer is String) emit(answer);
+          // 同一套 choices/delta/content 提取逻辑，SSE 与 NDJSON 共用。
+          final deltaText = _streamDeltaText(map);
+          if (deltaText != null) emit(deltaText);
+        } on Exception catch (e) {
+          streamError ??= redactAiSecrets(_failureFromError(e).message);
+          unawaited(subscription?.cancel());
+          finish();
         }
+      }
+
+      try {
+        subscription = _streamSender(req).listen(
+          handle,
+          onError: (Object e, StackTrace _) {
+            if (canceledByToken || epoch != attempt) return;
+            streamError ??= redactAiSecrets(_failureFromError(e).message);
+            finish();
+          },
+          onDone: finish,
+          cancelOnError: true,
+        );
+        cancelToken?.addListener(cancelNow);
+        if (cancelToken?.isCancelled ?? false) cancelNow();
+        await finished.future;
       } on Exception catch (e) {
-        streamError ??= redactAiSecrets(_failureFromError(e).message);
+        if (epoch == attempt && !canceledByToken) {
+          streamError ??= redactAiSecrets(_failureFromError(e).message);
+        }
+      } finally {
+        cancelToken?.removeListener(cancelNow);
+        await subscription?.cancel();
+      }
+
+      if (canceledByToken || (cancelToken?.isCancelled ?? false)) {
+        return (const AiFailure(AiFailKind.cancelled, '已取消本次回答'), emitted);
       }
 
       AiOutcome outcome;
@@ -918,23 +1020,210 @@ String _modelOf(Map<String, Object?> map) {
   return m is String ? m : '';
 }
 
-/// 尝试解码 JSON，失败返回 null（交给调用方分类成 badResponse）。
+/// 宽松解码响应体（需求 #11）。
+///
+/// 顺序刻意固定：严格 JSON 永远走原路径；只有失败后才尝试 SSE 多帧拼接、
+/// 嵌入 JSON 提取与双编码解包。这样正常网关的解析行为完全不变。
 Object? _tryDecode(String body) {
+  final text = _stripBom(body);
+  if (text.isEmpty) return null;
   try {
-    return jsonDecode(body);
+    return _unwrapDecoded(jsonDecode(text));
   } on FormatException {
-    return null;
+    // 继续尝试流式/带杂质的网关形态。
+  }
+  if (_hasSseFrames(text)) {
+    final sse = _decodeSseFrames(text);
+    if (sse != null) return sse;
+  }
+  return _decodeJsonPayload(text);
+}
+
+/// 去掉 UTF-8 BOM（可能重复出现）并 trim 首尾空白。
+String _stripBom(String input) {
+  var text = input;
+  while (text.startsWith('\uFEFF')) {
+    text = text.substring(1);
+  }
+  return text.trim();
+}
+
+/// 解双编码：`jsonDecode` 得到 String 时再解一次（最多 3 层，防病态递归）。
+Object? _unwrapDecoded(Object? value, [int depth = 0]) {
+  if (value is! String || depth >= 3) return value;
+  final text = _stripBom(value);
+  if (text.isEmpty) return value;
+  try {
+    return _unwrapDecoded(jsonDecode(text), depth + 1);
+  } on FormatException {
+    // 不是整段 JSON，继续尝试从字符串里提取第一个完整对象/数组。
+  }
+  final embedded = _decodeEmbeddedJson(text);
+  if (embedded == null) return value;
+  return _unwrapDecoded(embedded, depth + 1);
+}
+
+/// 解析单帧 JSON：严格解码优先，失败后从杂质中提取第一个完整对象/数组。
+Object? _decodeJsonPayload(String payload) {
+  final text = _stripBom(payload);
+  if (text.isEmpty) return null;
+  try {
+    return _unwrapDecoded(jsonDecode(text));
+  } on FormatException {
+    return _unwrapDecoded(_decodeEmbeddedJson(text));
   }
 }
 
-/// 取正文前 200 个码点并压平空白，仅供 400/422 的排查提示。
-/// 按码点而不是按 UTF-16 单元截断：否则四字节字符会被劈成半个，文案里出现乱码方块。
-String _snippet(String body) {
-  final flat = body.replaceAll(RegExp(r'\s+'), ' ').trim();
-  if (flat.length <= 200) {
-    return flat;
+/// 括号配平 + 字符串转义感知，提取正文中第一个可解析的 JSON 对象/数组。
+///
+/// 不用正则截取：模型正文里的 `}`、转义引号与嵌套数组都会让正则误判。
+Object? _decodeEmbeddedJson(String text) {
+  var from = 0;
+  while (from < text.length) {
+    var start = -1;
+    for (var i = from; i < text.length; i++) {
+      final c = text.codeUnitAt(i);
+      if (c == 0x7B || c == 0x5B) {
+        start = i;
+        break;
+      }
+    }
+    if (start < 0) return null;
+    final end = _matchingJsonEnd(text, start);
+    if (end != null) {
+      try {
+        return jsonDecode(text.substring(start, end + 1));
+      } on FormatException {
+        // 这个片段不是合法 JSON，从下一个括号继续找。
+      }
+    }
+    from = start + 1;
   }
-  return String.fromCharCodes(flat.runes.take(200));
+  return null;
+}
+
+/// 返回与 `text[start]` 匹配的闭括号下标；字符串内部的括号不计数。
+int? _matchingJsonEnd(String text, int start) {
+  final stack = <int>[];
+  var inString = false;
+  var escaped = false;
+  for (var i = start; i < text.length; i++) {
+    final c = text.codeUnitAt(i);
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == 0x5C) {
+        escaped = true;
+      } else if (c == 0x22) {
+        inString = false;
+      }
+      continue;
+    }
+    if (c == 0x22) {
+      inString = true;
+    } else if (c == 0x7B) {
+      stack.add(0x7D);
+    } else if (c == 0x5B) {
+      stack.add(0x5D);
+    } else if (c == 0x7D || c == 0x5D) {
+      if (stack.isEmpty || stack.last != c) return null;
+      stack.removeLast();
+      if (stack.isEmpty) return i;
+    }
+  }
+  return null;
+}
+
+bool _hasSseFrames(String text) =>
+    RegExp(r'(^|\r?\n)[ \t]*data:').hasMatch(text);
+
+/// SSE 多帧合成：按序拼 OpenAI/Anthropic/Dify 的文本增量；无增量则回退最后一帧。
+Object? _decodeSseFrames(String text) {
+  final buffer = StringBuffer();
+  Map<String, Object?>? last;
+  var gotDelta = false;
+  for (final line in text.split(RegExp(r'\r?\n'))) {
+    final trimmed = line.trimLeft();
+    if (!trimmed.startsWith('data:')) continue;
+    final payload = trimmed.substring(5).trim();
+    if (payload.isEmpty || payload == '[DONE]') continue;
+    final map = _asObjectMap(_decodeJsonPayload(payload));
+    if (map == null) continue;
+    last = map;
+    final delta = _streamDeltaText(map);
+    if (delta != null && delta.isNotEmpty) {
+      buffer.write(delta);
+      gotDelta = true;
+    }
+  }
+  if (gotDelta) {
+    return <String, Object?>{
+      'choices': <Object?>[
+        <String, Object?>{
+          'message': <String, Object?>{'content': buffer.toString()},
+        },
+      ],
+    };
+  }
+  return last;
+}
+
+/// 从一帧 SSE/NDJSON Map 中提取文本增量（流式 handle 与宽松 parseReply 共用）。
+String? _streamDeltaText(Map<String, Object?> map) {
+  final type = '${map['type'] ?? ''}';
+  if (type == 'content_block_delta') {
+    final delta = map['delta'];
+    final text = delta is Map ? delta['text'] : null;
+    if (text is String && text.isNotEmpty) {
+      return text;
+    }
+  }
+
+  final event = map['event'];
+  if (event == 'message' ||
+      event == 'agent_message' ||
+      event == 'message_replace') {
+    final answer = map['answer'];
+    if (answer is String && answer.isNotEmpty) return answer;
+  }
+
+  final choices = map['choices'];
+  if (choices is List && choices.isNotEmpty && choices.first is Map) {
+    final first = choices.first as Map;
+    final delta = first['delta'];
+    final deltaContent = delta is Map ? delta['content'] : null;
+    if (deltaContent is String && deltaContent.isNotEmpty) {
+      return deltaContent;
+    }
+    final message = first['message'];
+    final messageContent = message is Map ? message['content'] : null;
+    if (messageContent is String && messageContent.isNotEmpty) {
+      return messageContent;
+    }
+  }
+
+  final answer = map['answer'];
+  if (answer is String && answer.isNotEmpty) return answer;
+  final content = map['content'];
+  if (content is String && content.isNotEmpty) return content;
+  return null;
+}
+
+Map<String, Object?>? _asObjectMap(Object? decoded) {
+  if (decoded is Map) return decoded.cast<String, Object?>();
+  if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
+    return (decoded.first as Map).cast<String, Object?>();
+  }
+  return null;
+}
+
+/// 取正文前 [maxRunes] 个码点并压平空白，仅供排查提示。
+/// 按码点而不是按 UTF-16 单元截断：否则四字节字符会被劈成半个，文案里出现乱码方块。
+String _snippet(String body, {int maxRunes = 200}) {
+  final flat = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final runes = flat.runes.toList();
+  if (runes.length <= maxRunes) return flat;
+  return String.fromCharCodes(runes.take(maxRunes));
 }
 
 /// 洗掉可能泄漏密钥的片段：有的网关/代理会把请求头原样回显进错误正文，

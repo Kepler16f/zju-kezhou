@@ -1,6 +1,6 @@
 // test/scholar_trend_test.dart — 工具页走势卡（五分制/可收起/学期短标签）冒烟
 // + 学业页快捷卡随滚动内容接入（诉求 #8）验证。
-// 2026-10-18 需求 #1：学期走势与 GPA 模拟器自学业页迁至独立「工具」页签。
+// 2026-10-18 需求 #5：「工具」并入学业页子选项卡，切换时保活走势/模拟器状态。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -75,12 +75,31 @@ void main() {
       expect(find.byType(TrendChart), findsNothing);
     });
 
-    testWidgets('学业页不再嵌走势与模拟器（需求 #1 迁出）', (tester) async {
+    testWidgets('学业页内「成绩 / 工具」子选项卡：工具页状态跨切换保活',
+        (tester) async {
       await tester.binding.setSurfaceSize(const Size(1080, 3200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(scholarHost());
-      expect(find.text('学期走势（五分制）'), findsNothing);
-      expect(find.byType(GpaSimulatorCard), findsNothing);
+
+      // 默认「成绩」子选项卡；工具入口就在学业页顶部。
+      expect(find.byKey(const Key('scholar-tab-grades')), findsOneWidget);
+      expect(find.byKey(const Key('scholar-tab-tools')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('scholar-tab-tools')));
+      await tester.pumpAndSettle();
+      expect(find.text('学期走势（五分制）'), findsOneWidget);
+      expect(find.byType(GpaSimulatorCard), findsOneWidget);
+
+      // 展开走势后切回成绩、再切回工具：展开态不能丢（IndexedStack 保活）。
+      await tester.tap(find.text('学期走势（五分制）'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TrendChart), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('scholar-tab-grades')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('scholar-tab-tools')));
+      await tester.pumpAndSettle();
+      expect(find.byType(TrendChart), findsOneWidget);
     });
   });
 

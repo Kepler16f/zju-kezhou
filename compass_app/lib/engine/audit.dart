@@ -61,7 +61,16 @@ class ModuleGroupRule {
   final double? minCredits;
   final String source;
 
-  const ModuleGroupRule({this.minCourses, this.minCredits, required this.source});
+  /// 「多选一 / 任选其一 / 只选一门」：选够门数即整个模块达成，
+  /// 不再按模块标注学分判缺口（用户反馈 #3）。
+  final bool singlePick;
+
+  const ModuleGroupRule({
+    this.minCourses,
+    this.minCredits,
+    required this.source,
+    this.singlePick = false,
+  });
 }
 
 const String _cnNum = r'[0-9]+|[一二两三四五六七八九十]+';
@@ -95,6 +104,17 @@ int? _countRuleFromText(String text) {
     final x = _parseCnCount(door.group(1)!);
     if (x != null && x > 0) return x;
   }
+  // 「多选一 / 任选其一」= 选 1 门即达成；裸「任选」不匹配（任意选修不是约束）。
+  if (RegExp(r'(多选一|任选其一|任选一门|只选一门|选择其中一门|选其中一门)')
+      .hasMatch(text)) {
+    return 1;
+  }
+  final pickN =
+      RegExp('(?:任选|只选|选择其中)\\s*($_cnNum)\\s*门').firstMatch(text);
+  if (pickN != null) {
+    final x = _parseCnCount(pickN.group(1)!);
+    if (x != null && x > 0) return x;
+  }
   return null;
 }
 
@@ -117,7 +137,10 @@ ModuleGroupRule? detectModuleGroupRule(Map<String, dynamic> m) {
     final mcx = (g['min_credits'] as num?)?.toDouble();
     if (mc != null || (mcx != null && mcx > 0)) {
       return ModuleGroupRule(
-          minCourses: mc, minCredits: mcx, source: key);
+          minCourses: mc,
+          minCredits: mcx,
+          source: key,
+          singlePick: g['single_pick'] == true);
     }
   }
   final idText = '${m['module_path'] ?? ''} ${m['title'] ?? ''}';
@@ -404,7 +427,23 @@ class AuditEngine {
         }
       }
       final got = double.parse(earned[mid]!.toStringAsFixed(2));
-      final gap = double.parse((req - got).clamp(0.0, double.infinity).toStringAsFixed(2));
+      final minCourses = groupRule?.minCourses;
+      final passedInGroup = <String>{};
+      if (minCourses != null) {
+        for (final c in moduleCourses) {
+          final cid = '${c['course_id']}';
+          if (passedIds.contains(cid)) passedInGroup.add(cid);
+        }
+      }
+      // #3：多选一/任选其一——选够门数即整组达成，允许已获学分少于标注
+      // （标注是整组上限，不是必须全修）。
+      final singlePickSatisfied = groupRule?.singlePick == true &&
+          minCourses != null &&
+          passedInGroup.length >= minCourses;
+      final gap = singlePickSatisfied
+          ? 0.0
+          : double.parse(
+              (req - got).clamp(0.0, double.infinity).toStringAsFixed(2));
       // 剩余可选 = 未通过课程；同一模块内同课号重复行只计一次
       // （无课号行无法判同，不去重——宁缺勿猜）
       final remaining = <Map<String, dynamic>>[];
@@ -422,16 +461,8 @@ class AuditEngine {
       openBeforeGrad = double.parse(openBeforeGrad.toStringAsFixed(2));
       // 选课组门数校验：学分够但通过门数不足（重课覆盖多门轻课要求的罕见失配）
       // 不得判绿——此时 gap 可能为 0，颜色仍按待补呈现。
-      final minCourses = groupRule?.minCourses;
-      var countShort = false;
-      if (minCourses != null) {
-        final passedInGroup = <String>{};
-        for (final c in moduleCourses) {
-          final cid = '${c['course_id']}';
-          if (passedIds.contains(cid)) passedInGroup.add(cid);
-        }
-        countShort = passedInGroup.length < minCourses;
-      }
+      final countShort =
+          minCourses != null && passedInGroup.length < minCourses;
       final color = (gap <= 1e-9 && !countShort)
           ? 'green'
           : (gap <= openBeforeGrad + 1e-9 ? 'yellow' : 'red');
@@ -490,6 +521,37 @@ class AuditEngine {
           'page': src is Map ? src['page'] : null,
         });
       }
+      // 方案外已选外语课（用户反馈 #9）：外语模块常见「方案只写应修学分、
+      // 不给课程表」，已选外语课不在 moduleCourses 里，导致三色明细看不到。
+      // 这里按课名把计划选课/已选行补进外语模块（planned_only=true），
+      // 只进 selected_no_credit（在修），不改 earned / gap 口径。
+      if (isForeignLangModule(m)) {
+        for (final p in planCourses) {
+          final pid = '${p['course_id'] ?? ''}'.trim();
+          final pname = '${p['name'] ?? ''}'.trim();
+          final key = pid.isNotEmpty ? pid : pname;
+          if (key.isEmpty) continue;
+          final already = moduleCourses.any((c) =>
+              '${c['course_id'] ?? ''}'.trim() == pid ||
+              ('${c['name'] ?? ''}'.trim() == pname && pname.isNotEmpty));
+          if (already) continue;
+          if (!(pname.contains('外语') || pname.contains('英语'))) continue;
+          if (!seenPlanCourseIds.add(key)) continue;
+          planCoursesOfModule.add(<String, dynamic>{
+            'course_id': pid.isEmpty ? null : pid,
+            'name': pname,
+            'credits': p['credits'],
+            'offered': null,
+            'offered_years': null,
+            'terms': const <String>[],
+            'closed': false,
+            'passed': false,
+            'planned_only': true,
+            'page': null,
+          });
+        }
+      }
+
       // 已选未获学分课程数：方案课程里「已修未取得学分（未通过/在修未出分/
       // 弃修待录缓考无效）或已列入计划选课」且尚未取得学分的去重门数
       final selectedNoCredit = planCoursesOfModule
@@ -652,6 +714,153 @@ class AuditEngine {
         }
       }
     }
+    // ── 并列选项组（用户反馈 #4）：组内任选其一，只计一次 ──────────────────
+    // PlanFile.alternative_groups 由 plan_audit_adapter 生成：每个选项子树
+    // 的模块都在 modules 里（明细可展开），但只有「最优选项」进入组行与总计。
+    final altGroupsRaw = plan['alternative_groups'];
+    final altApplied = altGroupsRaw is List && altGroupsRaw.isNotEmpty;
+    var displaySummary = summary;
+    if (altApplied) {
+      final byId = <String, Map<String, dynamic>>{
+        for (final r in summary) '${r['module_id']}': r,
+      };
+      final groupRows = <Map<String, dynamic>>[];
+      final optionIds = <String>{};
+      for (final raw in altGroupsRaw) {
+        if (raw is! Map) continue;
+        final opts = raw['options'];
+        if (opts is! List) continue;
+        final rows = <Map<String, dynamic>>[];
+        for (final o in opts) {
+          if (o is! Map) continue;
+          final ids = <String>[
+            for (final e in (o['module_ids'] as List? ?? const [])) '$e',
+          ];
+          final mods = <Map<String, dynamic>>[
+            for (final id in ids)
+              if (byId[id] != null) byId[id]!,
+          ];
+          if (mods.isEmpty) continue;
+          optionIds.addAll(mods.map((r) => '${r['module_id']}'));
+          double sumOf(String key) => mods.fold<double>(
+              0, (a, r) => a + ((r[key] as num?)?.toDouble() ?? 0));
+          final req = sumOf('required');
+          final got = sumOf('earned');
+          final rem = sumOf('remaining_future');
+          final gap = double.parse(
+              (req - got).clamp(0.0, double.infinity).toStringAsFixed(2));
+          rows.add(<String, dynamic>{
+            'title': '${o['title'] ?? ''}',
+            'module_ids': ids,
+            'required': req,
+            'earned': got,
+            'gap': gap,
+            'remaining_future': rem,
+            'color': gap <= 1e-9
+                ? 'green'
+                : (gap <= rem + 1e-9 ? 'yellow' : 'red'),
+          });
+        }
+        if (rows.isEmpty) continue;
+        rows.sort((a, b) {
+          final c = (a['gap'] as num).compareTo(b['gap'] as num);
+          if (c != 0) return c;
+          final d = (b['earned'] as num).compareTo(a['earned'] as num);
+          if (d != 0) return d;
+          return (a['required'] as num).compareTo(b['required'] as num);
+        });
+        final best = rows.first;
+        final bestRows = <Map<String, dynamic>>[
+          for (final id in (best['module_ids'] as List))
+            if (byId['$id'] != null) byId['$id']!,
+        ];
+        final groupReq = (raw['required_credits'] as num?)?.toDouble() ?? 0;
+        final req =
+            groupReq > 0 ? groupReq : (best['required'] as num).toDouble();
+        final got = (best['earned'] as num).toDouble();
+        final rem = (best['remaining_future'] as num).toDouble();
+        final gap = double.parse(
+            (req - got).clamp(0.0, double.infinity).toStringAsFixed(2));
+        final color = gap <= 1e-9
+            ? 'green'
+            : (gap <= rem + 1e-9 ? 'yellow' : 'red');
+        final stats = <String, int>{};
+        for (final r in bestRows) {
+          final st = r['course_stats'];
+          if (st is Map) {
+            for (final e in st.entries) {
+              final k = '${e.key}';
+              stats[k] = (stats[k] ?? 0) + ((e.value as num?)?.toInt() ?? 0);
+            }
+          }
+        }
+        groupRows.add(<String, dynamic>{
+          'module_id': '${raw['group_id']}',
+          'module_path': raw['path'],
+          'title': raw['title'],
+          'level': 2,
+          'category': raw['title'],
+          'notes': const <String>[],
+          'alternative_group': true,
+          'option_count': rows.length,
+          'options': rows,
+          'required': req,
+          'earned': got,
+          'selected_no_credit': bestRows.fold<int>(
+              0, (a, r) => a + ((r['selected_no_credit'] as num?)?.toInt() ?? 0)),
+          'gap': gap,
+          'remaining_future': rem,
+          'color': color,
+          'status': color == 'green'
+              ? '🟢 已达成'
+              : color == 'yellow'
+                  ? '🟡 待补'
+                  : '🔴 学籍年限内无法补足',
+          'plan_courses': <Map<String, dynamic>>[
+            for (final r in bestRows)
+              ...((r['plan_courses'] as List? ?? const [])
+                  .cast<Map<String, dynamic>>()),
+          ],
+          'course_stats': stats,
+          'missing_courses': <Map<String, dynamic>>[
+            for (final r in bestRows)
+              ...((r['missing_courses'] as List? ?? const [])
+                  .cast<Map<String, dynamic>>()),
+          ],
+        });
+      }
+      // 组行插到首个选项的位置；选项模块行不再单独展示，避免「20+20+20」。
+      final firstIndex = <String, int>{};
+      for (final g in groupRows) {
+        final ids = <String>{
+          for (final o in (g['options'] as List))
+            ...(o['module_ids'] as List).cast<String>(),
+        };
+        var idx = summary.length;
+        for (var i = 0; i < summary.length; i++) {
+          if (ids.contains('${summary[i]['module_id']}')) {
+            idx = i;
+            break;
+          }
+        }
+        firstIndex['${g['module_id']}'] = idx;
+      }
+      final byFirst = <int, List<Map<String, dynamic>>>{};
+      for (final g in groupRows) {
+        byFirst
+            .putIfAbsent(firstIndex['${g['module_id']}']!, () => [])
+            .add(g);
+      }
+      final out = <Map<String, dynamic>>[];
+      for (var i = 0; i <= summary.length; i++) {
+        if (byFirst[i] != null) out.addAll(byFirst[i]!);
+        if (i == summary.length) break;
+        if (optionIds.contains('${summary[i]['module_id']}')) continue;
+        out.add(summary[i]);
+      }
+      displaySummary = out;
+    }
+
     final sems = planCourses.map((x) => x['semester']).where((s) => s != null).toSet();
     for (final semester in sems) {
       final group = planCourses.where((x) => x['semester'] == semester).toList();
@@ -693,9 +902,15 @@ class AuditEngine {
     final planTotalRaw = (plan['meta'] as Map?)?['total_credits'];
     final planTotalCredits = planTotalRaw is num ? planTotalRaw.toDouble() : null;
     final totals = {
-      'required': double.parse(summary.fold<num>(0, (s, m) => s + m['required']).toStringAsFixed(2)),
-      'earned': double.parse(summary.fold<num>(0, (s, m) => s + m['earned']).toStringAsFixed(2)),
-      'gap': double.parse(summary.fold<num>(0, (s, m) => s + m['gap']).toStringAsFixed(2)),
+      'required': double.parse(
+          displaySummary.fold<num>(0, (s, m) => s + m['required'])
+              .toStringAsFixed(2)),
+      'earned': double.parse(
+          displaySummary.fold<num>(0, (s, m) => s + m['earned'])
+              .toStringAsFixed(2)),
+      'gap': double.parse(
+          displaySummary.fold<num>(0, (s, m) => s + m['gap'])
+              .toStringAsFixed(2)),
       if (planTotalCredits != null)
         'plan_total_credits': planTotalCredits, // 方案声明「最低毕业学分」原值
       'total_basis':
@@ -710,6 +925,9 @@ class AuditEngine {
       if (groupApplied)
         '选课组口径：模块内「四选一/选N门/至少修读N门」类组按「至少 N 门」'
             '折算要求学分（组内其余课程为可选项，不再全部求和），任过 N 门即达成。',
+      if (altApplied)
+        '并列模块口径：本专业进阶 / 跨专业学习（微辅修）/ 学生自主修读等'
+            '「任选其一」的模块按一个选项计一次要求学分，组内其他选项不报缺口。',
       if (planHasForeign)
         '外语口径：外语类模块要求学分可自选（审计动作 foreign_lang_credits 正数，'
             '可超过方案原要求；或 foreign_lang_level L1=6 分、L2=4.5 分、L3=3 分'
@@ -743,7 +961,7 @@ class AuditEngine {
     ];
 
     return {
-      'summary': summary,
+      'summary': displaySummary,
       'warnings': warnings,
       'extra_courses': unmatched,
       'totals': totals,

@@ -1,6 +1,7 @@
 /// pages/scholar_page.dart — 学业页 v3：顶部日期·学期·周次栏（下接快捷卡，随内容滚动）
 /// + 考试周冲刺置顶卡 + 成绩额头条（点击进成绩详情页）+ GPA 数字格 + 课堂分（素拓）。
-/// 2026-10-18 需求 #1：学期走势与 GPA 模拟器迁至独立「工具」页签（pages/tools_page.dart）；
+/// 2026-10-18 需求 #5：「工具」并入本页，作为「成绩 / 工具」子选项卡；
+/// 学期走势与 GPA 模拟器仍来自 pages/tools_page.dart，并由 IndexedStack 保活；
 /// 需求 #2：学分看板区块下线（CreditBoardCard 组件保留于 widgets/scholar_cards.dart）。
 /// 空数据引导去"设置"页。
 library;
@@ -17,6 +18,7 @@ import '../engine/exam.dart';
 import '../widgets/exam_sprint_card.dart';
 import '../widgets/scholar_cards.dart';
 import 'grade_detail_page.dart';
+import 'tools_page.dart';
 
 class ScholarPage extends StatefulWidget {
   final List<Map<String, dynamic>> courses;
@@ -47,6 +49,7 @@ class ScholarPage extends StatefulWidget {
 class _ScholarPageState extends State<ScholarPage> {
   // 日期栏跨午夜/跨周需自刷新：每小时重算一次足够，且成本低。
   late Timer _clock;
+  int _section = 0; // 0=成绩 1=工具；IndexedStack 保留工具页走势/模拟器状态。
 
   @override
   void initState() {
@@ -72,38 +75,47 @@ class _ScholarPageState extends State<ScholarPage> {
     final sourceLabel = widget.sourceLabel;
     final onGoSettings = widget.onGoSettings;
     final onRefresh = widget.onRefresh;
+    final tools = ToolsPage(
+      courses: courses,
+      marks: marks,
+      onRefresh: onRefresh,
+      onGoSettings: onGoSettings,
+    );
 
     if (courses.isEmpty) {
       return Column(
         children: [
           _dateBanner(context),
-          // 空态无滚动区，快捷卡自带横向留白；有数据态由 ListView 提供留白。
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: _quickLinks(context),
-          ),
+          _sectionTabs(context),
           Expanded(
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(28),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.school_outlined,
-                        size: 56, color: Theme.of(context).colorScheme.outline),
-                    const SizedBox(height: 12),
-                    const Text('暂无学业数据', style: TextStyle(fontSize: 16)),
-                    const SizedBox(height: 6),
-                    const Text('切到「设置」页，选择样例 / 粘贴成绩 / 登录教务网',
-                        style: TextStyle(fontSize: 12, color: Colors.grey)),
-                    const SizedBox(height: 14),
-                    FilledButton.tonalIcon(
-                        onPressed: onGoSettings,
-                        icon: const Icon(Icons.settings_outlined),
-                        label: const Text('去设置')),
-                  ],
+            child: IndexedStack(
+              index: _section,
+              children: [
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(22),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.school_outlined,
+                            size: 48,
+                            color: Theme.of(context).colorScheme.outline),
+                        const SizedBox(height: 8),
+                        const Text('暂无学业数据', style: TextStyle(fontSize: 15)),
+                        const SizedBox(height: 4),
+                        const Text('切到「设置」页，选择样例 / 粘贴成绩 / 登录教务网',
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                        const SizedBox(height: 10),
+                        FilledButton.tonalIcon(
+                            onPressed: onGoSettings,
+                            icon: const Icon(Icons.settings_outlined, size: 18),
+                            label: const Text('去设置')),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+                tools,
+              ],
             ),
           ),
         ],
@@ -115,15 +127,19 @@ class _ScholarPageState extends State<ScholarPage> {
     return Column(
       children: [
         _dateBanner(context),
+        _sectionTabs(context),
         Expanded(
-          child: RefreshIndicator(
-            onRefresh: () async => await onRefresh?.call(),
-            child: ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
-              children: [
+          child: IndexedStack(
+            index: _section,
+            children: [
+              RefreshIndicator(
+                onRefresh: () async => await onRefresh?.call(),
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(12, 2, 12, 18),
+                  children: [
                 // 快捷入口移入滚动内容首行（诉求 #8）：与内容同滚；
-                // 日期栏底边距 4 + ListView 顶留白 4 = 8px 节奏。
+                // 顶部日期栏与子选项卡均为紧凑高度，ListView 顶留白 2。
                 _quickLinks(context),
                 // 考试周冲刺置顶卡（21 天窗口内有考试才渲染，内部 30s 自刷倒计时）
                 if (exams.isNotEmpty) ExamSprintCard(exams: exams),
@@ -143,97 +159,166 @@ class _ScholarPageState extends State<ScholarPage> {
                       Row(
                         children: [
                           Expanded(
-                              child: TwoLineCard(
-                                  title: '五分制',
-                                  content: o['five']!.toStringAsFixed(2),
-                                  color: ScholarPalette.cyan)),
-                          const SizedBox(width: 8),
+                              child: _compactStat('五分制',
+                                  o['five']!.toStringAsFixed(2),
+                                  ScholarPalette.cyan)),
+                          const SizedBox(width: 6),
                           Expanded(
-                              child: TwoLineCard(
-                                  title: '四分制(4.3)',
-                                  content: o['four']!.toStringAsFixed(2),
-                                  extraContent:
-                                      '旧四分制 ${_legacyFour(courses).toStringAsFixed(2)}',
-                                  color: ScholarPalette.spring)),
-                          const SizedBox(width: 8),
+                              child: _compactStat('四分制(4.3)',
+                                  o['four']!.toStringAsFixed(2),
+                                  ScholarPalette.spring,
+                                  extra:
+                                      '旧四分制 ${_legacyFour(courses).toStringAsFixed(2)}')),
+                          const SizedBox(width: 6),
                           Expanded(
-                              child: TwoLineCard(
-                                  title: '加权百分制',
-                                  content: o['weighted']!.toStringAsFixed(2),
-                                  color: ScholarPalette.magenta)),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                              child: TwoLineCard(
-                                  title: '已取得学分',
-                                  content:
-                                      o['earned_credits']!.toStringAsFixed(1),
-                                  color: ScholarPalette.peach)),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: TwoLineCard(
-                                  title: '计入GPA学分',
-                                  content:
-                                      o['gpa_credits']!.toStringAsFixed(1),
-                                  color: ScholarPalette.sakura)),
-                          const SizedBox(width: 8),
-                          Expanded(
-                              child: TwoLineCard(
-                                  title: '已取得门数',
-                                  content:
-                                      '${courses.where(Analytics.isPassed).length}',
-                                  color: ScholarPalette.sand)),
+                              child: _compactStat('加权百分制',
+                                  o['weighted']!.toStringAsFixed(2),
+                                  ScholarPalette.magenta)),
                         ],
                       ),
                       const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                              child: _compactStat('已取得学分',
+                                  o['earned_credits']!.toStringAsFixed(1),
+                                  ScholarPalette.peach)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                              child: _compactStat('计入GPA学分',
+                                  o['gpa_credits']!.toStringAsFixed(1),
+                                  ScholarPalette.sakura)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                              child: _compactStat(
+                                  '已取得门数',
+                                  '${courses.where(Analytics.isPassed).length}',
+                                  ScholarPalette.sand)),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
                       const Row(
                         children: [
-                          Icon(Icons.chevron_right, size: 14),
+                          Icon(Icons.chevron_right, size: 12),
                           Text('点击查看各学期成绩明细',
                               style:
-                                  TextStyle(fontSize: 11, color: Colors.grey)),
+                                  TextStyle(fontSize: 10.5, color: Colors.grey)),
                         ],
                       ),
                     ],
                   ),
                 ),
-                if (choosed != null) _choosedCard(context, choosed),
-                const SectionHeader('课堂分（素拓）'),
-                Card(
-                  child: practice.isEmpty
-                      ? const ListTile(
-                          leading: Icon(Icons.info_outline),
-                          title: Text('未获取'),
-                          subtitle: Text('教务网模式登录后自动拉取第二/三/四课堂记点',
-                              style: TextStyle(fontSize: 11)))
-                      : Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceAround,
-                            children: [
-                              for (final e in practice.entries)
-                                Column(
-                                  children: [
-                                    Text(e.value.toStringAsFixed(1),
-                                        style: const TextStyle(
-                                            fontSize: 22,
-                                            fontWeight: FontWeight.bold)),
-                                    Text(e.key,
-                                        style: const TextStyle(fontSize: 11)),
-                                  ],
-                                ),
-                            ],
-                          ),
-                        ),
+                    if (choosed != null) _choosedCard(context, choosed),
+                    const SectionHeader('课堂分（素拓）'),
+                    Card(
+                      child: practice.isEmpty
+                          ? const ListTile(
+                              dense: true,
+                              leading: Icon(Icons.info_outline, size: 18),
+                              title: Text('未获取', style: TextStyle(fontSize: 13)),
+                              subtitle: Text('教务网模式登录后自动拉取第二/三/四课堂记点',
+                                  style: TextStyle(fontSize: 10.5)))
+                          : Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                children: [
+                                  for (final e in practice.entries)
+                                    Column(
+                                      children: [
+                                        Text(e.value.toStringAsFixed(1),
+                                            style: const TextStyle(
+                                                fontSize: 19,
+                                                fontWeight: FontWeight.bold)),
+                                        Text(e.key,
+                                            style:
+                                                const TextStyle(fontSize: 10.5)),
+                                      ],
+                                    ),
+                                ],
+                              ),
+                            ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              tools,
+            ],
           ),
         ),
       ],
+    );
+  }
+
+  /// 「成绩 / 工具」子选项卡：工具页用 IndexedStack 常驻，切回时走势展开态与
+  /// GPA 模拟器输入不丢；紧凑分段控件只占约 34dp，由下方头部压缩抵消。
+  Widget _sectionTabs(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 3, 12, 1),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: SegmentedButton<int>(
+            segments: const [
+              ButtonSegment(
+                  value: 0,
+                  icon: Icon(Icons.school_outlined, size: 14),
+                  label: Text('成绩', key: Key('scholar-tab-grades'))),
+              ButtonSegment(
+                  value: 1,
+                  icon: Icon(Icons.build_outlined, size: 14),
+                  label: Text('工具', key: Key('scholar-tab-tools'))),
+            ],
+            selected: {_section},
+            showSelectedIcon: false,
+            onSelectionChanged: (v) => setState(() => _section = v.first),
+            style: SegmentedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              textStyle: const TextStyle(
+                  fontSize: 12.5, fontWeight: FontWeight.w600),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+              minimumSize: const Size(0, 30),
+            ),
+          ),
+        ),
+      );
+
+  /// 紧凑指标格：保留原 TwoLineCard 的标题/大数字/浅色底语义，只收紧内边距与字号。
+  Widget _compactStat(String title, String content, Color color,
+      {String? extra}) {
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: dark
+            ? color.withValues(alpha: 0.18)
+            : color.withValues(alpha: 0.32),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 10.5, color: theme.colorScheme.onSurfaceVariant)),
+          Text(content,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 17, fontWeight: FontWeight.bold, height: 1.15)),
+          if (extra != null)
+            Text(extra,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 9.5,
+                    color: theme.colorScheme.onSurfaceVariant)),
+        ],
+      ),
     );
   }
 
@@ -259,20 +344,20 @@ class _ScholarPageState extends State<ScholarPage> {
           borderRadius: BorderRadius.circular(12),
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             child: Row(
               children: [
-                Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
-                const SizedBox(width: 6),
+                Icon(icon, size: 16, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 5),
                 // 窄屏不溢出：文字走 Flexible 收缩 + ellipsis。
                 Flexible(
                   child: Text(label,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w600)),
+                          fontSize: 12.5, fontWeight: FontWeight.w600)),
                 ),
-                const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
+                const Icon(Icons.chevron_right, size: 14, color: Colors.grey),
               ],
             ),
           ),
@@ -285,8 +370,8 @@ class _ScholarPageState extends State<ScholarPage> {
     final t = termForDate(DateTime.now());
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -300,27 +385,27 @@ class _ScholarPageState extends State<ScholarPage> {
       ),
       child: Row(
         children: [
-          Icon(Icons.wb_sunny_outlined, size: 18, color: scheme.onSurface),
-          const SizedBox(width: 8),
+          Icon(Icons.wb_sunny_outlined, size: 16, color: scheme.onSurface),
+          const SizedBox(width: 6),
           Expanded(
             child: Text(
               todayLine(DateTime.now()),
               style: TextStyle(
-                  fontSize: 13.5,
+                  fontSize: 12.5,
                   fontWeight: FontWeight.w600,
                   color: scheme.onSurface),
             ),
           ),
           if (!t.vacation)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
               decoration: BoxDecoration(
                 color: scheme.primary.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text(t.tag,
                   style: TextStyle(
-                      fontSize: 11.5,
+                      fontSize: 10.5,
                       fontWeight: FontWeight.bold,
                       color: scheme.primary)),
             ),

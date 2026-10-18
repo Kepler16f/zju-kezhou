@@ -251,4 +251,42 @@ MARX1004G 大学生思想文化素养 2.0 2.0-0.0 32 一(秋冬)
       expect(food.parentPath, contains('专业课程'));
     });
   });
+
+  group('全角括号标题（#1 军体/思政、美育/劳育并块修复）', () {
+    test('（2）军体类（8学分）式标题被识别为独立板块', () {
+      const text = """
+一、通识课程（72.5学分）
+1.通识必修课程（62学分）
+（1）思政类（14学分）
+1)必修课程（12学分）
+课程号 课程名称 学分 周学时 总学时 建议学年学期
+MARX1004G 大学生思想文化素养 2.0 2.0-0.0 32 一(秋冬)
+（2）军体类（11.5学分）
+课程号 课程名称 学分 周学时 总学时 建议学年学期
+ADMN1001G 军训 2.0 +3 168 一(秋)
+二、其他必修环节（6学分）
+（1）美育类（2学分）
+（2）劳育类（2学分）
+""";
+      final r = parsePlanPdfText(text);
+      final titles = r.sections.map((s) => s.title).toList();
+      expect(titles, containsAll(['思政类', '军体类', '美育类', '劳育类']));
+      final sizheng = r.sections.firstWhere((s) => s.title == '思政类');
+      expect(sizheng.creditsRaw, '14');
+      final junti = r.sections.firstWhere((s) => s.title == '军体类');
+      expect(junti.level, 3);
+      expect(junti.creditsRaw, '11.5');
+      expect(junti.parentPath, '通识课程 · 通识必修课程');
+      // 军体课不再并进思政类
+      expect(sizheng.courses, isEmpty);
+      final sizhengRequired = r.sections.firstWhere((s) =>
+          s.title == '必修课程' && s.parentPath.endsWith('思政类'));
+      expect(sizhengRequired.courses.map((c) => c.code), ['MARX1004G']);
+      expect(junti.courses.map((c) => c.code), ['ADMN1001G']);
+      final meiyu = r.sections.firstWhere((s) => s.title == '美育类');
+      final laoyu = r.sections.firstWhere((s) => s.title == '劳育类');
+      expect(meiyu.parentPath, '其他必修环节');
+      expect(laoyu.parentPath, '其他必修环节');
+    });
+  });
 }

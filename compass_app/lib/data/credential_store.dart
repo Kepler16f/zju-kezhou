@@ -298,14 +298,15 @@ class CredentialStore {
   /// 与 ui.cfg 同理不用 cache_ 前缀（清缓存不重置界面习惯）；两个键同文件，
   /// 写入走"读-改-写"合并，避免 saveTabOrder / saveDefaultTab 互相覆盖；
   /// 一键清除全量数据时可调用 [deleteNavPrefs]。
-  /// 规范索引（2026-10-18 需求 #1 起为五个）：0=学业 1=方案 2=选课 3=工具 4=设置。
-  static const _defaultTabOrder = '0,1,2,3,4';
+  /// 规范索引（2026-10-18 需求 #5 起为四个）：0=学业 1=方案 2=选课 3=设置。
+  /// 「工具」不再占底栏，已并入学业页内的「成绩 / 工具」子选项卡。
+  static const _defaultTabOrder = '0,1,2,3';
 
-  /// 页签顺序落盘：逗号分隔的规范索引（0..4 全排列），如 '2,0,1,4,3'。
+  /// 页签顺序落盘：逗号分隔的规范索引（0..3 全排列），如 '2,0,1,3'。
   Future<void> saveTabOrder(String order) => _saveNavPref('tabOrder', order);
 
-  /// 读取页签顺序：新版五个 0..4 全排列原样返回；旧版四个 0..3 全排列自动迁移
-  /// （原 3=设置 → 4，「工具」3 追加在末尾）；坏内容回落默认。绝不抛异常。
+  /// 读取页签顺序：新版四个 0..3 全排列原样返回；中间版本五个 0..4 全排列自动
+  /// 迁移（去掉「工具」位 3，原设置 4 → 3）；坏内容回落默认。绝不抛异常。
   Future<String> loadTabOrder() async {
     try {
       final f = File(p.join((await _dirGet()).path, 'nav.cfg'));
@@ -314,8 +315,8 @@ class CredentialStore {
         if (raw is Map) {
           final v = raw['tabOrder'];
           if (v is String) {
-            if (_isValidTabOrder5(v)) return v;
-            final migrated = _migrateTabOrder4(v);
+            if (_isValidTabOrder4(v)) return v;
+            final migrated = _migrateTabOrder5(v);
             if (migrated != null) return migrated;
           }
         }
@@ -324,14 +325,14 @@ class CredentialStore {
     return _defaultTabOrder;
   }
 
-  /// 启动默认首页落盘：规范索引 0..4。
+  /// 启动默认首页落盘：规范索引 0..3。
   Future<void> saveDefaultTab(int index) => _saveNavPref('defaultTab', index);
 
   /// 读取启动默认首页。版本判定靠同文件 tabOrder 的形状（main.dart 在
-  /// 改默认页时同步落 tabOrder，新版文件必为五个 0..4 全排列）：
-  ///  - tabOrder 为新版五排列 → defaultTab 原样（0..4）；
-  ///  - tabOrder 为旧版四排列或缺失（旧版只在改动过时才写键）→ 旧索引 3=设置
-  ///    迁移为 4；
+  /// 改默认页时同步落 tabOrder，新版文件必为四个 0..3 全排列）：
+  ///  - tabOrder 为新版四排列 → defaultTab 原样（0..3）；
+  ///  - tabOrder 为旧五排列 → 3（工具，已并入学业）映射 0，4（设置）映射 3；
+  ///  - 无 tabOrder（更早的四页签存档，只在改默认页时写过键）→ 0..3 原样；
   ///  - 越界/坏内容 → 0（学业）。绝不抛异常。
   Future<int> loadDefaultTab() async {
     try {
@@ -342,13 +343,19 @@ class CredentialStore {
           final v = raw['defaultTab'];
           if (v is int) {
             final order = raw['tabOrder'];
-            final isNewShape = order is String && _isValidTabOrder5(order);
-            final isOldShape = !isNewShape && order is String &&
-                _migrateTabOrder4(order) != null;
-            if (isNewShape) return (v >= 0 && v <= 4) ? v : 0;
-            // 旧版存档（四排列或缺 tabOrder 但只有旧 defaultTab）：3=设置→4
-            final mapped = v == 3 ? 4 : v;
-            return (mapped >= 0 && mapped <= 4) ? mapped : 0;
+            if (order is String) {
+              if (_isValidTabOrder4(order)) {
+                return (v >= 0 && v <= 3) ? v : 0;
+              }
+              if (_isValidTabOrder5(order)) {
+                // 旧五页签：3=工具并入学业，4=设置前移到 3。
+                final mapped = switch (v) { 3 => 0, 4 => 3, _ => v };
+                return (mapped >= 0 && mapped <= 3) ? mapped : 0;
+              }
+              return 0; // 非法/重复顺序：回落学业
+            }
+            // 更早版本只在改默认页时写 defaultTab（未写 tabOrder）：四页签语义不变。
+            return (v >= 0 && v <= 3) ? v : 0;
           }
         }
       }
@@ -409,28 +416,34 @@ class CredentialStore {
     } catch (_) {/* 沙箱不可用（测试环境等）：静默 */}
   }
 
-  /// '0,1,2,3,4' 形状校验：恰好五个 0..4 的整数索引且不重复（纯函数，宁缺勿猜）。
-  static bool _isValidTabOrder5(String s) {
+  /// '0,1,2,3' 形状校验：恰好四个 0..3 的整数索引且不重复（纯函数，宁缺勿猜）。
+  static bool _isValidTabOrder4(String s) {
     final seen = <int>{};
     for (final part in s.split(',')) {
       final i = int.tryParse(part.trim());
-      if (i == null || i < 0 || i > 4 || !seen.add(i)) return false;
+      if (i == null || i < 0 || i > 3 || !seen.add(i)) return false;
     }
-    return seen.length == 5;
+    return seen.length == 4;
   }
 
-  /// 旧版四排列（0..3 全排列，无「工具」）→ 新版五排列：原 3（设置）改 4，
-  /// 「工具」(3) 追加末尾。形状不符返回 null（调用方再回落默认）。
-  static String? _migrateTabOrder4(String s) {
+  /// '0,1,2,3,4' 旧五排列形状校验（恰好五个 0..4 且不重复）。
+  static bool _isValidTabOrder5(String s) => _migrateTabOrder5(s) != null;
+
+  /// 旧五排列（0..4 全排列，工具=3、设置=4）→ 新四排列：去掉工具位 3，
+  /// 原设置 4 映射为 3。形状不符返回 null（调用方再回落默认）。
+  static String? _migrateTabOrder5(String s) {
     final seen = <int>{};
     final parts = <int>[];
     for (final part in s.split(',')) {
       final i = int.tryParse(part.trim());
-      if (i == null || i < 0 || i > 3 || !seen.add(i)) return null;
+      if (i == null || i < 0 || i > 4 || !seen.add(i)) return null;
       parts.add(i);
     }
-    if (parts.length != 4) return null;
-    return '${parts.map((i) => i == 3 ? 4 : i).join(',')},3';
+    if (parts.length != 5) return null;
+    return parts
+        .where((i) => i != 3)
+        .map((i) => i == 4 ? 3 : i)
+        .join(',');
   }
 
   // 轻量混淆（非加密）：避免明文出现在文件系统搜索中；真实防护来自 OS 沙箱隔离。
