@@ -42,6 +42,7 @@ class AiHttpRequest {
     this.headers = const <String, String>{},
     this.body = '',
     this.timeout = const Duration(seconds: 60),
+    this.direct = false,
   });
 
   final String url;
@@ -51,7 +52,21 @@ class AiHttpRequest {
 
   /// 响应读取超时（连接超时另由 isolate 内的 connectionTimeout 管）。
   final Duration timeout;
+
+  /// 直连标志（任务 #13，来自 AiConfig.direct）：true 时本请求绕过系统代理。
+  /// 放在请求值对象上而不是让 isolate 反查配置，是为了红线 3——isolate 载荷
+  /// 只带发出这次请求所需的纯数据。
+  final bool direct;
 }
+
+/// 代理选择策略（纯函数，任务 #13）：把「是否直连」翻译成 HttpClient.findProxy
+/// 应设的指令串——direct 时返回 'DIRECT'（绕过系统/环境变量代理），
+/// 否则返回 null 表示不设 findProxy、维持 Dart 默认的「读环境变量→系统代理」行为。
+/// 之所以返回 null 而不是直接返回环境代理指令：不设 findProxy 才能走全平台一致的
+/// 原生代理路径（Windows 系统代理并不体现在 HTTP_PROXY 环境变量里，
+/// findProxyFromEnvironment 覆盖不到，这正是旧注释「绝不设 findProxy」的原因）。
+String? findProxyDirectiveFor({required bool direct}) =>
+    direct ? 'DIRECT' : null;
 
 /// 原始 HTTP 结果（未做任何业务解释，解释交给 parseReply）。
 class AiHttpReply {
@@ -383,6 +398,7 @@ Future<AiHttpReply> defaultAiSender(AiHttpRequest req) => _httpInIsolate(
         'headers': Map<String, String>.from(req.headers),
         'body': req.body,
         'timeoutMs': req.timeout.inMilliseconds,
+        'direct': req.direct,
       },
     );
 
@@ -393,12 +409,17 @@ Future<AiHttpReply> _httpInIsolate(Map<String, dynamic> spec) =>
 
 /// 顶层函数：真正的收发，运行在后台 isolate 内。除 spec 外不引用任何外部量。
 ///
-/// 连接策略：只设 connectionTimeout（15s）；绝不设 badCertificateCallback（红线 2），
-/// 绝不设 findProxy（走系统代理 —— 否则 Clash/公司代理下的用户会连不出去）。
+/// 连接策略：只设 connectionTimeout（15s）；绝不设 badCertificateCallback（红线 2）。
+/// 代理策略（任务 #13）：默认仍不设 findProxy（走系统代理——否则 Clash/公司代理下的
+/// 用户会连不出去）；仅当 spec 里 direct==true 时设 DIRECT 绕过代理，
+/// 用于用户开着拦截 https 的代理、TLS 握手失败时的自救开关。
 /// 响应体一律 utf8.decode(allowMalformed: true)：个别网关返回半截中文，
 /// 严格解码会抛异常，把一次「内容略乱但可用」的响应变成彻底失败。
 Future<AiHttpReply> _sendIsolate(Map<String, dynamic> spec) async {
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+  // 缺键按 false 处理（老载荷/手工 spec 不应因此抛异常）
+  final directive = findProxyDirectiveFor(direct: spec['direct'] == true);
+  if (directive != null) client.findProxy = (_) => directive;
   final deadline =
       Duration(milliseconds: (spec['timeoutMs'] as int?) ?? 60000);
   try {
@@ -464,6 +485,7 @@ Stream<AiStreamEvent> defaultAiStreamSender(AiHttpRequest req) {
     'headers': Map<String, String>.from(req.headers),
     'body': req.body,
     'timeoutMs': req.timeout.inMilliseconds,
+    'direct': req.direct,
   };
   unawaited(Isolate.spawn(_streamIsolateEntry, <Object?>[spec, receive.sendPort])
       .then<void>((iso) {
@@ -490,10 +512,13 @@ void _streamIsolateEntry(List<Object?> args) {
 }
 
 /// 顶层函数：真正的流式收发，运行在后台 isolate 内。
+/// 代理策略与非流式 [_sendIsolate] 一致：默认不设 findProxy，direct==true 时设 DIRECT。
 Future<void> _streamIsolateMain(List<Object?> args) async {
   final spec = (args[0] as Map).cast<String, dynamic>();
   final port = args[1] as SendPort;
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+  final directive = findProxyDirectiveFor(direct: spec['direct'] == true);
+  if (directive != null) client.findProxy = (_) => directive;
   final deadline =
       Duration(milliseconds: (spec['timeoutMs'] as int?) ?? 60000);
   try {
@@ -579,7 +604,8 @@ class AiClient {
     final streaming = deltaSink != null;
     final (url, headers, bodyJson) =
         buildRequest(config, system, messages, maxTokens, stream: streaming);
-    final req = AiHttpRequest(url: url, headers: headers, body: bodyJson);
+    final req = AiHttpRequest(
+        url: url, headers: headers, body: bodyJson, direct: config.direct);
     if (deltaSink != null) {
       final (streamed, emitted) =
           await _chatStreaming(req, deltaSink, cancelToken);
@@ -592,7 +618,8 @@ class AiClient {
       if (streamed is AiFailure && !emitted && _isRetriable(streamed.kind)) {
         final (nu, nh, nb) =
             buildRequest(config, system, messages, maxTokens, stream: false);
-        final nreq = AiHttpRequest(url: nu, headers: nh, body: nb);
+        final nreq = AiHttpRequest(
+            url: nu, headers: nh, body: nb, direct: config.direct);
         final fallback = _scrubKey(await _attempt(nreq), config.apiKey);
         if (cancelToken?.isCancelled ?? false) {
           return const AiFailure(AiFailKind.cancelled, '已取消本次回答');
@@ -640,6 +667,7 @@ class AiClient {
       method: 'GET',
       headers: headers,
       timeout: const Duration(seconds: 30),
+      direct: config.direct,
     );
     var attempt = 1;
     while (true) {
@@ -891,8 +919,11 @@ AiFailure _failureFromError(Object error) {
     return const AiFailure(AiFailKind.timeout, 'AI 服务响应超时，请检查网络后重试');
   }
   if (error is HandshakeException) {
-    return const AiFailure(
-        AiFailKind.network, 'TLS 握手失败，无法建立安全连接，请检查网络环境是否被劫持');
+    // 代理拦截 https（Clash/加速器的 MITM 根证书）是握手失败最常见的用户侧原因，
+    // 文案里给出两条自救路径（任务 #13）。
+    return const AiFailure(AiFailKind.network,
+        'TLS 握手失败，无法建立安全连接，请检查网络环境是否被劫持'
+        '（若开着代理/加速器，可尝试开启 AI 直连或关闭代理重试）');
   }
   if (error is SocketException) {
     return AiFailure(AiFailKind.network,

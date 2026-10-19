@@ -67,13 +67,12 @@ Future<_Resp> _httpInIsolate(_HttpReq r) => Isolate.run(() async {
         ..connectionTimeout = const Duration(seconds: 12)
         ..idleTimeout = const Duration(seconds: 15)
         ..badCertificateCallback = ((cert, host, port) => true)
-        ..findProxy = (uri) {
-          final host = uri.host.toLowerCase();
-          if (host.endsWith('.zju.edu.cn') || host == 'zju.edu.cn') {
-            return 'DIRECT';
-          }
-          return HttpClient.findProxyFromEnvironment(uri);
-        };
+        // 教务恒直连（任务 #13）：正方/CAS/素拓全部在 *.zju.edu.cn，教务对境外/代理
+        // 出口（Clash 类 TUN、系统代理、加速器）做风控，走代理时连不上，直连才正常。
+        // 本客户端只打这三台校内主机，故不再按域判断、一律 DIRECT；
+        // 这与 ai_client「不轻易设 findProxy」的顾虑不冲突——那条针对的是公网 AI 端点
+        // （公司网络必须借代理才出得去），两个方向的诉求不同。
+        ..findProxy = (uri) => 'DIRECT';
       try {
         final uri = Uri.parse(r.url);
         final HttpClientRequest req = r.method == 'POST'
@@ -126,13 +125,12 @@ Future<_BytesResp> _httpBytesInIsolate(_HttpReq r) => Isolate.run(() async {
         ..connectionTimeout = const Duration(seconds: 12)
         ..idleTimeout = const Duration(seconds: 15)
         ..badCertificateCallback = ((cert, host, port) => true)
-        ..findProxy = (uri) {
-          final host = uri.host.toLowerCase();
-          if (host.endsWith('.zju.edu.cn') || host == 'zju.edu.cn') {
-            return 'DIRECT';
-          }
-          return HttpClient.findProxyFromEnvironment(uri);
-        };
+        // 教务恒直连（任务 #13）：正方/CAS/素拓全部在 *.zju.edu.cn，教务对境外/代理
+        // 出口（Clash 类 TUN、系统代理、加速器）做风控，走代理时连不上，直连才正常。
+        // 本客户端只打这三台校内主机，故不再按域判断、一律 DIRECT；
+        // 这与 ai_client「不轻易设 findProxy」的顾虑不冲突——那条针对的是公网 AI 端点
+        // （公司网络必须借代理才出得去），两个方向的诉求不同。
+        ..findProxy = (uri) => 'DIRECT';
       try {
         final uri = Uri.parse(r.url);
         final HttpClientRequest req = r.method == 'POST'

@@ -33,12 +33,20 @@ class AiConfig {
     this.baseUrl = '',
     this.apiKey = '',
     this.model = '',
+    this.direct = false,
   });
 
   final AiProvider provider;
   final String baseUrl;
   final String apiKey;
   final String model;
+
+  /// AI 直连开关（任务 #13）：true 时请求绕过系统代理/环境变量代理（findProxy=DIRECT），
+  /// false（默认）维持旧行为——走系统代理，保障公司内网等必须借代理出网的场景。
+  /// 为什么默认 false：代理下连不出去的代价高于偶发 TLS 握手失败的代价；
+  /// 开着 Clash 类代理的用户遇到 HandshakeException（代理拦截 https）时手动打开本开关。
+  /// 只影响 AI 端点；教务网（zju_client）恒直连，不受此开关控制。
+  final bool direct;
 
   /// 是否可以发起请求（设置页/入口按钮据此决定 AI 助手可用与否）。
   /// 地址必须带 http(s):// 协议头：漏写 scheme（如只填 api.deepseek.com）会在发送时
@@ -58,20 +66,24 @@ class AiConfig {
     String? baseUrl,
     String? apiKey,
     String? model,
+    bool? direct,
   }) =>
       AiConfig(
         provider: provider ?? this.provider,
         baseUrl: baseUrl ?? this.baseUrl,
         apiKey: apiKey ?? this.apiKey,
         model: model ?? this.model,
+        direct: direct ?? this.direct,
       );
 
   /// 序列化（供沙箱持久化）。密钥随配置一起落盘是设计使然：没有密钥配置就没意义。
+  /// direct 恒写入（不落 false 的旧配置文件由 fromJson 缺键回落 false，向后兼容）。
   Map<String, Object?> toJson() => <String, Object?>{
         'provider': provider.name,
         'baseUrl': baseUrl,
         'apiKey': apiKey,
         'model': model,
+        'direct': direct,
       };
 
   /// 容错反序列化：null / 非 Map / 坏字段类型 / 未知 provider 字符串
@@ -90,6 +102,7 @@ class AiConfig {
       baseUrl: _str(json['baseUrl']),
       apiKey: _str(json['apiKey']),
       model: _str(json['model']),
+      direct: json['direct'] == true,
     );
   }
 

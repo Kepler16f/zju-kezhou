@@ -388,10 +388,38 @@ void main() {
       expect(back.baseUrl, c.baseUrl);
       expect(back.apiKey, c.apiKey);
       expect(back.model, c.model);
+      expect(back.direct, c.direct);
       expect(back.enabled, isTrue);
       expect(
           AiConfig.fromJson(<String, Object?>{'provider': 'OpenAI'}).provider,
           AiProvider.openai);
+    });
+
+    test('direct 序列化往返：true 落盘后读回仍为 true', () {
+      final c = _cfg(AiProvider.openai).copyWith(direct: true);
+      final json = jsonDecode(jsonEncode(c.toJson())) as Map<String, dynamic>;
+      expect(json['direct'], isTrue);
+      final back = AiConfig.fromJson(json);
+      expect(back.direct, isTrue);
+    });
+
+    test('direct 容错：缺键 / 非 true 的垃圾值一律回落 false（旧配置兼容）', () {
+      final old = AiConfig.fromJson(<String, Object?>{
+        'provider': 'openai',
+        'baseUrl': 'https://api.example.com',
+        'apiKey': 'k',
+      });
+      expect(old.direct, isFalse);
+      for (final junk in <Object?>['true', 1, null, <String>['x'], false]) {
+        expect(
+            AiConfig.fromJson(<String, Object?>{
+              'provider': 'openai',
+              'baseUrl': 'https://api.example.com',
+              'apiKey': 'k',
+              'direct': junk,
+            }).direct,
+            isFalse);
+      }
     });
 
     test('enabled 三件套：缺提供方或地址或密钥都算未配置', () {
@@ -410,6 +438,10 @@ void main() {
       expect(d.provider, c.provider);
       expect(d.baseUrl, c.baseUrl);
       expect(d.apiKey, c.apiKey);
+      expect(d.direct, c.direct);
+      // direct 也能单独翻（AI 直连开关在设置页就是靠这一改）
+      expect(c.copyWith(direct: true).direct, isTrue);
+      expect(c.copyWith(direct: true).model, c.model);
     });
   });
 
@@ -523,6 +555,57 @@ void main() {
       );
       expect((out as AiFailure).kind, AiFailKind.network);
       expect(calls, 2);
+    });
+
+    test('HandshakeException → network，文案带代理/直连自救提示（任务 #13）', () async {
+      var calls = 0;
+      final client = AiClient(
+        _cfg(AiProvider.openai),
+        sender: (req) async {
+          calls++;
+          throw const HandshakeException('测试：TLS 握手失败');
+        },
+      );
+      // network 可重试（与 SocketException 用例同策略，重试共 2 次）；
+      // 本用例重点断言文案：代理拦截 https 时给用户的自救提示必须出现。
+      final out = await client.chat(
+        system: 's',
+        messages: [
+          {'role': 'user', 'content': 'q'}
+        ],
+      );
+      final failure = out as AiFailure;
+      expect(failure.kind, AiFailKind.network);
+      expect(calls, 2);
+      expect(failure.message, contains('直连'));
+      expect(failure.message, contains('代理'));
+    });
+
+    test('config.direct 透传到 sender 收到的请求上（直连开关的传递链）', () async {
+      AiHttpRequest? seen;
+      Future<AiHttpReply> fakeSender(AiHttpRequest req) async {
+        seen = req;
+        return const AiHttpReply(200, '{"choices":[{"message":{"content":"ok"}}]}');
+      }
+
+      await AiClient(_cfg(AiProvider.openai, key: 'k'), sender: fakeSender)
+          .chat(
+        system: 's',
+        messages: [
+          {'role': 'user', 'content': 'q'}
+        ],
+      );
+      expect(seen!.direct, isFalse);
+
+      await AiClient(_cfg(AiProvider.openai).copyWith(direct: true),
+              sender: fakeSender)
+          .chat(
+        system: 's',
+        messages: [
+          {'role': 'user', 'content': 'q'}
+        ],
+      );
+      expect(seen!.direct, isTrue);
     });
 
     test('未配置时不发请求，直接 notConfigured', () async {
