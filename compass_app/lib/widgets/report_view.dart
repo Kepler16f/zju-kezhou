@@ -86,6 +86,16 @@ class ReportSection extends StatelessWidget {
                         color: (t['gap'] as num) > 0 ? _colors['red']! : null),
                   ],
                 ),
+                // 已选未获（诉求 #4）：与已取得并列但绝不合并，提示口径。
+                if ((t['selected_no_credit'] as num? ?? 0) > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      '已选未获 ${t['selected_no_credit']} 门（未计入已取得，也不抵扣缺口）',
+                      style:
+                          TextStyle(fontSize: 11, color: _colors['blue']),
+                    ),
+                  ),
                 // 总学分口径（v1.4）：方案声明「最低毕业学分」（引擎 totals.
                 // plan_total_credits 原样展示）；total_basis=module_sum_fallback
                 // 时引擎不输出该字段，此行不显示（口径见 caliber_notes/trace）。
@@ -102,6 +112,8 @@ class ReportSection extends StatelessWidget {
           ),
         ),
         if (belowTotals != null) belowTotals!,
+        if (report['foreign_rule'] is Map)
+          _foreignRuleCard((report['foreign_rule'] as Map).cast<String, dynamic>()),
         const SizedBox(height: 8),
         KeyedSubtree(
           key: modulesKey,
@@ -285,6 +297,38 @@ class ReportSection extends StatelessWidget {
         ),
       );
 
+  /// 外语等级规则卡（用户反馈 #10）：设置页选择的等级如何落到方案学分，
+  /// 必须与审计结果同屏可见——L1/L2（2026 级起）必修大学英语IV，L3 免修。
+  Widget _foreignRuleCard(Map<String, dynamic> rule) {
+    final level = '${rule['level'] ?? ''}';
+    final credits = rule['required_credits'];
+    final exempt = rule['exempt'] == true;
+    final course = '${rule['required_course'] ?? ''}';
+    final newRule = rule['new_rule'] == true;
+    final detail = exempt
+        ? '外语模块按 0 分核算，免修，无需修读大学英语IV'
+        : course.isNotEmpty
+            ? '外语模块按 ${_fmtCredits(credits)} 分核算，必修$course'
+            : '外语模块按 ${_fmtCredits(credits)} 分核算';
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.translate, size: 15, color: Colors.indigo),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(
+              '外语等级 $level（${newRule ? '2026级新规' : '旧规'}）：$detail',
+              style: const TextStyle(
+                  fontSize: 11, height: 1.4, color: Colors.indigo),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _moduleTile(BuildContext context, Map<String, dynamic> m) {
     final color = _colors[m['color']] ?? Colors.grey;
     final onSurface = Theme.of(context).colorScheme.onSurface;
@@ -339,6 +383,11 @@ class ReportSection extends StatelessWidget {
                       _colors['green']!),
                   _stat('在修课程', '${stateCounts[PlanCourseState.active] ?? 0} 门',
                       _colors['blue']!),
+                  if ((m['selected_no_credit'] as num? ?? 0) > 0)
+                    _stat(
+                        '已选未获',
+                        '${m['selected_no_credit']} 门（不计入已修）',
+                        _colors['blue']!),
                   _stat(
                       '未修课程',
                       '${stateCounts[PlanCourseState.unknown] ?? 0} 门',

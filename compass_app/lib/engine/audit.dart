@@ -42,13 +42,33 @@ import 'timeline.dart';
 
 // ── 选课组与外语等级口径（纯函数，独立可测；Python 镜像按同一规则对齐）──────
 
-/// 外语等级 → 外语类模块「要求学分」封顶值（用户 2026-10-18 明确口径：
-/// L1 计 6 分、L2 计 4.5 分、L3 计 3 分；按等级封顶，绝不抬高方案原要求）。
+/// 外语等级 → 外语类模块「要求学分」封顶值（2026 级前口径：L1 计 6 分、
+/// L2 计 4.5 分、L3 计 3 分；按等级封顶，绝不抬高方案原要求）。
 const Map<String, double> kForeignLangCaps = <String, double>{
   'L1': 6.0,
   'L2': 4.5,
   'L3': 3.0,
 };
+
+/// 2026 级起的外语新规（用户反馈 #10）：L1/L2 必修「大学英语IV」，
+/// L3 免修（要求学分 0）。等级档位改为**强制**该值（可升可降），
+/// 因为方案 PDF 里仍写「L1 应修 6 / L2 应修 4.5 / L3 应修 3」，
+/// 只降不升会让 L1 停在方案写的 3 分、L3 永远免修不掉。
+const int kForeignNewRuleGradeYear = 2026;
+const String kForeignRequiredCourse = '大学英语IV';
+const Map<String, double> kForeignLangCaps2026 = <String, double>{
+  'L1': 6.0,
+  'L2': 4.5,
+  'L3': 0.0,
+};
+
+/// 按入学年级取外语等级档位要求；2026 级起用新规，否则用旧封顶值。
+double? foreignCapForLevel(String level, int? gradeYear) {
+  final map = (gradeYear != null && gradeYear >= kForeignNewRuleGradeYear)
+      ? kForeignLangCaps2026
+      : kForeignLangCaps;
+  return map[level];
+}
 
 /// 报告口径说明（顶层 caliber_notes 的固定两条，字面量被测试逐字断言；
 /// UI 据此对 earned / selected_no_credit 用不同颜色注释）。
@@ -176,6 +196,23 @@ bool isForeignLangModule(Map<String, dynamic> m) {
 bool isForeignCourseName(String name) =>
     name.contains('外语') || name.contains('英语');
 
+/// 素质拓展课堂模块判据（第二/三/四课堂）：无课程表、按平台记点认定，
+/// 不能用「排课窗口/重修」口径报延毕风险（用户 #9）。
+bool isPracticeModule(Map<String, dynamic> m) {
+  final t = '${m['module_path'] ?? ''} ${m['title'] ?? ''} ${m['category'] ?? ''}';
+  return t.contains('第二课堂') || t.contains('第三课堂') || t.contains('第四课堂');
+}
+
+/// 认定类模块（美育/劳育/创新创业/心理健康/军体/思政）：按清单认定，
+/// 无固定开课窗口，同样不按课程排课口径报风险。
+bool isCertifiedModule(Map<String, dynamic> m) =>
+    m['certified_category'] is String;
+
+/// 方案课程的开课学期列表；null/缺字段（认定类合成课程）统一为空列表，
+/// 表示「方案未标注开课窗口」，调用方据此跳过开课冲突判断而不是崩溃。
+List<String> offeredOf(Map<String, dynamic> c) =>
+    (c['offered'] as List?)?.map((e) => '$e').toList() ?? const <String>[];
+
 /// 外语板块行锚定（v1.5.1 #7）：详见 build() 调用点注释。纯函数：返回可能需要
 /// 补挂合成行的新 plan（浅拷贝 + courses 追加），条件不满足一律原样返回。
 Map<String, dynamic> _attachForeignAnchors(
@@ -295,7 +332,7 @@ double effectiveRequiredCredits(
 }
 
 class AuditEngine {
-  static const engineVersion = '1.5';
+  static const engineVersion = "1.7";
   static const graduationYears = 6;
 
   final Map<String, dynamic> plans; // major -> PlanFile（内置 golden）
@@ -357,9 +394,18 @@ class AuditEngine {
       }
       foreignCredits = v;
     }
-    // 自选学分优先（=用户指定的模块要求）；level 档位向后兼容（映射 caps 作默认）
-    final foreignCap = foreignCredits ??
-        (foreignLevelRaw == null ? null : kForeignLangCaps['$foreignLevelRaw']!);
+    // 自选学分优先（=用户指定的模块要求）；level 档位按入学年级取档：
+    // 2026 级起 L1/L2/L3 → 6/4.5/0（强制，可升可降），此前仍只降不升。
+    final gradeYearForRule =
+        int.tryParse('${(record['student'] as Map?)?['grade'] ?? ''}');
+    final levelCap = foreignLevelRaw == null
+        ? null
+        : foreignCapForLevel('$foreignLevelRaw', gradeYearForRule);
+    final foreignCap = foreignCredits ?? levelCap;
+    final foreignNewRule = foreignCredits == null &&
+        foreignLevelRaw != null &&
+        gradeYearForRule != null &&
+        gradeYearForRule >= kForeignNewRuleGradeYear;
 
     final recordCourses = (record['courses'] as List).cast<Map<String, dynamic>>();
     final (matched, unmatched) = matchRecordToPlan(recordCourses, plan);
@@ -428,6 +474,14 @@ class AuditEngine {
     for (final m in planModules) {
       earned[m['module_id'] as String] = 0.0;
     }
+    // 方案行同一性键：课号优先，空课号（认定类合成行/教务导出）退回课名。
+    // 全用 '' 当键会让同模块多门无号课互相顶替（用户 #5：军训/国家安全教育
+    // 曾被合并到同一门心理课）。
+    String courseKey(Map<String, dynamic> c) {
+      final cid = '${c['course_id'] ?? ''}'.trim();
+      return cid.isNotEmpty ? cid : 'n|${c['name'] ?? ''}'.trim();
+    }
+
     final passedIds = <String>{};
     final earnedCids = <String>{}; // 已获学分：通过且计入学分（与 earned 累加同条件）
     final selectedNoCreditIds = <String>{}; // 已选未获学分：已修未取得学分的课程
@@ -437,30 +491,33 @@ class AuditEngine {
       final r = pair[0] as Map<String, dynamic>, c = pair[1] as Map<String, dynamic>;
       final credited = isPassed(r) && (r['credit_included'] as bool? ?? true);
       for (final row in membershipsOf(c)) {
-        final cid = '${row['course_id']}';
+        final key = courseKey(row);
         final mid = '${row['module_id']}';
-        matchedRecordByPlanId.putIfAbsent(cid, () => r);
+        matchedRecordByPlanId.putIfAbsent(key, () => r);
         if (!credited) {
           // 在修未出分 / 已修未过 / 弃修待录缓考无效：已选但未获学分
           // （多标签课程每个所属模块都计：selected_no_credit 同步双计）
-          selectedNoCreditIds.add(cid);
+          selectedNoCreditIds.add(key);
         }
-        if (isPassed(r)) passedIds.add(cid);
+        if (isPassed(r)) passedIds.add(key);
         // 同一门课重修多次只计一次学分（(课, 模块) 由首条通过记录认领）；
         // 多标签课程在每个所属模块分别计学分（多重计分，培养方案口径）；
         // credit_included=false（弃修/待录/缓考/无效）不计入已取得学分，
         // 但仍视为已通过，避免重复出现在待修。
-        if (isPassed(r) && earnedClaimed.add('$cid|$mid') && credited) {
+        if (isPassed(r) && earnedClaimed.add('$key|$mid') && credited) {
           earned[row['module_id'] as String] =
               earned[row['module_id'] as String]! + (row['credits'] as num).toDouble();
-          earnedCids.add(cid);
+          earnedCids.add(key);
         }
       }
     }
 
     final byId = <String, Map<String, dynamic>>{};
     for (final c in (plan['courses'] as List).cast<Map<String, dynamic>>()) {
-      byId[c['course_id'] as String] = c;
+      // 空课号不是有效键（认定类合成行/教务导出空串）：放进 byId 会让先修
+      // 检查与计划选课按 '' 串到同一门课。
+      final cid = c['course_id'];
+      if (cid is String && cid.trim().isNotEmpty) byId[cid] = c;
     }
 
     // 计划选课（已选未出分）：计入选课组口径的“已选未获学分”。
@@ -474,7 +531,8 @@ class AuditEngine {
       if (cid.isNotEmpty) {
         selectedNoCreditIds.add(cid);
       } else if (nm.isNotEmpty) {
-        selectedNoCreditIds.add(nm);
+        // 与 courseKey 同源：空课号行统一用 'n|课名' 键。
+        selectedNoCreditIds.add('n|$nm');
       }
     }
 
@@ -508,7 +566,7 @@ class AuditEngine {
       final nm = '${c['name'] ?? ''}'.trim();
       if (nm.isEmpty || activeNameList.isEmpty) return false;
       if (activeNames.contains(nm)) return true;
-      return getCloseMatches(nm, activeNameList, n: 1, cutoff: 0.85).isNotEmpty;
+      return bestVariantAwareMatch(nm, activeNameList) != null;
     }
 
     // 模块课程一次取齐（保持 plan['courses'] 原序）：剩余/明细/组口径共用
@@ -543,12 +601,13 @@ class AuditEngine {
       final req0 = (m['required_credits'] as num).toDouble();
       var req = effectiveRequiredCredits(m, moduleCourses, rule: groupRule);
       if ((req - req0).abs() > 1e-9) groupApplied = true;
-      // 外语口径：仅外语类模块。自选学分=用户指定的模块要求（可升可降，
-      // 用户明确「可修超过要求学分」）；level 档位向后兼容旧口径只降不升
-      // （缺省 → 方案原要求）。
+      // 外语口径：仅外语类模块。自选学分=用户指定的模块要求（可升可降）；
+      // level 档位 2026 级起强制新规值（可升可降），此前仍只降不升。
       if (foreignCap != null && isForeignLangModule(m)) {
         if (foreignCredits != null) {
           req = foreignCredits;
+        } else if (foreignNewRule) {
+          req = foreignCap;
         } else if (foreignCap < req) {
           req = foreignCap;
         }
@@ -558,8 +617,8 @@ class AuditEngine {
       final passedInGroup = <String>{};
       if (minCourses != null) {
         for (final c in moduleCourses) {
-          final cid = '${c['course_id']}';
-          if (passedIds.contains(cid)) passedInGroup.add(cid);
+          final key = courseKey(c);
+          if (passedIds.contains(key)) passedInGroup.add(key);
         }
       }
       // #3：多选一/任选其一——选够门数即整组达成，允许已获学分少于标注
@@ -571,14 +630,13 @@ class AuditEngine {
           ? 0.0
           : double.parse(
               (req - got).clamp(0.0, double.infinity).toStringAsFixed(2));
-      // 剩余可选 = 未通过课程；同一模块内同课号重复行只计一次
-      // （无课号行无法判同，不去重——宁缺勿猜）
+      // 剩余可选 = 未通过课程；同一模块内同课号（无号则同名）重复行只计一次
       final remaining = <Map<String, dynamic>>[];
       final seenRemainingIds = <String>{};
       for (final c in moduleCourses) {
-        final cid = '${c['course_id']}';
-        if (passedIds.contains(cid)) continue;
-        if (cid.isNotEmpty && !seenRemainingIds.add(cid)) continue;
+        final key = courseKey(c);
+        if (passedIds.contains(key)) continue;
+        if (!seenRemainingIds.add(key)) continue;
         remaining.add(c);
       }
       var openBeforeGrad = 0.0;
@@ -590,9 +648,14 @@ class AuditEngine {
       // 不得判绿——此时 gap 可能为 0，颜色仍按待补呈现。
       final countShort =
           minCourses != null && passedInGroup.length < minCourses;
+      // 无课程表的模块（第二/三/四课堂、认定类清单）：没有「未来可选学分」
+      // 概念，缺口一律按待补（黄）呈现，绝不判红/延毕（用户 #9）。
+      final noSchedule = isPracticeModule(m) || isCertifiedModule(m);
       final color = (gap <= 1e-9 && !countShort)
           ? 'green'
-          : (gap <= openBeforeGrad + 1e-9 ? 'yellow' : 'red');
+          : noSchedule
+              ? 'yellow'
+              : (gap <= openBeforeGrad + 1e-9 ? 'yellow' : 'red');
       final status = color == 'green'
           ? '🟢 已达成'
           : color == 'yellow'
@@ -635,10 +698,10 @@ class AuditEngine {
       final planCoursesOfModule = <Map<String, dynamic>>[];
       final seenPlanCourseIds = <String>{};
       for (final c in moduleCourses) {
-        final cid = '${c['course_id'] ?? ''}';
-        if (!seenPlanCourseIds.add(cid)) continue;
+        final key = courseKey(c);
+        if (!seenPlanCourseIds.add(key)) continue;
         final fi = futureIdx(c);
-        final record = matchedRecordByPlanId[cid];
+        final record = matchedRecordByPlanId[key];
         final src = c['source'];
         planCoursesOfModule.add(<String, dynamic>{
           'course_id': c['course_id'],
@@ -648,7 +711,7 @@ class AuditEngine {
           'offered_years': c['offered_years'],
           'terms': fi.map(Timeline.idxStr).toList(),
           'closed': fi.isEmpty,
-          'passed': passedIds.contains(cid),
+          'passed': passedIds.contains(key),
           // 多标签课程标记（v1.4）：该课在方案中归属多个模块，学分按各模块
           // 分别计（UI 可据此注明「此课学分已同时计入其归属的另一模块」）。
           if (planRowIsMultiTag(c)) 'multi_tag': true,
@@ -692,18 +755,11 @@ class AuditEngine {
       }
 
       // 已选未获学分课程数：方案课程里「已修未取得学分（未通过/在修未出分/
-      // 弃修待录缓考无效）或已列入计划选课」且尚未取得学分的去重门数。
-      // 键口径与上方一致：id 优先，空则用名（#7 外语板块无课号行）。
-      String rowKey(Map<String, dynamic> c) {
-        final cid = '${c['course_id'] ?? ''}'.trim();
-        return cid.isNotEmpty ? cid : '${c['name'] ?? ''}'.trim();
-      }
-
       final selectedNoCredit = planCoursesOfModule
           .where((c) {
-            final k = rowKey(c);
+            final k = courseKey(c);
             return k.isNotEmpty &&
-                !earnedCids.contains('${c['course_id']}') &&
+                !earnedCids.contains(k) &&
                 selectedNoCreditIds.contains(k);
           })
           .length;
@@ -744,7 +800,19 @@ class AuditEngine {
           '${c['course_id']}@p${(c['source'] as Map<String, dynamic>?)?['page']}';
 
       moduleWarnStart[mid] ??= warnings.length;
-      if (color == 'red' && gap > 0) {
+      if (noSchedule && gap > 0) {
+        // 课堂/认定类：只给信息提示，不按排课窗口/重修口径报延毕（#9）。
+        warnings.add({
+          'type': 'graduation_risk',
+          'level': 'yellow',
+          'text': isPracticeModule(m)
+              ? '「${m['module_path']}」素质拓展记点认定，无课程表可排课；'
+                  '请在素质拓展平台完成并提交认定，当前缺口 ${_g(gap)} 分。'
+              : '「${m['module_path']}」按认定类课程清单认定，无固定开课窗口；'
+                  '请按本科生院清单修读并提交认定，当前缺口 ${_g(gap)} 分。',
+          'refs': const <String>[],
+        });
+      } else if (color == 'red' && gap > 0) {
         final closed = remaining.where((c) => futureIdx(c).isEmpty).toList();
         final open = remaining.where((c) => futureIdx(c).isNotEmpty).toList();
         final closedCredit =
@@ -779,7 +847,7 @@ class AuditEngine {
         final tight = remaining.where((c) {
           if (futureIdx(c).isEmpty) return false;
           final cyc = c['offered_years'];
-          final off = (c['offered'] as List);
+          final off = offeredOf(c);
           return cyc != null || off.length == 1;
         }).toList();
         tight.sort((a, b) {
@@ -791,7 +859,7 @@ class AuditEngine {
           final cyc = c['offered_years'];
           final why = cyc != null
               ? '（隔年开课，仅 ${(cyc as List).join('、')} 学年）'
-              : '（仅${(c['offered'] as List).first}开课）';
+              : '（仅${offeredOf(c).first}开课）';
           final takenFailed = matched.any((pair) =>
               pair[1]['course_id'] == c['course_id'] && !isPassed(pair[0] as Map<String, dynamic>));
           final verb = takenFailed
@@ -845,12 +913,14 @@ class AuditEngine {
       final xi = semOfPlan[c['course_id']]!.first;
       final term = xi % 2 == 0 ? '秋' : '春';
       final ref = '${c['course_id']}@p${(c['source'] as Map?)?['page']}';
-      if (!(c['offered'] as List).contains(term)) {
+      final offered = offeredOf(c);
+      // offered 为空 = 方案未标注开课学期（认定类合成课程），无从判断，不告警
+      if (offered.isNotEmpty && !offered.contains(term)) {
         warnings.add({
           'type': 'offering_closed',
           'level': 'yellow',
           'text': '计划选课「${c['name']}」排在 ${Timeline.idxStr(xi)}，但培养方案标注仅'
-              '${(c['offered'] as List).join('/')}开课，需调整学期。',
+              '${offered.join('/')}开课，需调整学期。',
           'refs': [ref],
         });
       } else if (c['offered_years'] != null &&
@@ -1135,23 +1205,39 @@ class AuditEngine {
       });
     }
 
-    // 总学分口径（v1.4）：毕业总要求以方案声明 meta.total_credits（最低毕业
-    // 学分）为准，模块级要求照旧；模块求和只在方案未声明时回落（total_basis
-    // 注明口径，trace.notes 同步说明）。
+    // 总学分口径（v1.6）：毕业总要求以方案声明 meta.total_credits（最低毕业
+    // 学分）为准；素质拓展第二/三/四课堂属于方案总学分之外的额外毕业要求
+    // （真实方案原文「148.5+8」），按方案声明时单独加回，避免模块求和把
+    // 并列选项/微辅修重复计入（用户 #8）。模块求和只在方案未声明时回落。
     final planTotalRaw = (plan['meta'] as Map?)?['total_credits'];
     final planTotalCredits = planTotalRaw is num ? planTotalRaw.toDouble() : null;
+    final moduleRequired = double.parse(
+        displaySummary.fold<num>(0, (s, m) => s + m['required'])
+            .toStringAsFixed(2));
+    final practiceRequired = double.parse(displaySummary
+        .where(isPracticeModule)
+        .fold<num>(0, (s, m) => s + m['required'])
+        .toStringAsFixed(2));
+    final earnedTotal = double.parse(
+        displaySummary.fold<num>(0, (s, m) => s + m['earned'])
+            .toStringAsFixed(2));
+    final requiredTotal = planTotalCredits != null
+        ? double.parse((planTotalCredits + practiceRequired).toStringAsFixed(2))
+        : moduleRequired;
+    // 已选未获（诉求 #4）：与 earned 分开呈现，绝不并入已取得，也不抵扣 gap。
+    final selectedNoCreditTotal = displaySummary.fold<int>(
+        0, (s, m) => s + ((m['selected_no_credit'] as num?)?.toInt() ?? 0));
     final totals = {
-      'required': double.parse(
-          displaySummary.fold<num>(0, (s, m) => s + m['required'])
-              .toStringAsFixed(2)),
-      'earned': double.parse(
-          displaySummary.fold<num>(0, (s, m) => s + m['earned'])
-              .toStringAsFixed(2)),
+      'required': requiredTotal,
+      'earned': earnedTotal,
       'gap': double.parse(
-          displaySummary.fold<num>(0, (s, m) => s + m['gap'])
+          (requiredTotal - earnedTotal).clamp(0.0, double.infinity)
               .toStringAsFixed(2)),
+      'selected_no_credit': selectedNoCreditTotal,
+      'module_required': moduleRequired,
       if (planTotalCredits != null)
         'plan_total_credits': planTotalCredits, // 方案声明「最低毕业学分」原值
+      if (planTotalCredits != null) 'extra_practice_credits': practiceRequired,
       'total_basis':
           planTotalCredits != null ? 'plan_declared' : 'module_sum_fallback',
     };
@@ -1169,27 +1255,34 @@ class AuditEngine {
             '「任选其一」的模块按一个选项计一次要求学分，组内其他选项不报缺口。',
       if (planHasForeign)
         '外语口径：外语类模块要求学分可自选（审计动作 foreign_lang_credits 正数，'
-            '可超过方案原要求；或 foreign_lang_level L1=6 分、L2=4.5 分、L3=3 分'
-            '按档位封顶）；未选择时按方案原要求核算。',
+            '可超过方案原要求；或 foreign_lang_level 档位：2026 级起 L1=6 分、'
+            'L2=4.5 分（必修大学英语IV）、L3=0 分免修，2026 级前 L1=6 / L2=4.5 / '
+            'L3=3 且只降不升）；未选择时按方案原要求核算。',
     ];
     final traceNotes = <String>[
       if (foreignCap != null && planHasForeign)
         foreignCredits != null
             ? '外语要求学分自选 ${_g(foreignCredits)} 分：外语类模块要求学分'
                 '按 ${_g(foreignCap)} 分核算。'
-            : '外语等级 $foreignLevelRaw → 自选 ${_g(foreignCap)} 分：外语类模块'
-                '要求学分按 ${_g(foreignCap)} 分封顶。',
+            : foreignNewRule
+                ? '外语等级 $foreignLevelRaw（${gradeYearForRule} 级新规）→ 外语类'
+                    '模块要求学分按 ${_g(foreignCap)} 分核算'
+                    '${foreignCap == 0 ? '（免修，无需修读$kForeignRequiredCourse）' : '，必修$kForeignRequiredCourse'}。'
+                : '外语等级 $foreignLevelRaw → 自选 ${_g(foreignCap)} 分：外语类模块'
+                    '要求学分按 ${_g(foreignCap)} 分封顶。',
       if (foreignCap != null && !planHasForeign)
         foreignCredits != null
             ? '未在方案中识别外语类模块，foreign_lang_credits=$foreignCreditsRaw 未生效。'
             : '未在方案中识别外语类模块，foreign_lang_level=$foreignLevelRaw 未生效。',
       if (foreignCap == null && planHasForeign)
         '外语等级未选择，外语类模块按方案原要求核算。',
-      // 总学分口径（v1.4）：以方案声明为准；未声明则回落模块求和（宁缺勿猜）。
+      // 总学分口径（v1.6）：方案声明 + 素质拓展课堂额外学分；未声明则模块求和。
       if (planTotalCredits != null)
         '总计学分口径：方案声明最低毕业学分 ${_g(planTotalCredits)} 分'
-            '（meta.total_credits），各模块要求之和为 ${_g(totals['required'])} 分'
-            '——模块间课程交叉/折算时二者可不同，毕业总要求以方案声明为准。',
+            '${practiceRequired > 0 ? ' + 素质拓展课堂 ${_g(practiceRequired)} 分' : ''}'
+            ' = 应修 ${_g(totals['required'])} 分（各模块要求之和为 '
+            '${_g(totals['module_required'])} 分，含三选一/微辅修等重复口径，'
+            '毕业总要求以方案声明为准）。',
       if (planTotalCredits == null)
         '总计学分口径：方案未声明总学分（meta.total_credits 缺失），'
             '按各模块要求学分之和 ${_g(totals['required'])} 分回落计算。',
@@ -1204,6 +1297,16 @@ class AuditEngine {
       'warnings': warnings,
       'extra_courses': unmatched,
       'totals': totals,
+      if (foreignLevelRaw != null)
+        'foreign_rule': {
+          'level': '$foreignLevelRaw',
+          'required_credits': foreignCap,
+          'new_rule': foreignNewRule,
+          'required_course': (foreignNewRule && (foreignCap ?? 0) > 0)
+              ? kForeignRequiredCourse
+              : null,
+          'exempt': foreignNewRule && (foreignCap ?? 0) == 0,
+        },
       'caliber_notes': caliberNotes,
       'disclaimer': kDisclaimer,
       'trace': {

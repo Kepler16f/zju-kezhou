@@ -1138,13 +1138,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     final obs = m.byRound.values
         .where((o) => o.cap != null || o.selected != null)
         .toList();
+    // 课程号/学分/教师/时间/地点由 _detailBlock 统一渲染；这里只补合并入口
+    // 独有的信息，避免同一字段在放大卡里出现两遍（用户反馈：课程号/学分重复）。
     final lines = <String>[
       if (m.roundOrder.length > 1) '出现在 ${m.roundOrder.length} 个分类入口',
-      if (b.kch.isNotEmpty) '课程号 ${b.kch}',
-      if (b.xf != null) '学分 ${b.xf}',
-      if (b.teacher.isNotEmpty) '教师 ${b.teacher}',
-      if (b.sksj.isNotEmpty) '时间 ${b.sksj}',
-      if (b.cdmc.isNotEmpty) '地点 ${b.cdmc}',
       if (obs.isNotEmpty)
         '容量/已选快照：${obs.map((o) => '${o.cap ?? '-'}/${o.selected ?? '-'}').join(' → ')}',
       ...m.notes,
@@ -1848,7 +1845,9 @@ class _CourseBubbleState extends State<CourseBubble> {
     };
     final tags = <Widget>[
       _miniTag(courseStateLabel(effectiveState), stateColor),
-      if (c.xf != null) _miniTag('${c.xf} 学分', Colors.blueGrey),
+      // 展开态详情块已单列「学分」，chip 不再重复（用户反馈：学分显示两遍）
+      if (c.xf != null && !_expanded)
+        _miniTag('${c.xf} 学分', Colors.blueGrey),
       for (final t in widget.categories) _miniTag(t, Colors.indigo),
       if (c.jxbmc.isNotEmpty && seen.add(c.jxbmc))
         _miniTag(c.jxbmc, Colors.blueGrey),
@@ -2021,11 +2020,11 @@ class _CourseBubbleState extends State<CourseBubble> {
     }
 
     final store = widget.ratings;
-    if (store != null) return line(store.lookup(c.teacher, c.kcmc));
+    if (store != null) return line(store.lookupAny(c.teacher, c.kcmc));
     return FutureBuilder<TeacherRatingStore>(
       future: _loadSharedStore(),
       builder: (context, snap) => snap.connectionState == ConnectionState.done
-          ? line(snap.data?.lookup(c.teacher, c.kcmc))
+          ? line(snap.data?.lookupAny(c.teacher, c.kcmc))
           : line(null),
     );
   }

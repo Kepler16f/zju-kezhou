@@ -289,7 +289,7 @@ class GroupRuleTest(unittest.TestCase):
 
     def test_engine_trace_v14_and_caliber_notes(self):
         r = audit.build(rec(), PLANS["computer_science"])
-        self.assertEqual(r["trace"]["engine"], "v1.5")
+        self.assertEqual(r["trace"]["engine"], "v1.7")
         self.assertIn("caliber_notes", r)
         self.assertTrue(any("earned=已获学分" in n for n in r["caliber_notes"]))
         self.assertTrue(any("selected_no_credit=已选未获学分" in n for n in r["caliber_notes"]))
@@ -544,6 +544,65 @@ class MultiTagDoubleCountTest(unittest.TestCase):
         self.assertEqual(self._row(r, "m1")["earned"], 3.0)
         self.assertEqual(self._row(r, "m2")["earned"], 2.0)
         self.assertEqual(r["totals"]["earned"], 5.0)
+
+
+class CourseVariantMatchTest(unittest.TestCase):
+    """用户反馈：大学英语（I）/（II）/（H）是不同课程，只修一门不得互配。"""
+
+    def test_signature(self):
+        self.assertEqual(audit.course_variant_signature("大学英语（I）"), "1")
+        self.assertEqual(audit.course_variant_signature("大学英语（II）"), "2")
+        self.assertEqual(audit.course_variant_signature("大学英语（H）"), "h")
+        self.assertEqual(audit.course_variant_signature("大学英语II"), "2")
+        self.assertEqual(audit.course_variant_signature("大学英语Ⅱ"), "2")
+        self.assertEqual(audit.course_variant_signature("高等数学（上）"), "上")
+        self.assertEqual(audit.course_variant_signature("高等数学（下）"), "下")
+        self.assertEqual(audit.course_variant_signature("数据结构"), "")
+        self.assertEqual(audit.course_variant_signature("Python"), "")
+
+    def test_no_cross_variant_match(self):
+        self.assertEqual(
+            audit.best_variant_aware_match("大学英语（I）",
+                                           ["大学英语（II）", "大学英语（H）"]),
+            None)
+        self.assertEqual(
+            audit.best_variant_aware_match("大学英语（II）",
+                                           ["大学英语（I）", "大学英语（H）"]),
+            None)
+        self.assertEqual(
+            audit.best_variant_aware_match("大学英语II", ["大学英语（II）"]),
+            "大学英语（II）")
+        self.assertEqual(
+            audit.best_variant_aware_match("大学英语",
+                                           ["大学英语（I）", "大学英语（II）"]),
+            None)
+
+    def test_match_one_variant_only(self):
+        plan = {
+            "meta": {"major": "m", "grade": "2023"},
+            "modules": [{"module_id": "m1", "path": "通识教育/外语类",
+                         "required_credits": 8.0}],
+            "courses": [
+                {"course_id": "", "name": "大学英语（I）", "credits": 2.0,
+                 "module_id": "m1"},
+                {"course_id": "", "name": "大学英语（II）", "credits": 2.0,
+                 "module_id": "m1"},
+                {"course_id": "", "name": "大学英语（H）", "credits": 2.0,
+                 "module_id": "m1"},
+            ],
+        }
+        matched, unmatched = audit.match(
+            {"courses": [cr("", "大学英语（I）", 2.0)]}, plan)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0][1]["name"], "大学英语（I）")
+        self.assertEqual(unmatched, [])
+
+        matched2, unmatched2 = audit.match(
+            {"courses": [cr("", "大学英语（I）", 2.0)]},
+            {"courses": [{"course_id": "", "name": "大学英语（II）"},
+                         {"course_id": "", "name": "大学英语（H）"}]})
+        self.assertEqual(matched2, [])
+        self.assertEqual(len(unmatched2), 1)
 
 
 if __name__ == "__main__":

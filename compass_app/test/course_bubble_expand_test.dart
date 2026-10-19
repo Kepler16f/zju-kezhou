@@ -62,6 +62,9 @@ void main() {
     expect(find.text('地点 紫金港二教101'), findsOneWidget);
     expect(find.text('教师 张三'), findsOneWidget);
     expect(find.text('课程号 CS101'), findsOneWidget);
+    // 课程号/学分只由详情块渲染一次（用户反馈：放大卡里字段出现两遍）
+    expect(find.text('学分 3.5'), findsOneWidget);
+    expect(find.text('3.5 学分'), findsNothing);
     expect(find.text('评分 9.3/10（10 人评 · 查老师）'), findsOneWidget);
 
     // 再点收起

@@ -436,7 +436,11 @@ void main() {
         ],
       }, plan);
       final totals = report['totals'] as Map;
-      expect(totals['required'], 14.0); // 12 + 2，叶子板块之和
+      // v1.6 口径：方案声明了最低毕业学分 165，totals.required 以声明为准
+      // （module_required 才是叶子板块之和 14）；这样毕业总要求不会被
+      // 三选一/微辅修的重复模块口径放大或缩小（用户反馈 #8）。
+      expect(totals['required'], 165.0);
+      expect(totals['module_required'], 14.0); // 12 + 2，叶子板块之和
       expect(totals['earned'], 4.0);
       expect(totals['required'], lessThanOrEqualTo(165.0 + 2.0));
       // 三色 summary 只含叶子板块，无父板块行
@@ -620,7 +624,8 @@ void main() {
       expect(modules.map((m) => m['module_id']),
           ['sec1-美育类', 'sec2-劳育类', 'sec3-创新创业类', 'sec4-心理健康类']);
       expect(moduleOf(p, 'sec1-美育类')['required_credits'], 2.0);
-      expect(moduleOf(p, 'sec2-劳育类')['required_credits'], 0.0); // 32学时≠学分
+      // 32 学时按 16 学时=1 学分折算为 2 学分（学时口径修复，用户反馈 #4）
+      expect(moduleOf(p, 'sec2-劳育类')['required_credits'], 2.0);
       expect(moduleOf(p, 'sec3-创新创业类')['required_credits'], 2.0);
       expect(moduleOf(p, 'sec4-心理健康类')['required_credits'], 2.0);
       expect(moduleOf(p, 'sec4-心理健康类')['certified_category'], '心理健康类');
@@ -656,8 +661,9 @@ void main() {
       expect(psych['required'], 2.0);
       expect(psych['earned'], 1.0); // 核心诉求：认定类模块 earned > 0
       final totals = report['totals'] as Map;
-      // required = 美育2 + 劳育0 + 创新创业2 + 心理健康2 = 6（此前认定要求整体缺失）
-      expect(totals['required'], 6.0);
+      // required = 美育2 + 劳育2（32学时折算）+ 创新创业2 + 心理健康2 = 8
+      // （此前认定要求整体缺失；劳育学时口径亦已修复）
+      expect(totals['required'], 8.0);
       expect(totals['earned'], 1.0);
       final extra =
           (report['extra_courses'] as List).cast<Map<String, dynamic>>();
@@ -739,6 +745,30 @@ void main() {
       expect(groups.single['required_credits'], 20.0);
       expect((groups.single['options'] as List).length, 3);
       expect((p['meta'] as Map)['total_credits'], 20.0);
+    });
+
+    test('独立「微辅修」板块剔出 required；三选一内的跨专业学习选项保留', () {
+      // 独立板块：结构上不是三选一的子项，只是方案附列的微辅修清单 → 不占要求学分
+      const withStandalone = PlanPdfSections(sections: [
+        PdfModuleSection(title: '主修课程', level: 1, creditsRaw: '100'),
+        PdfModuleSection(
+            title: '微辅修',
+            level: 1,
+            creditsRaw: '12.5',
+            courses: [PdfCourseRow(code: 'M1', name: '辅修课', credits: 12.5)]),
+      ]);
+      final p1 = planFileFromPdf(withStandalone, major: 'm', grade: '2026');
+      expect((p1['modules'] as List).map((m) => (m as Map)['module_id']),
+          ['sec0-主修课程']);
+
+      // 用户澄清：跨专业学习 = 参加其他专业的微辅修，是三选一的一个选项，
+      // 必须保留在组内，且组只计一次要求学分。
+      final p2 = planFileFromPdf(personality, major: 'm', grade: '2026');
+      final opts = ((p2['alternative_groups'] as List).single
+              as Map)['options'] as List;
+      expect(opts.map((o) => (o as Map)['title']),
+          contains('跨专业学习模块（微辅修）'));
+      expect(opts.length, 3);
     });
 
     test('并列模块接入审计：任一选项达成即整组绿，totals 不重复计', () {
@@ -841,6 +871,60 @@ void main() {
       expect(mods.map((m) => m['module_id']), ['sec1-博雅技艺']);
       expect(mods.single['required_credits'], 4.0);
       expect((p['meta'] as Map)['total_credits'], 4.0);
+    });
+  });
+
+  // ── 展示口径 #3：毕业要求伪板块 ─────────────────────────────────────────
+  group('毕业要求伪板块判据（#3）', () {
+    test('无课/无学分/非认定 → 剔除；认定类/有课/有学分 → 保留', () {
+      expect(
+          isContentlessSection(const PdfModuleSection(
+              title: '工程知识：能够将数学、自然科学和工程科学的基本原理用于复杂工程问题的表述',
+              level: 3,
+              notes: ['毕业要求 1'])),
+          isTrue);
+      // 认定类板块没有课程表，但有要求学分，必须保留（否则 UI 看不到心理/美育模块）
+      expect(
+          isContentlessSection(const PdfModuleSection(
+              title: '心理健康类',
+              level: 3,
+              notes: ['要求学生修读2学分心理健康类课程'])),
+          isFalse);
+      expect(
+          isContentlessSection(const PdfModuleSection(
+              title: '通识课程', level: 1, creditsRaw: '72.5')),
+          isFalse);
+      expect(
+          isContentlessSection(const PdfModuleSection(
+              title: '空标题但有课',
+              level: 2,
+              courses: [PdfCourseRow(code: '', name: '某课', credits: 2)])),
+          isFalse);
+    });
+  });
+
+  // ── 总学分口径 #8：方案声明 + 素质拓展课堂 ─────────────────────────────
+  group('总学分口径（#8）', () {
+    test('声明 148.5+8：required=156.5，plan_total=148.5，practice=8，不重复计', () {
+      const ps = PlanPdfSections(sections: [
+        PdfModuleSection(
+            title: '专业课程',
+            level: 1,
+            creditsRaw: '148.5',
+            notes: ['最低毕业学分 148.5+8']),
+        PdfModuleSection(title: '第二课堂', level: 1, creditsRaw: '8'),
+      ]);
+      final p = planFileFromPdf(ps, major: 'm', grade: '2026');
+      final report = AuditEngine({}).build(<String, dynamic>{
+        'student': {'major': 'm', 'grade': '2026', 'current_semester': '2026-A'},
+        'courses': const [],
+      }, p);
+      final totals = report['totals'] as Map;
+      expect(totals['plan_total_credits'], 148.5);
+      expect(totals['extra_practice_credits'], 8.0);
+      expect(totals['required'], 156.5);
+      expect(totals['total_basis'], 'plan_declared');
+      expect(totals['module_required'], 156.5); // 148.5 + 8
     });
   });
 }

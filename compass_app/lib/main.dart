@@ -21,6 +21,8 @@ import 'data/ai_prompts.dart';
 import 'data/credential_store.dart';
 import 'data/diagnostic_log.dart';
 import 'data/plan_models.dart';
+import 'data/plan_pdf_parse.dart' show parsePlanPdfText;
+import 'data/pdf_text_extractor.dart' show extractPdfText;
 import 'data/share_pack.dart';
 import 'data/xk_parse.dart'
     show TimetableParseResult, XkListParseResult, parseXkCourseList;
@@ -29,11 +31,13 @@ import 'data/zju_parse.dart';
 import 'data/zju_parse_ext.dart';
 import 'engine/adapters.dart';
 import 'engine/audit.dart';
+import 'engine/cache_versions.dart';
 import 'engine/foreign_grade_rule.dart';
 import 'engine/course_marks.dart';
 import 'engine/exam.dart';
 // 课程类别打通（「未分类」修复）：用审计方案板块补全展示链路的 category。
-import 'engine/plan_audit_adapter.dart' show applyPlanCategories;
+import 'engine/plan_audit_adapter.dart'
+    show applyPlanCategories, planFileFromPdf;
 import 'engine/selection.dart' show exportRowsFromPlanned, plannedCoursesFromChoosed;
 import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
@@ -406,9 +410,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           }
           final ap = s['audit_plan'];
           if (ap is Map) _auditPlan = ap.cast<String, dynamic>();
+          // 完整 record 随缓存恢复：升级/改外语等级后可原地重算，不必重新联网。
+          final rec = s['record'];
+          if (rec is Map) _lastRecord = rec.cast<String, dynamic>();
         });
       } catch (_) {/* 缓存损坏则忽略 */}
     }
+    // 缓存版本门禁（cache_versions.dart）：旧版构建器/旧引擎的结果不能原样
+    // 展示，否则用户升级后看到的仍是旧板块切分与旧总学分口径。
+    unawaited(_refreshStaleAuditCache());
     // 恢复上次匹配/选定的本人培养方案（带账号校验，换号不串台）。
     if (_loggedInAs != null) {
       final selRaw = await _store.readCache('plan_selection');
@@ -467,6 +477,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       'teacher_mode': _teacherMode,
       'student': _lastStudent,
       'audit_plan': _auditPlan,
+      'record': _lastRecord,
       'choosed': _choosed == null
           ? null
           : {
@@ -1102,6 +1113,72 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         semester: '${stu['current_semester'] ?? ''}',
       ),
     };
+  }
+
+  /// 升级后会话自愈（cache_versions.dart）：旧构建器的 audit_plan / 旧引擎的
+  /// report 若原样展示，用户会以为修复没生效。优先用本地 planpdf 缓存重建
+  /// 方案，再复用同一份 record 重算；没有 PDF 时至少按新引擎重算一次。
+  Future<void> _refreshStaleAuditCache() async {
+    final engineTag = '${_report?['trace']?['engine'] ?? ''}';
+    final reportStale =
+        engineTag.isNotEmpty && engineTag != 'v${AuditEngine.engineVersion}';
+    final planStale = isPlanCacheStale(_auditPlan);
+    if (!reportStale && !planStale) return;
+    await _assetsReady;
+    if (!mounted) return;
+    var rebuiltPlan = false;
+    if (planStale) rebuiltPlan = await _rebuildPlanFromCachedPdf();
+    if (rebuiltPlan || reportStale) {
+      await _recomputeAudit();
+      DiagnosticLog.instance.record('会话缓存',
+          detail: '检测到旧版缓存（方案重建${rebuiltPlan ? '成功' : '跳过'}），'
+              '已按引擎 v${AuditEngine.engineVersion} 重算');
+    }
+  }
+
+  /// 从本地 `cache_planpdf_*.pdf` 重新解析方案（升级后无需重新联网）。
+  /// 旧缓存没有 `meta.pdf_cache` 时按专业名匹配遗留 PDF；匹配不到返回 false。
+  Future<bool> _rebuildPlanFromCachedPdf() async {
+    final plan = _auditPlan;
+    final meta = plan?['meta'];
+    if (plan == null || meta is! Map) return false;
+    final mm = meta.cast<String, dynamic>();
+    var name = '${mm['pdf_cache'] ?? ''}'.trim();
+    var bytes = name.isEmpty ? null : await _store.readBinaryCache(name);
+    if (bytes == null || bytes.isEmpty) {
+      final names = await _store.listBinaryCacheNames('planpdf_');
+      final major = '${mm['major'] ?? ''}'.trim();
+      for (final n in names) {
+        final b = await _store.readBinaryCache(n);
+        if (b == null || b.isEmpty) continue;
+        if (major.isEmpty || extractPdfText(b).contains(major)) {
+          name = n;
+          bytes = b;
+          break;
+        }
+      }
+    }
+    if (bytes == null || bytes.isEmpty) return false;
+    final parsed = parsePlanPdfText(extractPdfText(bytes));
+    if (parsed.isEmpty) return false;
+    // 旧缓存的 meta.total_credits 可能是错误的模块求和（如 172.5）：构建器
+    // 版本落后时传 null，让 planFileFromPdf 从 PDF 原文「最低毕业学分」取值。
+    final bv = (mm['builder_version'] as num?)?.toInt() ?? 0;
+    final totalCredits = bv >= kPlanBuilderVersion
+        ? (mm['total_credits'] as num?)?.toDouble()
+        : null;
+    final rebuilt = planFileFromPdf(
+      parsed,
+      major: '${mm['major'] ?? ''}',
+      grade: '${mm['grade'] ?? ''}',
+      totalCredits: totalCredits,
+      transcript: _courses,
+      sourceDoc: '${mm['source_doc'] ?? '培养方案 PDF 解析（本地缓存重建）'}',
+    );
+    final rebuiltMeta = rebuilt['meta'];
+    if (rebuiltMeta is Map) rebuiltMeta['pdf_cache'] = name;
+    _auditPlan = rebuilt;
+    return true;
   }
 
   /// 设置页生效的外语应修学分：数字串直接用（0=免修），L1/L2/L3 用引擎 caps（#8）；

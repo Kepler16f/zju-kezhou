@@ -2,6 +2,11 @@
 /// 由 engine/audit.dart 原 _isPassed/_match 逐行搬移（2026-10-15，选课建议复用），
 /// 行为必须与搬移前逐字节一致：护栏 = golden_dart_report.json 字节 diff + 双引擎 parity；
 /// 遍历顺序不可改（cross_engine_parity 按 index 比对 matched/unmatched 列表元素）。
+///
+/// 2026-10-19 用户反馈（v1.7）：新增「课程变体签名」隔离
+/// （courseVariantSignature / bestVariantAwareMatch）——大学英语（I）、
+/// 大学英语（II）、大学英语（H）是三门不同课程，只修其中一门时，
+/// 绝不允许把另外两门也模糊匹配成已修；engine/audit.py 同步镜像。
 library;
 
 import 'timeline.dart';
@@ -27,7 +32,11 @@ bool isPassed(Map<String, dynamic> r) {
   final names = <String>[];
   final byName = <String, Map<String, dynamic>>{};
   for (final c in (plan['courses'] as List).cast<Map<String, dynamic>>()) {
-    byId[c['course_id'] as String] = c;
+    // 空串不是有效课号：认定类合成行、部分教务导出都会带 ''。若让它进
+    // byId，所有空课号的成绩行会精确命中同一门课（曾导致军训/国家安全
+    // 教育全部挂到「大学生心理适应与发展」），必须按无效键跳过。
+    final cid = c['course_id'];
+    if (cid is String && cid.trim().isNotEmpty) byId[cid] = c;
     names.add(c['name'] as String);
     byName[c['name'] as String] = c;
   }
@@ -36,11 +45,11 @@ bool isPassed(Map<String, dynamic> r) {
   for (final r in recordCourses) {
     Map<String, dynamic>? course;
     final cid = r['course_id'];
-    if (cid != null && byId.containsKey(cid)) {
+    if (cid is String && cid.trim().isNotEmpty && byId.containsKey(cid)) {
       course = byId[cid];
     } else {
-      final close = getCloseMatches(r['name'] as String, names, n: 1, cutoff: 0.85);
-      if (close.isNotEmpty) course = byName[close.first];
+      final close = bestVariantAwareMatch(r['name'] as String, names);
+      if (close != null) course = byName[close];
       // 归一化兜底：仅在相似度也落空时进入，命中唯一才认，否则维持 unmatched
       //（既有行为零变化：精确/相似度路径产出的 matched 对与顺序完全不变，
       //  金标/parity 不受影响）。
@@ -91,6 +100,116 @@ String normalizeCourseName(String name) {
     s = s.replaceAllMapped(re, (_) => e.value);
   }
   return s;
+}
+
+/// 课程变体签名：提取括号内/名字末尾的等级与班型记号（H、I/II/III、1-10、
+/// 一…十、上/中/下、甲/乙/丙/丁 等），并归一为同一写法。
+/// 用户反馈：大学英语（I）、大学英语（II）、大学英语（H）是三门不同课程；
+/// 只修了其中一门时，绝不能把另外两门也标成已修。签名不同即视为不同课程。
+String courseVariantSignature(String name) {
+  final s = _halfWidthAscii(name).toLowerCase();
+  final sigs = <String>[];
+  for (final m in _bracketGroup.allMatches(s)) {
+    final canon = _canonicalVariant(m.group(1) ?? '');
+    if (canon != null) sigs.add(canon);
+  }
+  // 括号内记号之外，再看去掉括号后的末尾记号（如「大学英语II」「数学A（上）」）。
+  final tail = _trailingVariant
+      .firstMatch(s.replaceAll(_bracketGroup, ''));
+  if (tail != null) {
+    final canon = _canonicalVariant(tail.group(1) ?? '');
+    if (canon != null) sigs.add(canon);
+  }
+  sigs.sort();
+  return sigs.join('|');
+}
+
+/// 变体安全的模糊匹配（替代裸 getCloseMatches）：先排除签名冲突的候选
+/// （I ≠ II ≠ H ≠ 上 ≠ 下…），再按相似度取最优。
+///  * 记录名带签名：只认同签名候选（同签名都没有时才允许无签名候选）；
+///  * 记录名无签名：候选里出现多个不同签名（I/II 并存）视为歧义，返回 null。
+String? bestVariantAwareMatch(String word, List<String> possibilities,
+    {double cutoff = 0.85}) {
+  final sig = courseVariantSignature(word);
+  final scored = <_VariantCandidate>[];
+  for (var i = 0; i < possibilities.length; i++) {
+    final p = possibilities[i];
+    final ps = courseVariantSignature(p);
+    if (sig.isNotEmpty && ps.isNotEmpty && ps != sig) continue;
+    final r = SeqMatcher(word, p).ratio();
+    if (r >= cutoff) {
+      scored.add(_VariantCandidate(r, i, p, ps));
+    }
+  }
+  if (scored.isEmpty) return null;
+  var pool = scored;
+  if (sig.isEmpty) {
+    final distinct =
+        scored.where((e) => e.signature.isNotEmpty).map((e) => e.signature).toSet();
+    if (distinct.length > 1) return null; // 泛名同时命中 I/II…：宁缺勿猜
+    final plain = scored.where((e) => e.signature.isEmpty).toList();
+    if (plain.isNotEmpty) pool = plain;
+  } else {
+    final same = scored.where((e) => e.signature == sig).toList();
+    if (same.isNotEmpty) pool = same;
+  }
+  pool.sort((a, b) {
+    final c = b.ratio.compareTo(a.ratio);
+    return c != 0 ? c : a.index.compareTo(b.index);
+  });
+  return pool.first.name;
+}
+
+class _VariantCandidate {
+  final double ratio;
+  final int index;
+  final String name;
+  final String signature;
+  const _VariantCandidate(this.ratio, this.index, this.name, this.signature);
+}
+
+/// 全角 ASCII → 半角（仅签名提取用；不影响匹配原文）。
+String _halfWidthAscii(String s) {
+  final sb = StringBuffer();
+  for (final ch in s.runes) {
+    sb.writeCharCode(ch >= 0xFF01 && ch <= 0xFF5E ? ch - 0xFEE0 : ch);
+  }
+  return sb.toString();
+}
+
+final RegExp _bracketGroup =
+    RegExp(r'[（(【\[《「『]([^）)】\]》」』]*)[）)】\]》」』]');
+
+final RegExp _trailingVariant = RegExp(
+    r'(?:^|[^a-z0-9])(h|i{1,3}|iv|v|vi{0,3}|ix|x|10|[1-9]'
+    r'|[一二三四五六七八九十]|[壹贰叁肆伍陆柒捌玖拾]'
+    r'|[ⅰⅱⅲⅳⅴⅵⅶⅷⅸⅹⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]'
+    r'|上|中|下|[甲乙丙丁]|[a-z])$');
+
+/// 变体记号 → 统一签名。罗马/中文/财务数字都折成阿拉伯数字，
+/// 全角罗马（Ⅰ..Ⅹ）单独列出（部分平台 toLowerCase 不折叠）。
+const Map<String, String> _variantTokens = {
+  'h': 'h',
+  'i': '1', 'ii': '2', 'iii': '3', 'iv': '4', 'v': '5',
+  'vi': '6', 'vii': '7', 'viii': '8', 'ix': '9', 'x': '10',
+  'ⅰ': '1', 'ⅱ': '2', 'ⅲ': '3', 'ⅳ': '4', 'ⅴ': '5',
+  'ⅵ': '6', 'ⅶ': '7', 'ⅷ': '8', 'ⅸ': '9', 'ⅹ': '10',
+  'Ⅰ': '1', 'Ⅱ': '2', 'Ⅲ': '3', 'Ⅳ': '4', 'Ⅴ': '5',
+  'Ⅵ': '6', 'Ⅶ': '7', 'Ⅷ': '8', 'Ⅸ': '9', 'Ⅹ': '10',
+  '1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
+  '6': '6', '7': '7', '8': '8', '9': '9', '10': '10',
+  '一': '1', '二': '2', '三': '3', '四': '4', '五': '5',
+  '六': '6', '七': '7', '八': '8', '九': '9', '十': '10',
+  '壹': '1', '贰': '2', '叁': '3', '肆': '4', '伍': '5',
+  '陆': '6', '柒': '7', '捌': '8', '玖': '9', '拾': '10',
+  '上': '上', '中': '中', '下': '下',
+  '甲': '甲', '乙': '乙', '丙': '丙', '丁': '丁',
+};
+
+String? _canonicalVariant(String raw) {
+  final t = _halfWidthAscii(raw).trim().toLowerCase();
+  if (t.isEmpty) return null;
+  return _variantTokens[t];
 }
 
 /// 在归一化名上做「唯一包含」匹配：记录归一化名与方案归一化名互相包含

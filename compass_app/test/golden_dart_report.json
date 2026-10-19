@@ -1373,7 +1373,10 @@
     "required": 103.0,
     "earned": 58.0,
     "gap": 45.0,
+    "selected_no_credit": 6,
+    "module_required": 103.0,
     "plan_total_credits": 103.0,
+    "extra_practice_credits": 0.0,
     "total_basis": "plan_declared"
   },
   "caliber_notes": [
@@ -1384,9 +1387,9 @@
   "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
   "trace": {
     "plan": "2023级计算机专业本科培养方案（合成演示样例） 2023级（核验日 2026-10-13）",
-    "engine": "v1.5",
+    "engine": "v1.7",
     "notes": [
-      "总计学分口径：方案声明最低毕业学分 103 分（meta.total_credits），各模块要求之和为 103 分——模块间课程交叉/折算时二者可不同，毕业总要求以方案声明为准。"
+      "总计学分口径：方案声明最低毕业学分 103 分 = 应修 103 分（各模块要求之和为 103 分，含三选一/微辅修等重复口径，毕业总要求以方案声明为准）。"
     ]
   }
 }

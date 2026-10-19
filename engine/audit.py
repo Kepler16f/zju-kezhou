@@ -29,15 +29,29 @@ import re
 import common
 from common import PASS_GRADE, SEMESTERS_PER_GRADE_YEAR, sem_idx, sem_str, idx_str
 
-ENGINE_VERSION = "1.5"
+ENGINE_VERSION = "1.7"
 GRADUATION_YEARS = 6  # 最长学籍年限（年），自入学学年起算
 PLAN_JSON = r'''{}'''  # golden 方案注入：{"computer_science": {...}, "software_engineering": {...}}
 
 # ── 选课组与外语等级口径（纯函数，独立可测；与 Dart engine/audit.dart 同一规则）──
 
-# 外语等级 → 外语类模块「要求学分」封顶值（用户 2026-10-18 明确口径：
-# L1 计 6 分、L2 计 4.5 分、L3 计 3 分；按等级封顶，绝不抬高方案原要求）。
+# 外语等级 → 外语类模块「要求学分」封顶值（2026 级前口径：L1 计 6 分、
+# L2 计 4.5 分、L3 计 3 分；按等级封顶，绝不抬高方案原要求）。
 FOREIGN_LANG_CAPS = {"L1": 6.0, "L2": 4.5, "L3": 3.0}
+
+# 2026 级起的外语新规（用户反馈 #10）：L1/L2 必修「大学英语IV」，L3 免修。
+# 等级档位改为强制该值（可升可降），因为方案 PDF 仍写 L1=6 / L2=4.5 / L3=3。
+FOREIGN_NEW_RULE_GRADE_YEAR = 2026
+FOREIGN_REQUIRED_COURSE = "大学英语IV"
+FOREIGN_LANG_CAPS_2026 = {"L1": 6.0, "L2": 4.5, "L3": 0.0}
+
+
+def foreign_cap_for_level(level, grade_year):
+    """按入学年级取外语等级档位要求；2026 级起用新规，否则用旧封顶值。"""
+    table = FOREIGN_LANG_CAPS_2026 if (
+        grade_year is not None and grade_year >= FOREIGN_NEW_RULE_GRADE_YEAR
+    ) else FOREIGN_LANG_CAPS
+    return table.get(str(level))
 
 # 报告口径说明（顶层 caliber_notes 的固定三条，字面量被测试逐字断言；
 # UI 据此对 earned / selected_no_credit 用不同颜色注释）。
@@ -137,6 +151,23 @@ def is_foreign_course_name(name):
     return "外语" in name or "英语" in name
 
 
+def is_practice_module(m):
+    """素质拓展课堂模块（第二/三/四课堂）：无课程表，按平台记点认定。"""
+    t = "%s %s %s" % (m.get("module_path") or "", m.get("title") or "", m.get("category") or "")
+    return "第二课堂" in t or "第三课堂" in t or "第四课堂" in t
+
+
+def is_certified_module(m):
+    """认定类模块（美育/劳育/创新创业/心理健康/军体/思政）。"""
+    return isinstance(m.get("certified_category"), str)
+
+
+def offered_of(c):
+    """方案课程开课学期列表；None/缺字段（认定类合成课程）→ []。
+    空列表表示方案未标注开课窗口，调用方跳过开课冲突判断而不是崩溃。"""
+    return list(c.get("offered") or [])
+
+
 # 全角罗马（小写区 U+2170..U+2169；大写区经 lower() 归入）→ 半角。
 _FW_ROMAN = {"ⅰ": "i", "ⅱ": "ii", "ⅲ": "iii", "ⅳ": "iv", "ⅴ": "v",
              "ⅵ": "vi", "ⅶ": "vii", "ⅷ": "viii", "ⅸ": "ix", "ⅹ": "x"}
@@ -190,6 +221,96 @@ def _replace_roman(s, token, rep):
 
 def _is_word_char(c):
     return ("a" <= c <= "z") or ("0" <= c <= "9")
+
+
+# ── 课程变体签名（与 Dart matching.courseVariantSignature 逐字对齐）──────────
+# 用户反馈：大学英语（I）/（II）/（H）是不同课程，只修一门时不得把另一门
+# 也匹配成已修。括号内或末尾的等级/班型记号参与签名，签名不同即不同课程。
+_VARIANT_TOKENS = {
+    "h": "h",
+    "i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
+    "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10",
+    "ⅰ": "1", "ⅱ": "2", "ⅲ": "3", "ⅳ": "4", "ⅴ": "5",
+    "ⅵ": "6", "ⅶ": "7", "ⅷ": "8", "ⅸ": "9", "ⅹ": "10",
+    "Ⅰ": "1", "Ⅱ": "2", "Ⅲ": "3", "Ⅳ": "4", "Ⅴ": "5",
+    "Ⅵ": "6", "Ⅶ": "7", "Ⅷ": "8", "Ⅸ": "9", "Ⅹ": "10",
+    "1": "1", "2": "2", "3": "3", "4": "4", "5": "5",
+    "6": "6", "7": "7", "8": "8", "9": "9", "10": "10",
+    "一": "1", "二": "2", "三": "3", "四": "4", "五": "5",
+    "六": "6", "七": "7", "八": "8", "九": "9", "十": "10",
+    "壹": "1", "贰": "2", "叁": "3", "肆": "4", "伍": "5",
+    "陆": "6", "柒": "7", "捌": "8", "玖": "9", "拾": "10",
+    "上": "上", "中": "中", "下": "下",
+    "甲": "甲", "乙": "乙", "丙": "丙", "丁": "丁",
+}
+_BRACKET_GROUP_RE = re.compile(r"[（(【\[《「『]([^）)】\]》」』]*)[）)】\]》」』]")
+_TRAILING_VARIANT_RE = re.compile(
+    r"(?:^|[^a-z0-9])(h|i{1,3}|iv|v|vi{0,3}|ix|x|10|[1-9]"
+    r"|[一二三四五六七八九十]|[壹贰叁肆伍陆柒捌玖拾]"
+    r"|[ⅰⅱⅲⅳⅴⅵⅶⅷⅸⅹⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]"
+    r"|上|中|下|[甲乙丙丁]|[a-z])$")
+
+
+def _half_width_ascii(s):
+    """全角 ASCII → 半角（仅签名提取，不改匹配原文）。"""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        out.append(chr(o - 0xFEE0) if 0xFF01 <= o <= 0xFF5E else ch)
+    return "".join(out)
+
+
+def _canonical_variant(raw):
+    t = _half_width_ascii(raw).strip().lower()
+    return _VARIANT_TOKENS.get(t)
+
+
+def course_variant_signature(name):
+    """提取课程变体签名（如「大学英语（I）」→"1"、「…（H）」→"h"）。"""
+    s = _half_width_ascii(name).lower()
+    sigs = []
+    for m in _BRACKET_GROUP_RE.finditer(s):
+        c = _canonical_variant(m.group(1))
+        if c:
+            sigs.append(c)
+    tail = _TRAILING_VARIANT_RE.search(_BRACKET_GROUP_RE.sub("", s))
+    if tail:
+        c = _canonical_variant(tail.group(1))
+        if c:
+            sigs.append(c)
+    sigs.sort()
+    return "|".join(sigs)
+
+
+def best_variant_aware_match(word, possibilities, cutoff=0.85):
+    """变体安全的模糊匹配（替代裸 get_close_matches）：
+    签名冲突的候选直接排除；记录名带签名时优先同签名；
+    记录名无签名且同时命中多个不同签名（I/II 并存）时判歧义，返回 None。"""
+    sig = course_variant_signature(word)
+    scored = []
+    for i, p in enumerate(possibilities):
+        ps = course_variant_signature(p)
+        if sig and ps and ps != sig:
+            continue
+        r = difflib.SequenceMatcher(None, word, p).ratio()
+        if r >= cutoff:
+            scored.append((r, i, p, ps))
+    if not scored:
+        return None
+    pool = scored
+    if not sig:
+        distinct = {s for _, _, _, s in scored if s}
+        if len(distinct) > 1:
+            return None
+        plain = [e for e in scored if not e[3]]
+        if plain:
+            pool = plain
+    else:
+        same = [e for e in scored if e[3] == sig]
+        if same:
+            pool = same
+    pool.sort(key=lambda e: (-e[0], e[1]))
+    return pool[0][2]
 
 
 def unique_normalized_match(record_name, names, name_to_course):
@@ -341,19 +462,22 @@ def match(record, plan):
     仍不命中时最后用「归一化名唯一包含」兜底（#7 外语等级变体写法；唯一候选
     才认，歧义放弃——与 Dart matchRecordToPlan 逐字对齐）。
     匹配失败的课程单独列示，不抵扣任何模块学分（防止"超修任意课"蒙混过关）。"""
-    by_id = {c["course_id"]: c for c in plan["courses"]}
+    # 空课号不是有效键（认定类合成行/教务导出空串）：放进 by_id 会让所有
+    # 无课号成绩行精确命中同一门课。
+    by_id = {c["course_id"]: c for c in plan["courses"]
+             if isinstance(c.get("course_id"), str) and c["course_id"].strip()}
     names = [c["name"] for c in plan["courses"]]
     name_to_course = {c["name"]: c for c in plan["courses"]}
     matched, unmatched = [], []
     for r in record["courses"]:
         course = None
         cid = r.get("course_id")
-        if cid and cid in by_id:
+        if isinstance(cid, str) and cid.strip() and cid in by_id:
             course = by_id[cid]
         else:
-            close = difflib.get_close_matches(r["name"], names, 1, 0.85)
-            if close:
-                course = name_to_course[close[0]]
+            close = best_variant_aware_match(r["name"], names)
+            if close is not None:
+                course = name_to_course[close]
             if course is None:
                 course = unique_normalized_match(r["name"], names, name_to_course)
         if course is None:
@@ -404,9 +528,19 @@ def build(record, plan, action=None, ui_active_names=None):
         if v is None or v < 0:
             raise ValueError("非法的外语要求学分：%s（需为非负数，0=免修）" % foreign_credits_raw)
         foreign_credits = v
-    # 自选学分优先（=用户指定的模块要求，可升可降）；level 档位向后兼容只降不升
+    # 自选学分优先（=用户指定的模块要求，可升可降）；level 档位按入学年级取档：
+    # 2026 级起 L1/L2/L3 → 6/4.5/0（强制，可升可降），此前仍只降不升。
+    grade_year_for_rule = None
+    try:
+        grade_year_for_rule = int(str((record.get("student") or {}).get("grade") or ""))
+    except (TypeError, ValueError):
+        grade_year_for_rule = None
     foreign_cap = foreign_credits if foreign_credits is not None else (
-        None if foreign_level_raw is None else FOREIGN_LANG_CAPS[str(foreign_level_raw)])
+        None if foreign_level_raw is None
+        else foreign_cap_for_level(foreign_level_raw, grade_year_for_rule))
+    foreign_new_rule = (foreign_credits is None and foreign_level_raw is not None
+                        and grade_year_for_rule is not None
+                        and grade_year_for_rule >= FOREIGN_NEW_RULE_GRADE_YEAR)
 
     matched, unmatched = match(record, plan)
     plan_has_foreign = any(is_foreign_lang_module(m) for m in plan["modules"])
@@ -449,6 +583,12 @@ def build(record, plan, action=None, ui_active_names=None):
             out.append(row)
         return out
 
+    def course_key(c):
+        """方案行同一性键：课号优先，空课号（认定类合成行/教务导出）退回课名。
+        全用 '' 当键会让同模块多门无号课互相顶替（用户 #5）。"""
+        cid = str(c.get("course_id") or "").strip()
+        return cid if cid else "n|" + str(c.get("name") or "").strip()
+
     multi_tag_course_count = 0  # 方案中多标签课程数（去重，供 trace.notes）
     counted_keys = set()
     for c in plan_rows_all:
@@ -471,35 +611,36 @@ def build(record, plan, action=None, ui_active_names=None):
         passed = _is_passed(r)
         credited = passed and r.get("credit_included") is not False
         for row in memberships_of(c):
-            cid = str(row.get("course_id"))
+            key = course_key(row)
             mid = str(row.get("module_id"))
-            matched_record_by_plan_id.setdefault(cid, r)
+            matched_record_by_plan_id.setdefault(key, r)
             if not credited:
                 # 在修未出分 / 已修未过 / 弃修待录缓考无效：已选但未获学分
                 # （多标签课程每个所属模块都计：selected_no_credit 同步双计）
-                selected_no_credit_ids.add(cid)
+                selected_no_credit_ids.add(key)
             if passed:
-                passed_ids.add(cid)
+                passed_ids.add(key)
             # 同一门课重修多次只计一次学分（(课,模块) 由首条通过记录认领）；
             # 多标签课程在每个所属模块分别计学分（培养方案口径）；
             # credit_included=False 不计入已取得学分但仍视为已通过。
-            claim = "%s|%s" % (cid, mid)
+            claim = "%s|%s" % (key, mid)
             if passed and credited and claim not in earned_claimed:
                 earned_claimed.add(claim)
                 earned[row["module_id"]] += row["credits"]
-                earned_cids.add(cid)
+                earned_cids.add(key)
 
-    by_id = {c["course_id"]: c for c in plan["courses"]}
+    by_id = {c["course_id"]: c for c in plan["courses"]
+             if isinstance(c.get("course_id"), str) and c["course_id"].strip()}
     # 计划选课（已选未出分）：计入选课组口径的"已选未获学分"
     plan_courses = record.get("planned_courses") or []
-    # 键口径（v1.5.1 #7，与 Dart 一致）：id 优先，空则用课程名兜底。
+    # 键口径（v1.5.1 #7，与 Dart course_key 同源）：id 优先，空则 'n|'+课名。
     for x in plan_courses:
         cid = str(x.get("course_id") or "").strip()
         nm = str(x.get("name") or "").strip()
         if cid:
             selected_no_credit_ids.add(cid)
         elif nm:
-            selected_no_credit_ids.add(nm)
+            selected_no_credit_ids.add("n|" + nm)
 
     # ── 在修证据（v1.5 三态打通，用户 #4/#9；与 Dart 同口径）────────────────
     # 「在修未出分」= 已列入计划选课（planned_courses）或调用方显式传入的
@@ -528,7 +669,7 @@ def build(record, plan, action=None, ui_active_names=None):
             return False
         if nm in active_names:
             return True
-        return bool(difflib.get_close_matches(nm, active_name_list, 1, 0.85))
+        return best_variant_aware_match(nm, active_name_list) is not None
     # 模块课程一次取齐（保持 plan["courses"] 原序）：剩余/明细/组口径共用
     courses_by_module = {}
     for c in plan["courses"]:
@@ -556,12 +697,13 @@ def build(record, plan, action=None, ui_active_names=None):
         req = effective_required_credits(m, module_courses, rule=group_rule)
         if abs(req - req0) > 1e-9:
             group_applied = True
-        # 外语口径：仅外语类模块。自选学分=用户指定的模块要求（可升可降，
-        # 用户明确「可修超过要求学分」）；level 档位向后兼容旧口径只降不升
-        # （缺省 → 方案原要求）。
+        # 外语口径：仅外语类模块。自选学分=用户指定的模块要求（可升可降）；
+        # level 档位 2026 级起强制新规值（可升可降），此前仍只降不升。
         if foreign_cap is not None and is_foreign_lang_module(m):
             if foreign_credits is not None:
                 req = foreign_credits
+            elif foreign_new_rule:
+                req = foreign_cap
             elif foreign_cap < req:
                 req = foreign_cap
         got = round(earned[m["module_id"]], 2)
@@ -569,32 +711,32 @@ def build(record, plan, action=None, ui_active_names=None):
         passed_in_group = set()
         if min_courses is not None:
             for c in module_courses:
-                cid = str(c["course_id"])
-                if cid in passed_ids:
-                    passed_in_group.add(cid)
+                key = course_key(c)
+                if key in passed_ids:
+                    passed_in_group.add(key)
         # #3：多选一/任选其一——选够门数即整组达成，允许已获学分少于标注
         # （标注是整组上限，不是必须全修）。
         single_pick_satisfied = bool((group_rule or {}).get("single_pick")) and \
             min_courses is not None and len(passed_in_group) >= min_courses
         gap = 0.0 if single_pick_satisfied else round(max(0.0, req - got), 2)
-        # 剩余可选 = 未通过课程；同一模块内同课号重复行只计一次
-        # （无课号行无法判同，不去重——宁缺勿猜）
+        # 剩余可选 = 未通过课程；同一模块内同课号（无号则同名）重复行只计一次
         remaining, seen_remaining = [], set()
         for c in module_courses:
-            cid = str(c["course_id"])
-            if cid in passed_ids:
+            key = course_key(c)
+            if key in passed_ids:
                 continue
-            if cid and cid in seen_remaining:
+            if key in seen_remaining:
                 continue
-            if cid:
-                seen_remaining.add(cid)
+            seen_remaining.add(key)
             remaining.append(c)
         open_before_grad = round(sum(c["credits"] for c in remaining if future_idx(c)), 2)
         # 选课组门数校验：学分够但通过门数不足（重课覆盖多门轻课要求的罕见失配）
         # 不得判绿——此时 gap 可能为 0，颜色仍按待补呈现。
         count_short = min_courses is not None and len(passed_in_group) < min_courses
+        # 无课程表的模块（课堂/认定类）：缺口按待补呈现，不判红/延毕（用户 #9）。
+        no_schedule = is_practice_module(m) or is_certified_module(m)
         color = ("green" if (gap <= 1e-9 and not count_short)
-                 else ("yellow" if gap <= open_before_grad + 1e-9 else "red"))
+                 else ("yellow" if (no_schedule or gap <= open_before_grad + 1e-9) else "red"))
         status = {"green": "🟢 已达成", "yellow": "🟡 待补",
                   "red": "🔴 学籍年限内无法补足"}[color]
 
@@ -620,17 +762,17 @@ def build(record, plan, action=None, ui_active_names=None):
         plan_courses_of_module = []
         seen_plan_course_ids = set()
         for c in module_courses:
-            cid = str(c.get("course_id", ""))
-            if cid in seen_plan_course_ids:
+            key = course_key(c)
+            if key in seen_plan_course_ids:
                 continue
-            seen_plan_course_ids.add(cid)
+            seen_plan_course_ids.add(key)
             fi = future_idx(c)
-            r_hit = matched_record_by_plan_id.get(c["course_id"])
+            r_hit = matched_record_by_plan_id.get(key)
             item = {"course_id": c["course_id"], "name": c["name"],
                     "credits": c["credits"], "offered": c["offered"],
                     "offered_years": c.get("offered_years"),
                     "terms": [idx_str(i) for i in fi], "closed": not fi,
-                    "passed": c["course_id"] in passed_ids}
+                    "passed": key in passed_ids}
             # 多标签课程标记（v1.4）：该课在方案中归属多个模块，学分按各模块
             # 分别计（UI 可据此注明「此课学分已同时计入其归属的另一模块」）。
             if plan_row_is_multi_tag(c):
@@ -667,15 +809,12 @@ def build(record, plan, action=None, ui_active_names=None):
                     "passed": False, "planned_only": True, "page": None})
         # 已选未获学分课程数：方案课程里「已修未取得学分（未通过/在修未出分/
         # 弃修待录缓考无效）或已列入计划选课」且尚未取得学分的去重门数。
-        # 键口径与 Dart 一致：id 优先，空则用名（#7 外语板块无课号行）。
-        def row_key(x):
-            cid = str(x.get("course_id") or "").strip()
-            return cid or str(x.get("name") or "").strip()
+        # 键口径与 Dart course_key 一致：id 优先，空则 'n|'+课名（#7 外语无课号行）。
         selected_no_credit = sum(
             1 for x in plan_courses_of_module
-            if row_key(x)
-            and str(x.get("course_id")) not in earned_cids
-            and row_key(x) in selected_no_credit_ids)
+            if course_key(x).strip()
+            and course_key(x) not in earned_cids
+            and course_key(x) in selected_no_credit_ids)
         plan_course_stats = {"total": len(plan_courses_of_module),
                              "passed": sum(1 for x in plan_courses_of_module if x["passed"]),
                              "pending": sum(1 for x in plan_courses_of_module if not x["passed"]),
@@ -698,7 +837,19 @@ def build(record, plan, action=None, ui_active_names=None):
         summary.append(row)
 
         module_warn_start.setdefault(str(m["module_id"]), len(warnings))
-        if color == "red" and gap > 0:
+        if no_schedule and gap > 0:
+            # 课堂/认定类：只给信息提示，不按排课窗口/重修口径报延毕（#9）。
+            if is_practice_module(m):
+                text = ("「%s」素质拓展记点认定，无课程表可排课；"
+                        "请在素质拓展平台完成并提交认定，当前缺口 %g 分。"
+                        % (m["module_path"], gap))
+            else:
+                text = ("「%s」按认定类课程清单认定，无固定开课窗口；"
+                        "请按本科生院清单修读并提交认定，当前缺口 %g 分。"
+                        % (m["module_path"], gap))
+            warnings.append({"type": "graduation_risk", "level": "yellow",
+                             "text": text, "refs": []})
+        elif color == "red" and gap > 0:
             closed_courses = [c for c in remaining if not future_idx(c)]
             open_courses = [c for c in remaining if future_idx(c)]
             closed_credit = round(sum(c["credits"] for c in closed_courses), 2)
@@ -730,12 +881,12 @@ def build(record, plan, action=None, ui_active_names=None):
                                       for c in closed_courses[:3]]})
         elif color == "yellow" and gap > 0:
             tight = [c for c in remaining if future_idx(c)
-                     and (c.get("offered_years") or len(c["offered"]) == 1)]
+                     and (c.get("offered_years") or len(offered_of(c)) == 1)]
             tight.sort(key=lambda c: (len(future_idx(c)), -c["credits"]))
             for c in tight[:2]:
                 cyc = c.get("offered_years")
                 why = "（隔年开课，仅 %s 学年）" % "、".join(str(y) for y in cyc) if cyc \
-                    else "（仅%s开课）" % c["offered"][0]
+                    else "（仅%s开课）" % offered_of(c)[0]
                 taken_failed = c["course_id"] in {cc["course_id"] for rr, cc in matched if not _is_passed(rr)}
                 if taken_failed:
                     verb = "已修未过需重修"
@@ -780,10 +931,11 @@ def build(record, plan, action=None, ui_active_names=None):
             continue
         xi = sem_of_plan[c["course_id"]][0]
         term = "秋" if xi % 2 == 0 else "春"
-        if term not in c["offered"]:
+        offered = offered_of(c)
+        if offered and term not in offered:
             warnings.append({"type": "offering_closed", "level": "yellow",
                              "text": "计划选课「%s」排在 %s，但培养方案标注仅%s开课，需调整学期。"
-                                      % (c["name"], idx_str(xi), "/".join(c["offered"])),
+                                      % (c["name"], idx_str(xi), "/".join(offered)),
                              "refs": ["%s@p%s" % (c["course_id"], (c.get("source") or {}).get("page"))]})
         elif c.get("offered_years") and xi // 2 not in c["offered_years"]:
             warnings.append({"type": "offering_closed", "level": "yellow",
@@ -821,16 +973,25 @@ def build(record, plan, action=None, ui_active_names=None):
                                  % (len(unmatched), "、".join(u["name"] for u in unmatched[:5])),
                          "refs": []})
 
-    totals = {"required": round(sum(m["required"] for m in summary), 2),
-              "earned": round(sum(m["earned"] for m in summary), 2),
-              "gap": round(sum(m["gap"] for m in summary), 2)}
-    # 总学分口径（v1.4）：毕业总要求以方案声明 meta.total_credits（最低毕业
-    # 学分）为准，模块级要求照旧；模块求和只在方案未声明时回落（total_basis
-    # 注明口径，trace.notes 同步说明）。
+    # 总学分口径（v1.6，与 Dart 对齐）：方案声明 + 素质拓展课堂额外学分；
+    # 未声明则回落模块求和。模块求和会把并列选项/微辅修重复计入（用户 #8）。
     plan_total_raw = (plan.get("meta") or {}).get("total_credits")
     plan_total_credits = float(plan_total_raw) if isinstance(plan_total_raw, (int, float)) else None
+    module_required = round(sum(m["required"] for m in summary), 2)
+    practice_required = round(sum(m["required"] for m in summary if is_practice_module(m)), 2)
+    earned_total = round(sum(m["earned"] for m in summary), 2)
+    required_total = (round(plan_total_credits + practice_required, 2)
+                      if plan_total_credits is not None else module_required)
+    # 已选未获（诉求 #4）：独立字段，不与 earned 相加、不抵扣 gap。
+    selected_no_credit_total = sum(int(m.get("selected_no_credit") or 0)
+                                   for m in summary)
+    totals = {"required": required_total, "earned": earned_total,
+              "gap": round(max(0.0, required_total - earned_total), 2),
+              "selected_no_credit": selected_no_credit_total,
+              "module_required": module_required}
     if plan_total_credits is not None:
         totals["plan_total_credits"] = plan_total_credits
+        totals["extra_practice_credits"] = practice_required
     totals["total_basis"] = "plan_declared" if plan_total_credits is not None else "module_sum_fallback"
 
     def _g(n):
@@ -845,13 +1006,20 @@ def build(record, plan, action=None, ui_active_names=None):
     if plan_has_foreign:
         caliber_notes.append(
             "外语口径：外语类模块要求学分可自选（审计动作 foreign_lang_credits 正数，"
-            "可超过方案原要求；或 foreign_lang_level L1=6 分、L2=4.5 分、L3=3 分"
-            "按档位封顶）；未选择时按方案原要求核算。")
+            "可超过方案原要求；或 foreign_lang_level 档位：2026 级起 L1=6 分、"
+            "L2=4.5 分（必修大学英语IV）、L3=0 分免修，2026 级前 L1=6 / L2=4.5 / "
+            "L3=3 且只降不升）；未选择时按方案原要求核算。")
     trace_notes = []
     if foreign_cap is not None and plan_has_foreign:
         if foreign_credits is not None:
             trace_notes.append("外语要求学分自选 %s 分：外语类模块要求学分按 %s 分核算。"
                                % (_g(foreign_credits), _g(foreign_cap)))
+        elif foreign_new_rule:
+            trace_notes.append(
+                "外语等级 %s（%s 级新规）→ 外语类模块要求学分按 %s 分核算%s。"
+                % (foreign_level_raw, grade_year_for_rule, _g(foreign_cap),
+                   "（免修，无需修读%s）" % FOREIGN_REQUIRED_COURSE if foreign_cap == 0
+                   else "，必修%s" % FOREIGN_REQUIRED_COURSE))
         else:
             trace_notes.append("外语等级 %s → 自选 %s 分：外语类模块要求学分按 %s 分封顶。"
                                % (foreign_level_raw, _g(foreign_cap), _g(foreign_cap)))
@@ -862,12 +1030,16 @@ def build(record, plan, action=None, ui_active_names=None):
             trace_notes.append("未在方案中识别外语类模块，foreign_lang_level=%s 未生效。" % foreign_level_raw)
     if foreign_cap is None and plan_has_foreign:
         trace_notes.append("外语等级未选择，外语类模块按方案原要求核算。")
-    # 总学分口径（v1.4）：以方案声明为准；未声明则回落模块求和（宁缺勿猜）。
+    # 总学分口径（v1.6）：方案声明 + 素质拓展课堂额外学分；未声明则模块求和。
     if plan_total_credits is not None:
+        practice_txt = (" + 素质拓展课堂 %s 分" % _g(practice_required)
+                        if practice_required > 0 else "")
         trace_notes.append(
-            "总计学分口径：方案声明最低毕业学分 %s 分（meta.total_credits），"
-            "各模块要求之和为 %s 分——模块间课程交叉/折算时二者可不同，毕业总要求以方案声明为准。"
-            % (_g(plan_total_credits), _g(totals["required"])))
+            "总计学分口径：方案声明最低毕业学分 %s 分%s = 应修 %s 分"
+            "（各模块要求之和为 %s 分，含三选一/微辅修等重复口径，"
+            "毕业总要求以方案声明为准）。"
+            % (_g(plan_total_credits), practice_txt, _g(totals["required"]),
+               _g(totals["module_required"])))
     else:
         trace_notes.append(
             "总计学分口径：方案未声明总学分（meta.total_credits 缺失），"
@@ -879,16 +1051,27 @@ def build(record, plan, action=None, ui_active_names=None):
             "其学分按各所属模块分别计入（earned 与 selected_no_credit 同口径）。"
             % multi_tag_course_count)
 
-    return {"summary": summary, "warnings": warnings,
-            "extra_courses": unmatched, "totals": totals,
-            "caliber_notes": caliber_notes,
-            "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
-            "trace": {"plan": "%s%s（核验日 %s）" % (
-                plan["meta"]["source_doc"],
-                "" if not str(plan["meta"].get("grade", "")).strip() else " %s级" % plan["meta"]["grade"],
-                plan["meta"].get("verified_at", "-")),
-                "engine": "v%s" % ENGINE_VERSION,
-                "notes": trace_notes}}
+    report = {"summary": summary, "warnings": warnings,
+              "extra_courses": unmatched, "totals": totals,
+              "caliber_notes": caliber_notes,
+              "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
+              "trace": {"plan": "%s%s（核验日 %s）" % (
+                  plan["meta"]["source_doc"],
+                  "" if not str(plan["meta"].get("grade", "")).strip() else " %s级" % plan["meta"]["grade"],
+                  plan["meta"].get("verified_at", "-")),
+                  "engine": "v%s" % ENGINE_VERSION,
+                  "notes": trace_notes}}
+    if foreign_level_raw is not None:
+        # 与 Dart build() 的 foreign_rule 字段同形（UI 展示 2026 外语新规）。
+        report["foreign_rule"] = {
+            "level": str(foreign_level_raw),
+            "required_credits": foreign_cap,
+            "new_rule": foreign_new_rule,
+            "required_course": (FOREIGN_REQUIRED_COURSE
+                                if foreign_new_rule and (foreign_cap or 0) > 0 else None),
+            "exempt": bool(foreign_new_rule and (foreign_cap or 0) == 0),
+        }
+    return report
 
 
 def main(record_json="", action="audit"):

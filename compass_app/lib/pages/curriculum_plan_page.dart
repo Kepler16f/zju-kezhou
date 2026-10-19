@@ -894,6 +894,10 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     final roots = _buildSectionTree(ps.sections);
     // 微辅修板块整支剔除（诉求 #10）：索引保持文档序，收起/展开状态键不受影响。
     _pruneMinorSections(roots);
+    // 毕业要求/章节总述伪板块剔除（用户反馈 #3）：这些块无课程、无学分标注、
+    // 无子块，只是培养方案前言的总体要求文字，必须不占板块位；展示从
+    // 课程修读要求开始。
+    _pruneEmptyRequirementRoots(roots);
     if (roots.isEmpty) return const SizedBox.shrink();
     return Card(
       child: Padding(
@@ -1195,10 +1199,28 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         ? '已达成：${best?['title'] ?? '其中一个选项'}（${_num(earned)}/${_num(required)} 学分）'
         : '尚未达成任一选项；最优选项「${best?['title'] ?? '-'}」还差 '
             '${_num(((g['gap'] as num?)?.toDouble() ?? 0))} 学分';
+    // 用户澄清（2026-10）：跨专业学习 = 参加其他专业的微辅修，它和三选一里
+    // 其余选项是「任选其一」，不是三门叠加；组内出现微辅修时补一行等价说明。
+    final hasMinorOption = options.any((o) =>
+        '${o['title'] ?? ''}'.contains('微辅修') ||
+        '${o['title'] ?? ''}'.contains('跨专业'));
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 2, 6),
-      child: Text(text,
-          style: TextStyle(fontSize: 11.5, color: c, fontWeight: FontWeight.w600)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(text,
+              style:
+                  TextStyle(fontSize: 11.5, color: c, fontWeight: FontWeight.w600)),
+          if (hasMinorOption)
+            const Padding(
+              padding: EdgeInsets.only(top: 1),
+              child: Text(
+                  '跨专业学习即修读其他专业的微辅修；本组任选其一计一次要求学分，不重复计算',
+                  style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+            ),
+        ],
+      ),
     );
   }
 
@@ -1706,6 +1728,18 @@ List<_SecNode> _buildSectionTree(List<PdfModuleSection> secs) {
     stack.add(node);
   }
   return roots;
+}
+
+/// 毕业要求/章节级总述伪板块剔除（用户反馈 #3）。
+///
+/// 2026 级方案 PDF 开头 12 条「工程知识：…」「分析问题：…」是毕业要求条目，
+/// 解析器按层级行识别后成了无课程、无学分、无子块的顶层块；UI 若照常渲染，
+/// 用户会先看到整页总述再看到各板块修读要求。判据刻意保守：同时满足
+/// 无直属课程 + 无学分标注 + 无子块 + 非认定类 才剔除；有任何一项实质内容
+/// 都保留（宁缺勿删）。纯 UI 展示过滤，审计口径仍读完整板块。
+void _pruneEmptyRequirementRoots(List<_SecNode> nodes) {
+  nodes.removeWhere(
+      (n) => n.children.isEmpty && isContentlessSection(n.section));
 }
 
 /// 微辅修板块整支剔除（诉求 #10，判据见 isMinorElectiveSection）：命中板块

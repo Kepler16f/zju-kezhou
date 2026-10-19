@@ -664,7 +664,7 @@ XkListParseResult parseXkCourseList(String body,
     for (final cat in categories) {
       if (!tags.contains(cat)) tags.add(cat);
     }
-    final sksj = _pick(m, const ['sksj', 'skTime', 'time']).trim();
+    final sksj = cleanListText(_pick(m, const ['sksj', 'skTime', 'time']));
     var slots = <Map<String, dynamic>>[];
     if (sksj.isNotEmpty) {
       final sp = parseSksj(sksj);
@@ -675,15 +675,16 @@ XkListParseResult parseXkCourseList(String body,
     }
     courses.add(XkCourse(
       kcmc: kcmc,
-      kch: _pick(m, const ['kch', 'xk_kch', 'kcdm', 'courseCode']).trim(),
+      kch: cleanListText(_pick(m, const ['kch', 'xk_kch', 'kcdm', 'courseCode'])),
       kchId: _pick(m, const ['kch_id', 'kchId']).trim(),
       xf: _num(_pick(m, const ['xf', 'credit', 'kcxf'])) ?? _creditsFromKcxx(m['kcxx']),
       jxbId: _pick(m, const ['jxb_id', 'jxbId']).trim(),
-      jxbmc: _pick(m, const ['jxbmc', 'jxb']).trim(),
-      teacher: _pick(m, const ['jsxx', 'jsxm', 'teacher', 'skjs']).trim(),
+      jxbmc: cleanListText(_pick(m, const ['jxbmc', 'jxb'])),
+      // jsxm 多教师、sksj 多时段、skdd 多地点在真实数据里用 <br> 分隔
+      teacher: cleanListText(_pick(m, const ['jsxx', 'jsxm', 'teacher', 'skjs'])),
       sksj: sksj,
-      cdmc: _pick(m, const ['cdmc', 'place']).trim(),
-      xqjmc: _pick(m, const ['xqjmc', 'campus']).trim(),
+      cdmc: cleanListText(_pick(m, const ['cdmc', 'skdd', 'jxdd', 'place'])),
+      xqjmc: cleanListText(_pick(m, const ['xqjmc', 'campus'])),
       subTerm: _pick(m, const ['xxq']),
       tags: tags,
       categories: categories,
@@ -913,6 +914,23 @@ TimetableParseResult parseXskbListToSlots(Object? kbList) {
 }
 
 // ───────────────────────── 工具 ─────────────────────────
+
+/// 列表字段里 HTML 片段/实体清理（真实 zdbk 行实测）：
+/// `jsxm`「谭芸&lt;br&gt;祝一虹」、`sksj`「周二第9,10节&lt;br&gt;周四第7,8节」、
+/// `skdd`「紫金港东1A-301&lt;br&gt;紫金港机房」都带多值分隔标签。
+/// <br> 归成「 / 」（可读多值），其余标签剥除，实体还原，压缩空白；
+/// 空串原样返回（缺字段仍整行省略，宁缺勿猜）。
+String cleanListText(String s) => s
+    .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), ' / ')
+    .replaceAll(RegExp(r'<[^>]*>'), '')
+    .replaceAll('&nbsp;', ' ')
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll(RegExp(r'[ \t\u3000]+'), ' ')
+    .trim();
 
 String _pick(Map<String, dynamic> m, List<String> keys) {
   for (final k in keys) {

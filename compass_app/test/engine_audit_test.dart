@@ -412,7 +412,10 @@ void main() {
       final t = r['totals'];
       expect(t['plan_total_credits'], 160.0);
       expect(t['total_basis'], 'plan_declared');
-      expect(t['required'], 4.0); // 模块级照旧
+      // v1.6 口径（用户 #8）：毕业总要求以方案声明为准；模块要求之和
+      // 另存 module_required，不再用于 totals.required。
+      expect(t['required'], 160.0);
+      expect(t['module_required'], 4.0);
       expect((r['trace']['notes'] as List).join(), contains('最低毕业学分 160 分'));
     });
 

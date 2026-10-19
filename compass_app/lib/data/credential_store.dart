@@ -226,6 +226,24 @@ class CredentialStore {
     return null;
   }
 
+  /// 列出指定前缀的二进制缓存名（不含 `cache_` 前缀，与 [readBinaryCache] 入参一致）。
+  /// 用于升级后找不到 `meta.pdf_cache` 时，从本地遗留的 planpdf_*.pdf 里重建方案。
+  Future<List<String>> listBinaryCacheNames(String namePrefix) async {
+    try {
+      final d = await _dirGet();
+      final out = <String>[];
+      for (final f in d.listSync().whereType<File>()) {
+        final base = p.basename(f.path);
+        if (!base.startsWith('cache_$namePrefix')) continue;
+        out.add(base.substring('cache_'.length));
+      }
+      out.sort();
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// 已缓存文件的真实路径（不存在返回 null）；命中缓存时复用，免去重新下载。
   Future<String?> binaryCachePath(String name) async {
     try {

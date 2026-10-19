@@ -8,7 +8,7 @@
 /// 宁缺勿猜：无法确认时保留 unknown，绝不把“已选”算成“已获”。
 library;
 
-import 'timeline.dart' show getCloseMatches;
+import 'matching.dart' show bestVariantAwareMatch;
 
 /// 方案课程名“已修”解析（保留原写法，供 UI 直接查表）：
 /// 成绩单全等命中优先，另用 difflib 风格相似度（cutoff 0.85）兜底。
@@ -22,7 +22,7 @@ Set<String> resolvePassedNames(
     final n = raw.trim();
     if (n.isEmpty) continue;
     if (transcriptNames.contains(n) ||
-        getCloseMatches(n, possibilities, n: 1, cutoff: 0.85).isNotEmpty) {
+        bestVariantAwareMatch(n, possibilities) != null) {
       out.add(raw);
     }
   }

@@ -29,6 +29,7 @@
 library;
 
 import '../data/plan_pdf_parse.dart';
+import 'cache_versions.dart' show kPlanBuilderVersion;
 import 'matching.dart' show matchRecordToPlan;
 
 // ── 结果对象 ────────────────────────────────────────────────────────────────
@@ -219,12 +220,28 @@ String? certifiedSectionCategory(PdfModuleSection s) {
   return null;
 }
 
-/// 认定类板块说明 → 要求学分：抽「（要求学生）修读N学分」里的 N；
-/// 抽不到记 0（如劳育类「要求学生修读32**学时**劳动教育类课程」——学时不是
-/// 学分，正则要求「学分」字面，天然排除）。纯函数、不抛异常。
+/// 板块自身是否没有实质内容（用户反馈 #3）：无课程、无学分标注、非认定类。
+///
+/// 2026 级方案 PDF 开头 12 条「工程知识：…」「分析问题：…」是毕业要求条目，
+/// 解析器按层级行识别后成了无课程、无学分、无子块的顶层块。UI 只对「无子块」
+/// 且命中本判据的节点做展示剔除；认定类板块虽无课表但有要求学分，必须保留。
+/// 纯函数可单测。
+bool isContentlessSection(PdfModuleSection s) =>
+    s.courses.isEmpty &&
+    s.creditsRaw.trim().isEmpty &&
+    certifiedSectionCategory(s) == null;
+
+/// 认定类板块说明 → 要求学分：优先抽「（要求学生）修读N学分」里的 N；
+/// 只有学时（劳育类「要求学生修读32学时」）时按 16 学时 = 1 学分换算；
+/// 都抽不到记 0。纯函数、不抛异常。
 double certifiedRequiredCredits(List<String> notes) {
-  final m = RegExp(r'修读\s*([\d.]+)\s*学分').firstMatch(notes.join('\n'));
-  return m == null ? 0.0 : (double.tryParse(m.group(1)!) ?? 0.0);
+  final text = notes.join('\n');
+  final m = RegExp(r'修读\s*([\d.]+)\s*学分').firstMatch(text);
+  if (m != null) return double.tryParse(m.group(1)!) ?? 0.0;
+  final h = RegExp(r'修读\s*([\d.]+)\s*学时').firstMatch(text);
+  final hours = h == null ? null : double.tryParse(h.group(1)!);
+  if (hours == null || hours <= 0) return 0.0;
+  return double.parse((hours / 16).toStringAsFixed(2));
 }
 
 /// module_path：培养方案板块的完整路径（含自身标题）。
@@ -541,6 +558,70 @@ bool _hasKeptDescendant(PlanPdfSections ps, int i, List<bool> kept) {
 ///    带课程表的门规则板块课程在 planFileFromPdf 里并入最近上级学分板块。
 ///  * 认定类板块（美育/劳育/创新创业/心理健康，level≤3 标题命中）即使无课、
 ///    无学分标注也保留——审计要能对该类算 earned（用户反馈 #13）。
+/// 「微辅修」独立板块判据（与 UI 的 isMinorElectiveSection 同口径）：
+/// 标题或上级链命中「微辅修」。本专业方案末尾附的微辅修清单是面向其他专业
+/// 学生的开班列表，不属于本人毕业要求，必须整支剔出审计（否则 12.5 学分
+/// 会被计入应修）。例外见 [_dropStandaloneMinorSections]：作为三选一选项
+/// （「跨专业学习模块 = 修读其他专业的微辅修」）出现时必须保留。
+bool _isMinorSection(PdfModuleSection s) =>
+    s.title.contains('微辅修') || s.parentPath.contains('微辅修');
+
+/// 剔除独立微辅修板块（含子树），但保留并列选项组内的选项。
+///
+/// 用户口径（2026-10-19）：微辅修与「跨专业学习模块」是同一件事，跨专业
+/// 学习就是修读其他专业的微辅修；三选一里的该选项必须保留并参与组内折算。
+/// 只有不归属任何已识别选项组的微辅修板块（本专业给外专业开的清单）剔除。
+List<bool> _dropStandaloneMinorSections(PlanPdfSections ps, List<bool> flags) {
+  final n = ps.sections.length;
+  final altOwned = List<bool>.filled(n, false);
+  for (var i = 0; i < n; i++) {
+    final kids = _childIndicesOf(ps, i);
+    if (kids.length < 2) continue;
+    final keptOptions = <int>[
+      for (final j in kids)
+        if (flags[j]) j,
+    ];
+    if (keptOptions.length < 2) continue;
+    final signal = detectAlternativeModules(
+      [for (final j in kids) ps.sections[j]],
+      [
+        ...ps.sections[i].notes,
+        for (final j in kids) ...ps.sections[j].notes,
+      ].join('\n'),
+    );
+    if (signal == null) continue;
+    for (final root in keptOptions) {
+      for (var k = 0; k < n; k++) {
+        if (_isSelfOrDescendant(ps, k, root)) altOwned[k] = true;
+      }
+    }
+  }
+  final out = List<bool>.of(flags);
+  for (var i = 0; i < n; i++) {
+    if (!out[i] || altOwned[i] || !_isMinorSection(ps.sections[i])) continue;
+    for (var k = 0; k < n; k++) {
+      if (_isSelfOrDescendant(ps, k, i)) out[k] = false;
+    }
+  }
+  return out;
+}
+
+/// 方案说明里的「最低毕业学分 N（+M）」声明值。教务方案摘要接口缺
+/// zdbyxf 时（离线缓存/异形方案）按 PDF 原文兜底，避免把模块求和当成
+/// 毕业总要求而虚增（如 148.5 被算成 167.5）。+M 是第二/三/四课堂附加分，
+/// 由审计引擎按 practice 模块另行相加，这里只取基准 N。
+double? declaredTotalFromNotes(PlanPdfSections ps) {
+  for (final s in ps.sections) {
+    for (final n in s.notes) {
+      final m = RegExp(r'最低毕业学分\s*([\d.]+)(?:\s*\+\s*[\d.]+)?').firstMatch(n);
+      if (m == null) continue;
+      final v = double.tryParse(m.group(1)!);
+      if (v != null && v > 0) return v;
+    }
+  }
+  return null;
+}
+
 List<bool> keptSectionFlags(PlanPdfSections ps) {
   final n = ps.sections.length;
   var kept = List<bool>.filled(n, false);
@@ -563,7 +644,7 @@ List<bool> keptSectionFlags(PlanPdfSections ps) {
     kept = next;
     if (stable) break;
   }
-  return kept;
+  return _dropStandaloneMinorSections(ps, kept);
 }
 
 // ── 主适配器 ───────────────────────────────────────────────────────────────
@@ -627,6 +708,9 @@ Map<String, dynamic> planFileFromPdf(
   List<Map<String, dynamic>> transcript = const [],
 }) {
   final flags = keptSectionFlags(ps);
+  // 方案声明总学分优先用调用方值（教务摘要 zdbyxf），缺失时读 PDF 原文
+  // 「最低毕业学分 148.5+8」的基准值；两者都没有才回落模块求和。
+  final declaredTotal = totalCredits ?? declaredTotalFromNotes(ps);
   final kept = List<bool>.of(flags);
   final modules = <Map<String, dynamic>>[];
   final courses = <Map<String, dynamic>>[];
@@ -964,7 +1048,10 @@ Map<String, dynamic> planFileFromPdf(
         if (cat == null) continue;
         final mod = certModuleByCat[cat];
         if (mod == null) continue;
-        final cid = row['course_id'] == null ? name : '${row['course_id']}';
+        final cid = row['course_id'] == null ||
+                '${row['course_id']}'.trim().isEmpty
+            ? name
+            : '${row['course_id']}';
         if (!usedIds.add(cid)) continue; // 重修同名课只挂一次
         final cr = row['credits'];
         (mod['course_ids'] as List<String>).add(cid);
@@ -1015,8 +1102,9 @@ Map<String, dynamic> planFileFromPdf(
       'source_doc': (sourceDoc == null || sourceDoc.trim().isEmpty)
           ? '培养方案 PDF 解析（教务 zdbk 官方方案）'
           : sourceDoc,
-      'total_credits': totalCredits ?? requiredSum,
+      'total_credits': declaredTotal ?? requiredSum,
       'extracted_by': 'engine/plan_audit_adapter.planFileFromPdf',
+      'builder_version': kPlanBuilderVersion,
       'verified': false,
       'quality': quality,
     },
@@ -1119,7 +1207,9 @@ Map<String, String> coursesCategoryMap(
   // matchRecordToPlan 的名称兜底会对 null 名称抛类型错，先滤掉。
   final planIds = <String>{
     for (final c in planCourses)
-      if (c['course_id'] != null) '${c['course_id']}',
+      if (c['course_id'] is String &&
+          (c['course_id'] as String).trim().isNotEmpty)
+        c['course_id'] as String,
   };
   final safe = <Map<String, dynamic>>[
     for (final r in courses)
@@ -1170,10 +1260,19 @@ int applyPlanCategories(
   var filled = 0;
   for (final c in courses) {
     final cur = '${c['category'] ?? ''}'.trim();
-    if (cur.isNotEmpty && cur != '未分类') continue;
     final name = '${c['name'] ?? ''}'.trim();
     final cat = byName[name];
-    if (cat != null && cat.isNotEmpty) {
+    final hasPlan = cat != null && cat.isNotEmpty;
+    final needsFill = cur.isEmpty || cur == '未分类';
+    // 旧缓存/旧解析把认定类标错（军训被标成心理健康类）：当前值本身是认定类
+    // 且方案给出另一个认定类时允许纠正；教务自带的结构类别（通识必修等）
+    // 与任意 kcxzmc 仍绝不覆盖。
+    final fixCertified = _certifiedCategoryValues.contains(cur) &&
+        hasPlan &&
+        _certifiedCategoryValues.contains(cat) &&
+        cat != cur;
+    if (!needsFill && !fixCertified) continue;
+    if (hasPlan) {
       // 主路：方案板块匹配结果（认定类板块的军体/思政纠正已在 coursesCategoryMap
       // 内完成，此处直接用）。板块给出明确类别即采信，不再拿课名覆盖结构类别。
       c['category'] = cat;

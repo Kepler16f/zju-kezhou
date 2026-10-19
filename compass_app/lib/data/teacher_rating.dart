@@ -105,6 +105,17 @@ class TeacherRatingStore {
     return _ratings[key];
   }
 
+  /// 多教师字段（教务 jsxm 常见「谭芸 / 祝一虹」）逐个查，返回首位命中。
+  /// 分隔符覆盖 `<br>` 清洗后的「 / 」以及顿号/逗号/分号；首位命中即代表
+  /// 该教学班（评分为教师级数据，不虚构合并分）。
+  TeacherRating? lookupAny(String teacherNames, String? courseName) {
+    for (final name in teacherNames.split(RegExp(r'[、,，/;；|]+'))) {
+      final hit = lookup(name, courseName);
+      if (hit != null) return hit;
+    }
+    return null;
+  }
+
   static double? _asDouble(Object? v) => switch (v) {
         final double d => d,
         final int i => i.toDouble(),

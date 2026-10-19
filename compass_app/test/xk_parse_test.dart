@@ -452,6 +452,25 @@ void main() {
           xkkzId: 'R');
       expect(r2.courses.single.teacher, '张三');
     });
+
+    test('真实已选行：<br> 多值清洗 + 地点取 skdd + 课程号取 kcdm', () {
+      // 字段名/分隔符取自 zdbk 实测已选列表（用户反馈：放大卡未解析教师/时间/地点）
+      const row = '{"tmpList":[{"kcmc":"大学物理（甲）I",'
+          '"kcdm":"PHYS1001G","xf":"4.0","zxs":"64",'
+          '"jsxm":"谭芸<br>祝一虹",'
+          '"sksj":"星期一第1-2节{第1-16周}<br>星期三第3-4节{第1-16周}",'
+          '"skdd":"紫金港东1-101<br>紫金港东1-102","xkkh":"(2026-2027-1)-PHYS1001G-01"}]}';
+      final r = parseXkCourseList(row, xkkzId: 'choosed');
+      final c = r.courses.single;
+      expect(c.kch, 'PHYS1001G');
+      expect(c.xf, 4.0);
+      expect(c.teacher, '谭芸 / 祝一虹');
+      expect(c.sksj, contains('星期一第1-2节'));
+      expect(c.sksj, contains(' / '));
+      expect(c.sksj, isNot(contains('<')));
+      expect(c.cdmc, '紫金港东1-101 / 紫金港东1-102');
+      expect(c.cdmc, isNot(contains('<')));
+    });
   });
 
   group('parseXskbListToSlots 当前课表', () {

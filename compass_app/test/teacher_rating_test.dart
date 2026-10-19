@@ -40,6 +40,17 @@ void main() {
       expect(TeacherRatingStore.empty.lookup('张三', '任意课'), isNull);
     });
 
+    test('lookupAny：多教师串（<br> 清洗后的 /、顿号、逗号）逐个命中', () {
+      final store = TeacherRatingStore.fromJson(const {
+        '祝一虹': {'avg': 9.1, 'count': 30},
+      });
+      expect(store.lookupAny('谭芸 / 祝一虹', null)?.avg, 9.1);
+      expect(store.lookupAny('谭芸、祝一虹', null)?.avg, 9.1);
+      expect(store.lookupAny('谭芸,祝一虹', null)?.avg, 9.1);
+      expect(store.lookupAny('谭芸 / 李四', null), isNull);
+      expect(store.lookupAny('', null), isNull);
+    });
+
     test('脏数据逐条跳过、绝不抛：非 Map / avg 缺失 / 越界 / 非数值 / NaN / Infinity',
         () {
       final store = TeacherRatingStore.fromJson(const {

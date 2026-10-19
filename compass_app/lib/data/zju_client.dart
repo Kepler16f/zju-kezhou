@@ -1431,7 +1431,7 @@ class ZjuClient {
       if (bytes == null || bytes.isEmpty) return null;
       final parsed = parsePlanPdfText(extractPdfText(bytes));
       if (parsed.isEmpty) return null;
-      return planFileFromPdf(
+      final planFile = planFileFromPdf(
         parsed,
         major: plan.zymc.isEmpty ? plan.id : plan.zymc,
         grade: plan.synj,
@@ -1440,6 +1440,11 @@ class ZjuClient {
         sourceDoc: '教务网培养方案 ${plan.zymc} ${plan.synj} 级'
             '（教学计划号 ${plan.jxjhh}｜官方 PDF 解析）',
       );
+      // 缓存版本门禁（cache_versions.dart）：记录本方案由哪个 PDF 缓存构建，
+      // 升级后可从同一份本地 PDF 自动重建，不必等用户重新登录拉取。
+      final meta = planFile['meta'];
+      if (meta is Map) meta['pdf_cache'] = name;
+      return planFile;
     } catch (e) {
       _log('审计方案(PDF)', level: 'warn', detail: '$e');
       return null;
