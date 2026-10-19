@@ -1,0 +1,181 @@
+{
+  "meta": {
+    "major": "alt_group_demo",
+    "source_doc": "并列模块双引擎夹具（模拟 2026 级食品方案「个性修读课程」三选一）",
+    "grade": "2026",
+    "verified_at": "2026-10-19",
+    "total_credits": 20.0
+  },
+  "modules": [
+    {
+      "module_id": "core",
+      "module_path": "专业教育/专业核心",
+      "title": "专业核心",
+      "level": 2,
+      "category": "专业核心",
+      "required_credits": 5.0,
+      "notes": [],
+      "plan_credits_raw": "5",
+      "plan_credits_unit": "学分",
+      "course_ids": ["A1", "A2"]
+    },
+    {
+      "module_id": "sec34-本专业进阶模块",
+      "module_path": "个性修读课程 · 本专业进阶模块",
+      "title": "本专业进阶模块",
+      "level": 4,
+      "category": "个性修读课程",
+      "required_credits": 15.0,
+      "notes": [],
+      "plan_credits_raw": "15",
+      "plan_credits_unit": "学分",
+      "course_ids": ["BEFS2051M", "BEFS2056M", "BEFS3058M"],
+      "alternative_group_id": "sec33-个性修读课程-alt",
+      "alternative_group_path": "个性修读课程",
+      "alternative_group_required": 15.0,
+      "alternative_option_index": 0,
+      "alternative_option_count": 3,
+      "alternative_option_title": "本专业进阶模块",
+      "counts_toward_totals": false
+    },
+    {
+      "module_id": "sec35-跨专业学习模块",
+      "module_path": "个性修读课程 · 跨专业学习模块",
+      "title": "跨专业学习模块",
+      "level": 4,
+      "category": "个性修读课程",
+      "required_credits": 15.0,
+      "notes": [],
+      "plan_credits_raw": "15",
+      "plan_credits_unit": "学分",
+      "course_ids": ["CMOS1001"],
+      "alternative_group_id": "sec33-个性修读课程-alt",
+      "alternative_group_path": "个性修读课程",
+      "alternative_group_required": 15.0,
+      "alternative_option_index": 1,
+      "alternative_option_count": 3,
+      "alternative_option_title": "跨专业学习模块",
+      "counts_toward_totals": false
+    },
+    {
+      "module_id": "sec36-学生自主修读模块",
+      "module_path": "个性修读课程 · 学生自主修读模块",
+      "title": "学生自主修读模块",
+      "level": 4,
+      "category": "个性修读课程",
+      "required_credits": 15.0,
+      "notes": [],
+      "plan_credits_raw": "15",
+      "plan_credits_unit": "学分",
+      "course_ids": ["FREE1001"],
+      "alternative_group_id": "sec33-个性修读课程-alt",
+      "alternative_group_path": "个性修读课程",
+      "alternative_group_required": 15.0,
+      "alternative_option_index": 2,
+      "alternative_option_count": 3,
+      "alternative_option_title": "学生自主修读模块",
+      "counts_toward_totals": false
+    }
+  ],
+  "courses": [
+    {
+      "course_id": "A1",
+      "name": "程序设计基础",
+      "credits": 3.0,
+      "module_id": "core",
+      "nature": "必修",
+      "offered": ["秋"],
+      "grade_cycle": null,
+      "offered_years": null,
+      "prereq": [],
+      "source": {"page": "1"}
+    },
+    {
+      "course_id": "A2",
+      "name": "离散数学",
+      "credits": 2.0,
+      "module_id": "core",
+      "nature": "必修",
+      "offered": ["春"],
+      "grade_cycle": null,
+      "offered_years": null,
+      "prereq": ["A1"],
+      "source": {"page": "1"}
+    },
+    {
+      "course_id": "BEFS2051M",
+      "name": "食品细胞工程",
+      "credits": 1.5,
+      "module_id": "sec34-本专业进阶模块",
+      "nature": "必修",
+      "offered": ["春"],
+      "grade_cycle": null,
+      "offered_years": [2025],
+      "prereq": [],
+      "source": {"page": "7"}
+    },
+    {
+      "course_id": "BEFS2056M",
+      "name": "未来食品科学",
+      "credits": 2.0,
+      "module_id": "sec34-本专业进阶模块",
+      "nature": "必修",
+      "offered": ["春"],
+      "grade_cycle": null,
+      "offered_years": [2025],
+      "prereq": [],
+      "source": {"page": "7"}
+    },
+    {
+      "course_id": "BEFS3058M",
+      "name": "食品安全与质量控制",
+      "credits": 11.5,
+      "module_id": "sec34-本专业进阶模块",
+      "nature": "必修",
+      "offered": ["秋"],
+      "grade_cycle": null,
+      "offered_years": [2025],
+      "prereq": [],
+      "source": {"page": "7"}
+    },
+    {
+      "course_id": "CMOS1001",
+      "name": "跨专业课程",
+      "credits": 15.0,
+      "module_id": "sec35-跨专业学习模块",
+      "nature": "必修",
+      "offered": ["秋"],
+      "grade_cycle": null,
+      "offered_years": [2025],
+      "prereq": [],
+      "source": {"page": "8"}
+    },
+    {
+      "course_id": "FREE1001",
+      "name": "自主修读课程",
+      "credits": 15.0,
+      "module_id": "sec36-学生自主修读模块",
+      "nature": "选修",
+      "offered": ["秋"],
+      "grade_cycle": null,
+      "offered_years": [2025],
+      "prereq": [],
+      "source": {"page": "9"}
+    }
+  ],
+  "alternative_groups": [
+    {
+      "group_id": "sec33-个性修读课程-alt",
+      "title": "个性修读课程",
+      "path": "个性修读课程",
+      "required_credits": 15.0,
+      "option_count": 3,
+      "declared_option_count": 3,
+      "options": [
+        {"title": "本专业进阶模块", "required_credits": 15.0, "module_ids": ["sec34-本专业进阶模块"]},
+        {"title": "跨专业学习模块", "required_credits": 15.0, "module_ids": ["sec35-跨专业学习模块"]},
+        {"title": "学生自主修读模块", "required_credits": 15.0, "module_ids": ["sec36-学生自主修读模块"]}
+      ]
+    }
+  ]
+}

@@ -7,9 +7,11 @@ library;
 import 'package:flutter/material.dart';
 
 import '../data/semester.dart';
+import '../data/xk_models.dart';
 import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/course_marks.dart';
+import '../engine/course_state.dart';
 
 class GradeDetailPage extends StatefulWidget {
   final List<Map<String, dynamic>> courses;
@@ -169,7 +171,9 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
     );
   }
 
-  /// 本学期已选（在修）分组：没有成绩，不计入上方学期 GPA。
+  /// 本学期已选分组：逐门区分「已获学分（成绩已出）」与「已选上（在修未出分）」。
+  /// 与方案页审计区共用 [choosedCourseTranscriptState]，两页口径必须一致
+  ///（用户反馈：审计页此前把所有已选课都当在修）。
   Widget _choosedCard(BuildContext context, XkListParseResult choosed) {
     final theme = Theme.of(context);
     if (choosed.state == 'unavailable') {
@@ -183,34 +187,64 @@ class _GradeDetailPageState extends State<GradeDetailPage> {
         ),
       );
     }
-    final credits = choosed.courses.fold<double>(
-        0, (sum, c) => sum + (c.xf ?? 0));
-    final creditText = (credits - credits.roundToDouble()).abs() < 1e-9
-        ? '${credits.round()}'
-        : credits.toStringAsFixed(1);
+    final states = <String, PlanCourseState?>{
+      for (final c in choosed.courses)
+        '${c.kch}\u0000${c.kcmc}': choosedCourseTranscriptState(
+            courseId: c.kch, name: c.kcmc, transcript: widget.courses),
+    };
+    final earned = choosed.courses
+        .where((c) => states['${c.kch}\u0000${c.kcmc}'] == PlanCourseState.earned)
+        .toList();
+    final active = choosed.courses.where(
+        (c) => states['${c.kch}\u0000${c.kcmc}'] != PlanCourseState.earned).toList();
+    double creditOf(Iterable<XkCourse> rows) =>
+        rows.fold<double>(0, (s, c) => s + (c.xf ?? 0));
+    final credits = creditOf(choosed.courses);
+    String num(double v) =>
+        (v - v.roundToDouble()).abs() < 1e-9 ? '${v.round()}' : v.toStringAsFixed(1);
+    final countText = '${choosed.courses.length} 门 · ${num(credits)} 学分';
+    final splitText = earned.isEmpty
+        ? ' · 均为在修（未出成绩）'
+        : ' · 已获学分 ${earned.length} 门 ${num(creditOf(earned))} 分 / '
+            '在修 ${active.length} 门';
     return Card(
       margin: const EdgeInsets.only(top: 6, bottom: 4),
       child: ExpansionTile(
         initiallyExpanded: true,
         leading: Icon(Icons.playlist_add_check_circle_outlined,
             color: theme.colorScheme.primary),
-        title: const Text('本学期已选（在修，未出成绩）'),
-        subtitle: Text(
-            '${choosed.courses.length} 门 · $creditText 学分'
-            ' · 不计入 GPA / 已取得学分'),
+        title: const Text('本学期已选（已获学分与在修分开）'),
+        subtitle: Text('$countText$splitText'),
         children: [
           for (final c in choosed.courses)
             ListTile(
               dense: true,
-              leading: const Icon(Icons.schedule, size: 18),
+              leading: Icon(
+                states['${c.kch}\u0000${c.kcmc}'] == PlanCourseState.earned
+                    ? Icons.check_circle_outline
+                    : Icons.schedule,
+                size: 18,
+                color: states['${c.kch}\u0000${c.kcmc}'] == PlanCourseState.earned
+                    ? Colors.green
+                    : theme.colorScheme.primary,
+              ),
               title: Text(c.kcmc),
               subtitle: Text(<String>[
+                choosedCreditLabel(states['${c.kch}\u0000${c.kcmc}']),
                 if (c.xf != null) '${c.xf} 学分',
                 if (c.teacher.isNotEmpty) c.teacher,
                 if (c.sksj.isNotEmpty) c.sksj,
                 if (c.cdmc.isNotEmpty) c.cdmc,
               ].join(' · ')),
             ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+                earned.isEmpty
+                    ? '已选课程尚未出分；出分后自动计入上方学期成绩与 GPA。'
+                    : '已获学分的课已计入上方学期成绩/GPA；在修课程未出分，不计入。',
+                style: TextStyle(fontSize: 11, color: theme.hintColor)),
+          ),
         ],
       ),
     );

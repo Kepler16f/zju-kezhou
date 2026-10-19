@@ -2154,6 +2154,180 @@ class ZjuClient {
     }
   }
 
+  static const _xkGhbJxbListPath = 'xsxk/zzxkghb_cxZzxkGhbJxbList.html';
+
+  /// 教学班列表（只读，用户点开课程卡时才调用）：浙大 zzxkGhb 的「课程展开」数据源。
+  ///
+  /// KcList 只返回课程级聚合行（`xkkh=T(学年-学期)-课号`，无教师/时间/地点）；
+  /// 教务网页上点开课程后看到的教学班（教师、上课时间、地点、容量）来自本接口。
+  /// 纪律：只按用户展开的单门课请求，不做批量预热；失败不缓存、如实 unavailable；
+  /// 软封禁窗口内直接回缓存或提示稍后（与 KcList 同源风控）。
+  Future<XkListParseResult> fetchXkJxbList({
+    required XkRound round,
+    required XkCourse course,
+    Map<String, String> hiddenFields = const {},
+    String? xkxnm,
+    String? xkxqm,
+    bool zjuGhb = false,
+    bool refresh = false,
+  }) async {
+    final term = ((xkxnm ?? '').isNotEmpty && (xkxqm ?? '').isNotEmpty)
+        ? '$xkxnm-$xkxqm'
+        : '';
+    final courseKey = course.kch.trim().isNotEmpty
+        ? course.kch.trim()
+        : course.kcmc.trim();
+    final cacheKey = 'xk_jxb_${_cacheToken(term)}_${_cacheToken(round.xkkzId)}'
+        '_${_cacheToken(round.kklxdm)}_${_cacheToken(courseKey)}';
+
+    Future<XkListParseResult?> fromCache() async {
+      final cached = await store.readCache(cacheKey);
+      if (cached == null) return null;
+      try {
+        final obj = json.decode(cached);
+        if (obj is! Map) return null;
+        final rows = obj['rows'];
+        if (rows is! List || rows.isEmpty) return null;
+        final parsed = parseXkCourseList(
+            json.encode({'tmpList': _fillJxbCourseName(rows, course)}),
+            xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
+        if (parsed.courses.isEmpty) return null;
+        return XkListParseResult(
+          courses: parsed.courses,
+          state: 'data',
+          issues: const ['读取自本地缓存（可能过期，请刷新）'],
+          fromCache: true,
+          fetchedAtMillis: (obj['fetched_at'] as num?)?.toInt() ?? 0,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+
+    if (!refresh) {
+      final cached = await fromCache();
+      if (cached != null) return cached;
+    }
+    if (!refresh && xkListCoolingDown) {
+      return XkListParseResult(
+          courses: const [],
+          state: 'unavailable',
+          blocked: true,
+          issues: ['触发教务访问频率保护：约 $xkListCooldownRemainingSeconds 秒后恢复']);
+    }
+    try {
+      await ensureZdbkSession();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final xn = (hiddenFields['xn'] ?? xkxnm ?? '').trim();
+      final xq = (hiddenFields['xq'] ?? xkxqm ?? '').trim();
+      final nj = (hiddenFields['nj'] ?? hiddenFields['njdm_id'] ?? '').trim();
+      final zydm =
+          (hiddenFields['zydm'] ?? hiddenFields['zyh_id'] ?? hiddenFields['bh_id'] ?? '')
+              .trim();
+      final rawXkkh = '${course.raw['xkkh'] ?? ''}'.trim();
+      final body = <String, String>{
+        ...hiddenFields,
+        'dl': round.xkkzId,
+        'lx': round.kklxdm.isEmpty ? 'bl' : round.kklxdm,
+        'kcdm': course.kch.trim(),
+        'kcmc': course.kcmc.trim(),
+        if (rawXkkh.isNotEmpty) 'xkkh': rawXkkh,
+        if (nj.isNotEmpty) 'nj': nj,
+        if (xn.isNotEmpty) 'xn': xn,
+        if (xq.isNotEmpty) 'xq': xq,
+        if (zydm.isNotEmpty) 'zydm': zydm,
+        if (xn.isNotEmpty && xq.isNotEmpty) 'xnxq': '($xn-$xq)-',
+        'kspage': '1',
+        'jspage': '1000',
+        'nd': '$now',
+        'time': '0',
+      };
+      final uri = Uri.parse('$_zdbk/jwglxt/$_xkGhbJxbListPath')
+          .replace(queryParameters: {
+        'gnmkdm': _xkGhbMenu,
+        if ((_studentId ?? '').isNotEmpty) 'su': _studentId!,
+      });
+      final text = await _postQuery(uri, body,
+          referer: '$_zdbk/jwglxt/$_xkGhbIndexPath'
+              '?gnmkdm=$_xkGhbMenu&layout=default$_suParam');
+      // 教学班行若只带课号不带课名，用课程名补齐后再解析（否则整行会被丢弃）。
+      List<dynamic> rows;
+      try {
+        final decoded = json.decode(text);
+        if (decoded is List) {
+          rows = _fillJxbCourseName(decoded, course);
+        } else if (decoded is Map) {
+          rows = _fillJxbCourseName(
+              (decoded['tmpList'] ?? decoded['items'] ?? decoded['rows'] ?? const [])
+                  as List,
+              course);
+        } else {
+          rows = const [];
+        }
+      } catch (_) {
+        rows = const [];
+      }
+      if (rows.isEmpty) {
+        // 非 JSON（风控/登录页）与真空结果都交给通用解析器判定：
+        final parsed = parseXkCourseList(text,
+            xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
+        if (parsed.blocked) {
+          _xkSoftBlockedUntil = DateTime.now().add(_xkSoftBlockWindow);
+        }
+        return parsed;
+      }
+      final parsed = parseXkCourseList(json.encode({'tmpList': rows}),
+          xkkzId: round.xkkzId, xklc: round.xklc, label: round.label);
+      if (parsed.state == 'data' && parsed.courses.isNotEmpty) {
+        _xkSoftBlockedUntil = null;
+        await store.saveCache(
+            cacheKey,
+            json.encode({
+              'fetched_at': now,
+              'state': 'data',
+              'rows': rows,
+            }));
+      }
+      _log('教学班列表',
+          detail: '${course.kcmc}｜${parsed.state}｜${parsed.courses.length} 个教学班');
+      return parsed;
+    } on RateLimitedException {
+      final cached = await fromCache();
+      _xkSoftBlockedUntil = DateTime.now().add(_xkSoftBlockWindow);
+      return cached ??
+          XkListParseResult(
+              courses: const [],
+              state: 'unavailable',
+              blocked: true,
+              issues: ['限频退避且无缓存，请稍后再试']);
+    } catch (e) {
+      final cached = await fromCache();
+      _log('教学班列表', level: 'warn', detail: '${course.kcmc}｜$e');
+      return cached ??
+          XkListParseResult(
+              courses: const [], state: 'unavailable', issues: ['教学班获取失败：$e']);
+    }
+  }
+
+  /// 教学班响应补齐课程名/课号（部分实现只回教学班维度字段）。
+  List<dynamic> _fillJxbCourseName(List<dynamic> rows, XkCourse course) {
+    return [
+      for (final r in rows)
+        if (r is Map)
+          {
+            ...r.map((k, v) => MapEntry(k.toString(), v)),
+            'kcmc': '${r['kcmc'] ?? ''}'.trim().isEmpty
+                ? course.kcmc
+                : r['kcmc'],
+            'kcdm': '${r['kcdm'] ?? r['kch'] ?? ''}'.trim().isEmpty
+                ? course.kch
+                : (r['kcdm'] ?? r['kch']),
+          }
+        else
+          r,
+    ];
+  }
+
   /// 上次课表时隙是否来自缓存。
   bool lastTimetableFromCache = false;
 

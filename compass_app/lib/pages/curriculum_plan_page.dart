@@ -24,6 +24,7 @@ import '../data/pdf_text_extractor.dart';
 import '../data/plan_models.dart';
 import '../data/plan_pdf_parse.dart';
 import '../data/semester.dart';
+import '../data/xk_models.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
 import '../engine/course_state.dart';
@@ -560,10 +561,29 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       );
     }
     final xf = c.courses.fold<double>(0, (n, x) => n + (x.xf ?? 0));
-    final selectedRows = selectedRowsOf(c);
+    // 用户反馈：本学期已选里既有已出分、已获学分的课，也有仅已选上的课。
+    // 与成绩页共用 choosedCourseTranscriptState，两页必须同口径。
+    final stateOf = <String, PlanCourseState?>{
+      for (final x in c.courses)
+        '${x.kch}\u0000${x.kcmc}': choosedCourseTranscriptState(
+            courseId: x.kch, name: x.kcmc, transcript: widget.transcript),
+    };
+    PlanCourseState? stateOfCourse(XkCourse x) => stateOf['${x.kch}\u0000${x.kcmc}'];
+    final earnedCourses = c.courses
+        .where((x) => stateOfCourse(x) == PlanCourseState.earned)
+        .toList();
+    final activeCourses = c.courses
+        .where((x) => stateOfCourse(x) != PlanCourseState.earned)
+        .toList();
+    final earnedNames = {for (final x in earnedCourses) x.kcmc};
+    final earnedXf =
+        earnedCourses.fold<double>(0, (n, x) => n + (x.xf ?? 0));
+    final activeRows = selectedRowsOf(c)
+        .where((r) => !earnedNames.contains('${r['name'] ?? ''}'))
+        .toList();
     final byModule = widget.plan == null
         ? const <String, double>{}
-        : selectedCreditsByModule(selectedRows, widget.plan!);
+        : selectedCreditsByModule(activeRows, widget.plan!);
     final moduleNames = <String, String>{
       for (final m in (widget.plan?['modules'] as List? ?? const []))
         if (m is Map && m['module_id'] != null)
@@ -575,19 +595,28 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
         tilePadding: EdgeInsets.zero,
         childrenPadding: const EdgeInsets.only(bottom: 6),
         initiallyExpanded: false,
-        title: const Text('本学期已选（在修，未出成绩）',
+        title: const Text('本学期已选（已获学分与在修分开）',
             style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
         subtitle: Text(
             '${c.courses.length} 门 / ${xf.toStringAsFixed(1)} 学分'
-            ' · 不计入已取得学分 / GPA'),
+            '${earnedCourses.isEmpty ? ' · 均为在修（未出成绩）' : ' · 已获 ${earnedCourses.length} 门 ${earnedXf.toStringAsFixed(1)} 分 / 在修 ${activeCourses.length} 门'}'),
         children: [
           for (final x in c.courses)
             ListTile(
               dense: true,
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.schedule, size: 18),
+              leading: Icon(
+                stateOfCourse(x) == PlanCourseState.earned
+                    ? Icons.check_circle_outline
+                    : Icons.schedule,
+                size: 18,
+                color: stateOfCourse(x) == PlanCourseState.earned
+                    ? Colors.green
+                    : ScholarPalette.selectedBlue,
+              ),
               title: Text(x.kcmc, style: const TextStyle(fontSize: 12.5)),
               subtitle: Text(<String>[
+                choosedCreditLabel(stateOfCourse(x)),
                 if (x.xf != null) '${x.xf} 学分',
                 if (x.teacher.isNotEmpty) x.teacher,
                 if (x.sksj.isNotEmpty) x.sksj,
@@ -613,7 +642,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             ),
           const Padding(
             padding: EdgeInsets.only(top: 2),
-            child: Text('已取得学分开自成绩单；已选课程在修、未出成绩，两者分开计。',
+            child: Text(
+                '已获学分的课已计入上方成绩/已取得学分；在修课程未出分，不计入。',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
           ),
         ],

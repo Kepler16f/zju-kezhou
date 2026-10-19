@@ -128,6 +128,59 @@ PlanCourseEvidence collectPlanCourseEvidence({
   return PlanCourseEvidence(earned: earned, active: active, noCredit: noCredit);
 }
 
+/// 已选课程 ↔ 成绩单状态（成绩页「本学期已选」与方案页审计区共用同一口径）。
+///
+/// 用户反馈：本学期已选里既有「已出分、已获学分」的课，也有「已选上、未出分」
+/// 的课，两页必须一致地区分出来。返回 null = 成绩单无对应记录（纯在修）。
+/// 匹配顺序：课号全等 → 课名全等 → 变体安全的模糊兜底（H/I/II 不互串）。
+PlanCourseState? choosedCourseTranscriptState({
+  required String courseId,
+  required String name,
+  required List<Map<String, dynamic>> transcript,
+}) {
+  final id = courseId.trim();
+  final nm = name.trim();
+  final rows = <Map<String, dynamic>>[];
+  for (final r in transcript) {
+    final rid = '${r['course_id'] ?? ''}'.trim();
+    final rn = '${r['name'] ?? ''}'.trim();
+    if ((id.isNotEmpty && rid == id) || (nm.isNotEmpty && rn == nm)) rows.add(r);
+  }
+  if (rows.isEmpty && nm.isNotEmpty) {
+    final names = <String>[];
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    for (final r in transcript) {
+      final rn = '${r['name'] ?? ''}'.trim();
+      if (rn.isEmpty) continue;
+      if (!grouped.containsKey(rn)) {
+        names.add(rn);
+        grouped[rn] = <Map<String, dynamic>>[];
+      }
+      grouped[rn]!.add(r);
+    }
+    final hit = bestVariantAwareMatch(nm, names);
+    if (hit != null) rows.addAll(grouped[hit]!);
+  }
+  if (rows.isEmpty) return null;
+  // 同一门课多条记录（重修/补考）：已获学分优先，其次在修，最后未获。
+  PlanCourseState? best;
+  for (final r in rows) {
+    final st = transcriptRowState(r);
+    if (st == null) continue;
+    if (st == PlanCourseState.earned) return st;
+    if (st == PlanCourseState.active || best == null) best = st;
+  }
+  return best;
+}
+
+/// 本学期已选行的状态文案（成绩页与方案页共用，避免两处措辞漂移）。
+String choosedCreditLabel(PlanCourseState? state) => switch (state) {
+      PlanCourseState.earned => '已获学分',
+      PlanCourseState.active => '在修（未出成绩）',
+      PlanCourseState.noCredit => '未获学分',
+      _ => '在修（未出成绩）',
+    };
+
 /// 方案课程名 → 修读状态：对每个证据集合复用 resolvePassedNames
 /// （全等 + 相似度 ≥0.85），同一门课按 earned > active > noCredit 取最高
 /// 优先级；无证据的名字也保留在结果里、值为 unknown。

@@ -77,3 +77,29 @@ if drift:
     sys.exit(1)
 print("✅ 双引擎金标一致：%d 模块 / %d 告警 / totals=%s" % (
     len(py_report["summary"]), len(py_report["warnings"]), py_report["totals"]))
+
+# ── 第二组夹具：并列选项组（三选一）──────────────────────────────────────────
+# golden 样例方案没有 alternative_groups，双引擎的「选项行合成为组行、totals
+# 只计一次、落选选项缺口警告清除」这段逻辑此前无人比对（2026-10-19 用户 #8
+# 复盘中发现的镜像空洞）。Dart 侧输出由 compass_app/test/alt_group_parity_test.dart
+# 落盘到 test/golden_dart_report_alt.json，随仓库提交。
+with open(os.path.join(ROOT, "data", "golden_alt", "alt_group_demo.json"), encoding="utf-8") as fh:
+    alt_plan = json.load(fh)
+with open(os.path.join(ROOT, "data", "samples", "demo4_alt_group.json"), encoding="utf-8") as fh:
+    alt_rec = json.load(fh)
+py_alt = audit.build(alt_rec, alt_plan)
+alt_golden_path = os.path.join(ROOT, "compass_app", "test", "golden_dart_report_alt.json")
+if not os.path.exists(alt_golden_path):
+    print("缺少 test/golden_dart_report_alt.json（先跑: cd compass_app && "
+          "dart test test/alt_group_parity_test.dart）")
+    sys.exit(2)
+with open(alt_golden_path, encoding="utf-8") as fh:
+    dart_alt = json.load(fh)
+alt_drift = diff(py_alt, dart_alt)
+if alt_drift:
+    print("❌ 并列选项组双引擎漂移 %d 处：" % len(alt_drift))
+    for d in alt_drift[:40]:
+        print("  ", d)
+    sys.exit(1)
+print("✅ 并列选项组一致：%d 行 / %d 告警 / totals=%s" % (
+    len(py_alt["summary"]), len(py_alt["warnings"]), py_alt["totals"]))

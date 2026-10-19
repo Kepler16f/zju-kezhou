@@ -9,8 +9,6 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:compass_app/data/credential_store.dart';
-import 'package:compass_app/data/diagnostic_log.dart';
-import 'package:compass_app/data/xk_models.dart';
 import 'package:compass_app/data/zju_client.dart';
 
 void main() {

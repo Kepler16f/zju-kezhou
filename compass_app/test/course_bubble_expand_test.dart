@@ -116,4 +116,61 @@ void main() {
     expect(find.textContaining('修读状态 已修'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('展开后显示教学班（教师/时间/地点），逐个匹配评分', (tester) async {
+    const bare = XkCourse(kcmc: '微积分（甲）Ⅰ', kch: 'MATH1135G', xf: 5.0);
+    const jxbs = [
+      XkCourse(
+          kcmc: '微积分（甲）Ⅰ',
+          kch: 'MATH1135G',
+          jxbmc: '01',
+          teacher: '汪国军',
+          sksj: '周二第1,2节',
+          cdmc: '紫金港东2-203',
+          cap: 60,
+          selected: 42),
+      XkCourse(
+          kcmc: '微积分（甲）Ⅰ',
+          kch: 'MATH1135G',
+          jxbmc: '02',
+          teacher: '李四',
+          sksj: '周四第3,4节',
+          cdmc: '紫金港东1-101'),
+    ];
+    final jxbStore = TeacherRatingStore.fromJson(const {
+      '汪国军': {'avg': 9.4, 'count': 148, 'source': '查老师'},
+    });
+    var expands = 0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 380,
+            child: CourseBubble(
+              course: bare,
+              ratings: jxbStore,
+              teachingClasses: jxbs,
+              onExpand: () => expands++,
+            ),
+          ),
+        ),
+      ),
+    ));
+    expect(find.textContaining('教学班 01'), findsNothing);
+    await tester.tap(find.byType(CourseBubble));
+    await tester.pumpAndSettle();
+    expect(expands, 1);
+    expect(find.textContaining('教学班（2）'), findsOneWidget);
+    expect(find.textContaining('教学班 01'), findsOneWidget);
+    expect(find.textContaining('汪国军'), findsOneWidget);
+    expect(find.textContaining('周二第1,2节'), findsOneWidget);
+    expect(find.textContaining('紫金港东2-203'), findsOneWidget);
+    expect(find.textContaining('容量 60/已选 42'), findsOneWidget);
+    expect(find.textContaining('教学班 02'), findsOneWidget);
+    // 平行班教师不同：命中的显示分数，未命中的显示「暂无」
+    expect(find.text('评分 9.4/10（148 人评 · 查老师）'), findsOneWidget);
+    expect(find.text('评分：暂无'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

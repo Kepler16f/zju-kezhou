@@ -1,0 +1,267 @@
+{
+  "summary": [
+    {
+      "module_id": "core",
+      "module_path": "专业教育/专业核心",
+      "title": "专业核心",
+      "level": 2,
+      "category": "专业核心",
+      "plan_credits_raw": "5",
+      "plan_credits_unit": "学分",
+      "notes": [],
+      "required": 5.0,
+      "earned": 3.0,
+      "selected_no_credit": 0,
+      "gap": 2.0,
+      "remaining_future": 2.0,
+      "color": "yellow",
+      "status": "🟡 待补",
+      "plan_courses": [
+        {
+          "course_id": "A1",
+          "name": "程序设计基础",
+          "credits": 3.0,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2027-A(秋)",
+            "2028-A(秋)",
+            "2029-A(秋)",
+            "2030-A(秋)",
+            "2031-A(秋)"
+          ],
+          "closed": false,
+          "passed": true,
+          "record": {
+            "semester": "2026-A",
+            "grade": 88
+          },
+          "page": "1"
+        },
+        {
+          "course_id": "A2",
+          "name": "离散数学",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)",
+            "2029-B(春)",
+            "2030-B(春)",
+            "2031-B(春)"
+          ],
+          "closed": false,
+          "passed": false,
+          "page": "1"
+        }
+      ],
+      "course_stats": {
+        "total": 2,
+        "passed": 1,
+        "pending": 1,
+        "closed": 0
+      },
+      "missing_courses": [
+        {
+          "course_id": "A2",
+          "name": "离散数学",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": null,
+          "terms": [
+            "2026-B(春)",
+            "2027-B(春)",
+            "2028-B(春)",
+            "2029-B(春)",
+            "2030-B(春)",
+            "2031-B(春)"
+          ],
+          "closed": false,
+          "active": false,
+          "page": "1"
+        }
+      ]
+    },
+    {
+      "module_id": "sec33-个性修读课程-alt",
+      "module_path": "个性修读课程",
+      "title": "个性修读课程",
+      "level": 2,
+      "category": "个性修读课程",
+      "notes": [],
+      "alternative_group": true,
+      "option_count": 3,
+      "options": [
+        {
+          "title": "本专业进阶模块",
+          "module_ids": [
+            "sec34-本专业进阶模块"
+          ],
+          "required": 15.0,
+          "earned": 3.5,
+          "gap": 11.5,
+          "remaining_future": 0.0,
+          "color": "red"
+        },
+        {
+          "title": "跨专业学习模块",
+          "module_ids": [
+            "sec35-跨专业学习模块"
+          ],
+          "required": 15.0,
+          "earned": 0.0,
+          "gap": 15.0,
+          "remaining_future": 0.0,
+          "color": "red"
+        },
+        {
+          "title": "学生自主修读模块",
+          "module_ids": [
+            "sec36-学生自主修读模块"
+          ],
+          "required": 15.0,
+          "earned": 0.0,
+          "gap": 15.0,
+          "remaining_future": 0.0,
+          "color": "red"
+        }
+      ],
+      "required": 15.0,
+      "earned": 3.5,
+      "selected_no_credit": 0,
+      "gap": 11.5,
+      "remaining_future": 0.0,
+      "color": "red",
+      "status": "🔴 学籍年限内无法补足",
+      "plan_courses": [
+        {
+          "course_id": "BEFS2051M",
+          "name": "食品细胞工程",
+          "credits": 1.5,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "passed": true,
+          "record": {
+            "semester": "2026-A",
+            "grade": 82
+          },
+          "page": "7"
+        },
+        {
+          "course_id": "BEFS2056M",
+          "name": "未来食品科学",
+          "credits": 2.0,
+          "offered": [
+            "春"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "passed": true,
+          "record": {
+            "semester": "2026-A",
+            "grade": 90
+          },
+          "page": "7"
+        },
+        {
+          "course_id": "BEFS3058M",
+          "name": "食品安全与质量控制",
+          "credits": 11.5,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "passed": false,
+          "page": "7"
+        }
+      ],
+      "course_stats": {
+        "total": 3,
+        "passed": 2,
+        "pending": 1,
+        "closed": 3
+      },
+      "missing_courses": [
+        {
+          "course_id": "BEFS3058M",
+          "name": "食品安全与质量控制",
+          "credits": 11.5,
+          "offered": [
+            "秋"
+          ],
+          "offered_years": [
+            2025
+          ],
+          "terms": [],
+          "closed": true,
+          "active": false,
+          "page": "7"
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "type": "offering_closed",
+      "level": "yellow",
+      "text": "「离散数学」2分尚未修，（仅春开课），可选窗口：2026-B(春)、2027-B(春)、2028-B(春)、2029-B(春)、2030-B(春)、2031-B(春)；错过需等待。",
+      "refs": [
+        "A2@p1"
+      ]
+    },
+    {
+      "type": "graduation_risk",
+      "level": "red",
+      "text": "「个性修读课程」缺口 11.5 分，方案内该组剩余课程在学籍年限内已无开课窗口：《食品安全与质量控制》11.5分。存在延毕风险，请尽快与教务确认替代方案。",
+      "refs": [
+        "BEFS3058M@p7"
+      ]
+    }
+  ],
+  "extra_courses": [],
+  "totals": {
+    "required": 20.0,
+    "earned": 6.5,
+    "gap": 13.5,
+    "selected_no_credit": 0,
+    "module_required": 20.0,
+    "plan_total_credits": 20.0,
+    "extra_practice_credits": 0.0,
+    "total_basis": "plan_declared"
+  },
+  "caliber_notes": [
+    "earned=已获学分：仅统计已通过且计入学分的课程，同一门课重修/补考只计一次；弃修/待录/缓考/无效不计入。",
+    "selected_no_credit=已选未获学分：本模块内已修未通过（含在修未出分、弃修/待录/缓考/无效）或已列入计划选课、尚未取得学分的课程门数（按方案课程去重），与 earned 分开呈现，请勿相加当作总进度。",
+    "同一课程多类别归属时按各模块分别计学分（培养方案口径），与教务系统一致。",
+    "并列模块口径：本专业进阶 / 跨专业学习（微辅修）/ 学生自主修读等「任选其一」的模块按一个选项计一次要求学分，组内其他选项不报缺口。"
+  ],
+  "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
+  "trace": {
+    "plan": "并列模块双引擎夹具（模拟 2026 级食品方案「个性修读课程」三选一） 2026级（核验日 2026-10-19）",
+    "engine": "v1.7",
+    "notes": [
+      "总计学分口径：方案声明最低毕业学分 20 分 = 应修 20 分（各模块要求之和为 20 分，含三选一/微辅修等重复口径，毕业总要求以方案声明为准）。"
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "student": {
+    "alias": "三选一夹具",
+    "major": "alt_group_demo",
+    "grade": "2026",
+    "current_semester": "2026-A"
+  },
+  "source": "fixture",
+  "courses": [
+    {
+      "course_id": "A1",
+      "name": "程序设计基础",
+      "credits": 3.0,
+      "grade": 88,
+      "semester": "2026-A"
+    },
+    {
+      "course_id": "BEFS2051M",
+      "name": "食品细胞工程",
+      "credits": 1.5,
+      "grade": 82,
+      "semester": "2026-A"
+    },
+    {
+      "course_id": "BEFS2056M",
+      "name": "未来食品科学",
+      "credits": 2.0,
+      "grade": 90,
+      "semester": "2026-A"
+    }
+  ],
+  "planned_courses": []
+}

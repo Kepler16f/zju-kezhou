@@ -899,6 +899,7 @@ def build(record, plan, action=None, ui_active_names=None):
                                           % (c["name"], c["credits"], verb, why,
                                              "、".join(idx_str(i) for i in future_idx(c))),
                                  "refs": ["%s@p%s" % (c["course_id"], (c.get("source") or {}).get("page"))]})
+        module_warn_end[str(m["module_id"])] = len(warnings)
 
     # 先修检查（已修侧）：已通过课程的先修必须也在通过集合中
     for r, c in matched:
@@ -953,6 +954,147 @@ def build(record, plan, action=None, ui_active_names=None):
                                           % (c["name"], pc["name"], idx_str(min(pk)), idx_str(xi)),
                                  "refs": ["%s@p%s" % (c["course_id"], (c.get("source") or {}).get("page")),
                                           "%s@p%s" % (pc["course_id"], (pc.get("source") or {}).get("page"))]})
+
+    # ── 并列选项组（用户反馈 #4/#8，v1.7 与 Dart engine/audit.dart 逐字段对齐）──
+    # plan_audit_adapter 生成 alternative_groups：每个选项子树的模块都在 modules
+    # 里（明细可展开），但只有「最优选项」进入组行与总计；选项模块行不再单独
+    # 展示，避免「三选一 = 三份要求」重复计数；落选选项的缺口警告一并清除。
+    alt_groups_raw = plan.get("alternative_groups")
+    alt_applied = isinstance(alt_groups_raw, list) and len(alt_groups_raw) > 0
+    display_summary = summary
+    if alt_applied:
+        by_module = {str(r["module_id"]): r for r in summary}
+        group_rows, option_ids = [], set()
+        prune_warn_idx, group_warnings = set(), []
+        for raw in alt_groups_raw:
+            if not isinstance(raw, dict):
+                continue
+            opts = raw.get("options")
+            if not isinstance(opts, list):
+                continue
+            rows = []
+            for o in opts:
+                if not isinstance(o, dict):
+                    continue
+                ids = [str(e) for e in (o.get("module_ids") or [])]
+                mods = [by_module[i] for i in ids if i in by_module]
+                if not mods:
+                    continue
+                option_ids.update(str(r["module_id"]) for r in mods)
+                req = sum(r["required"] for r in mods)
+                got = sum(r["earned"] for r in mods)
+                rem = sum(r["remaining_future"] for r in mods)
+                gap = round(max(0.0, req - got), 2)
+                rows.append({"title": o.get("title") or "", "module_ids": ids,
+                             "required": req, "earned": got,
+                             "gap": gap, "remaining_future": rem,
+                             "color": ("green" if gap <= 1e-9
+                                       else ("yellow" if gap <= rem + 1e-9 else "red"))})
+            if not rows:
+                continue
+            rows.sort(key=lambda a: (a["gap"], -a["earned"], a["required"]))
+            best = rows[0]
+            best_rows = [by_module[str(i)] for i in best["module_ids"]
+                         if str(i) in by_module]
+            group_req = raw.get("required_credits")
+            req = (float(group_req) if isinstance(group_req, (int, float))
+                                 and float(group_req) > 0 else float(best["required"]))
+            got, rem = float(best["earned"]), float(best["remaining_future"])
+            gap = round(max(0.0, req - got), 2)
+            color = ("green" if gap <= 1e-9
+                     else ("yellow" if gap <= rem + 1e-9 else "red"))
+            stats = {}
+            for r in best_rows:
+                for k, v in (r.get("course_stats") or {}).items():
+                    stats[k] = stats.get(k, 0) + int(v or 0)
+            group_rows.append({
+                "module_id": str(raw.get("group_id")),
+                "module_path": raw.get("path"),
+                "title": raw.get("title"),
+                "level": 2,
+                "category": raw.get("title"),
+                "notes": [],
+                "alternative_group": True,
+                "option_count": len(rows),
+                "options": rows,
+                "required": req,
+                "earned": got,
+                "selected_no_credit": sum(int(r.get("selected_no_credit") or 0)
+                                          for r in best_rows),
+                "gap": gap,
+                "remaining_future": rem,
+                "color": color,
+                "status": {"green": "🟢 已达成", "yellow": "🟡 待补",
+                           "red": "🔴 学籍年限内无法补足"}[color],
+                "plan_courses": [c for r in best_rows
+                                 for c in (r.get("plan_courses") or [])],
+                "course_stats": stats,
+                "missing_courses": [c for r in best_rows
+                                    for c in (r.get("missing_courses") or [])],
+            })
+            for mid in option_ids:
+                s, e = module_warn_start.get(mid), module_warn_end.get(mid)
+                if s is not None and e is not None:
+                    prune_warn_idx.update(range(s, e))
+            if color == "red" and gap > 0:
+                group_missing = [c for r in best_rows
+                                 for c in (r.get("missing_courses") or [])]
+                closed = [c for c in group_missing if c.get("closed")]
+                open_courses = [c for c in group_missing if not c.get("closed")]
+                closed_credit = round(sum(c.get("credits") or 0 for c in closed), 2)
+                detail = "、".join("《%s》%g分" % (c["name"], c.get("credits") or 0)
+                                   for c in closed[:3])
+                cause = ("方案内该组剩余课程在学籍年限内已无开课窗口：%s" % detail
+                         if closed and closed_credit >= gap
+                         else "即使重修补上（可补 %g 分），缺口 %g 分仍超出未来可选学分"
+                              % (round(sum(c.get("credits") or 0 for c in open_courses), 2), gap))
+                actives = [c for c in group_missing if c.get("active")]
+                active_credit = round(sum(c.get("credits") or 0 for c in actives), 2)
+                fully_covered = bool(actives) and active_credit >= gap - 1e-9
+                group_warnings.append({
+                    "type": "graduation_risk",
+                    "level": "yellow" if fully_covered else "red",
+                    "text": ("「%s」缺口 %g 分（已在修，待出成绩）：已选 %d 门 %g 学分，"
+                             "出分即达成，暂无延毕风险。"
+                             % (raw.get("path"), gap, len(actives), active_credit))
+                            if fully_covered else
+                            (("「%s」缺口 %g 分，已选 %d 门 %g 学分（在修，待出成绩），"
+                              "仍缺 %g 分：%s。存在延毕风险，请尽快与教务确认替代方案。"
+                              % (raw.get("path"), gap, len(actives), active_credit,
+                                 round(max(0.0, gap - active_credit), 2), cause))
+                             if actives else
+                             ("「%s」缺口 %g 分，%s。存在延毕风险，"
+                              "请尽快与教务确认替代方案。" % (raw.get("path"), gap, cause))),
+                    "refs": ["%s@p%s" % (c.get("course_id"), c.get("page"))
+                             for c in closed[:3]],
+                })
+        if prune_warn_idx:
+            warnings[:] = [w for i, w in enumerate(warnings) if i not in prune_warn_idx]
+        warnings.extend(group_warnings)
+
+        # 组行插到首个选项的位置；选项模块行不再单独展示（避免「20+20+20」）。
+        first_index = {}
+        for g in group_rows:
+            ids = {str(mid) for opt in g["options"] for mid in opt["module_ids"]}
+            idx = len(summary)
+            for i, r in enumerate(summary):
+                if str(r["module_id"]) in ids:
+                    idx = i
+                    break
+            first_index[g["module_id"]] = idx
+        by_first = {}
+        for g in group_rows:
+            by_first.setdefault(first_index[g["module_id"]], []).append(g)
+        out_rows = []
+        for i in range(len(summary) + 1):
+            out_rows.extend(by_first.get(i, []))
+            if i == len(summary):
+                break
+            if str(summary[i]["module_id"]) in option_ids:
+                continue
+            out_rows.append(summary[i])
+        display_summary = out_rows
+
     for semester in sorted({x.get("semester") for x in plan_courses if x.get("semester")}):
         group = [x for x in plan_courses if x.get("semester") == semester]
         for cf in common.check_plan(group):
@@ -977,14 +1119,16 @@ def build(record, plan, action=None, ui_active_names=None):
     # 未声明则回落模块求和。模块求和会把并列选项/微辅修重复计入（用户 #8）。
     plan_total_raw = (plan.get("meta") or {}).get("total_credits")
     plan_total_credits = float(plan_total_raw) if isinstance(plan_total_raw, (int, float)) else None
-    module_required = round(sum(m["required"] for m in summary), 2)
-    practice_required = round(sum(m["required"] for m in summary if is_practice_module(m)), 2)
-    earned_total = round(sum(m["earned"] for m in summary), 2)
+    # 求和口径一律走 display_summary：并列选项模块行已被组行替换（用户 #8）。
+    module_required = round(sum(m["required"] for m in display_summary), 2)
+    practice_required = round(sum(m["required"] for m in display_summary
+                                  if is_practice_module(m)), 2)
+    earned_total = round(sum(m["earned"] for m in display_summary), 2)
     required_total = (round(plan_total_credits + practice_required, 2)
                       if plan_total_credits is not None else module_required)
     # 已选未获（诉求 #4）：独立字段，不与 earned 相加、不抵扣 gap。
     selected_no_credit_total = sum(int(m.get("selected_no_credit") or 0)
-                                   for m in summary)
+                                   for m in display_summary)
     totals = {"required": required_total, "earned": earned_total,
               "gap": round(max(0.0, required_total - earned_total), 2),
               "selected_no_credit": selected_no_credit_total,
@@ -1003,6 +1147,10 @@ def build(record, plan, action=None, ui_active_names=None):
         caliber_notes.append(
             "选课组口径：模块内「四选一/选N门/至少修读N门」类组按「至少 N 门」"
             "折算要求学分（组内其余课程为可选项，不再全部求和），任过 N 门即达成。")
+    if alt_applied:
+        caliber_notes.append(
+            "并列模块口径：本专业进阶 / 跨专业学习（微辅修）/ 学生自主修读等"
+            "「任选其一」的模块按一个选项计一次要求学分，组内其他选项不报缺口。")
     if plan_has_foreign:
         caliber_notes.append(
             "外语口径：外语类模块要求学分可自选（审计动作 foreign_lang_credits 正数，"
@@ -1051,7 +1199,7 @@ def build(record, plan, action=None, ui_active_names=None):
             "其学分按各所属模块分别计入（earned 与 selected_no_credit 同口径）。"
             % multi_tag_course_count)
 
-    report = {"summary": summary, "warnings": warnings,
+    report = {"summary": display_summary, "warnings": warnings,
               "extra_courses": unmatched, "totals": totals,
               "caliber_notes": caliber_notes,
               "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",

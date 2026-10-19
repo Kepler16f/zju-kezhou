@@ -121,6 +121,11 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   List<String>? _mergedNotesCache;
   int _mergedCacheVersion = -1;
 
+  /// 教学班明细（按课程缓存，仅用户展开时拉取；与 KcList 的软封禁同源）。
+  final Map<String, XkListParseResult> _jxbLists = {};
+  final Set<String> _jxbLoading = {};
+  String _jxbKey(XkCourse c) => '${c.kch}\u0000${c.kcmc}';
+
   _View _view = _View.rounds;
   final _searchCtl = TextEditingController();
 
@@ -409,6 +414,45 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       }
     } finally {
       if (mounted) setState(() => _loadingRounds.remove(rk));
+    }
+  }
+
+  /// 课程所属入口（教学班请求要带同一套 dl/lx/隐藏域）；找不到原入口时用首个入口。
+  XkRound? _roundOf(XkCourse c) {
+    final rounds = _index?.rounds ?? const <XkRound>[];
+    for (final r in rounds) {
+      if (r.xkkzId == c.xkkzId) return r;
+    }
+    return rounds.isEmpty ? null : rounds.first;
+  }
+
+  /// 用户展开课程卡时按需拉取教学班（教师/时间/地点）。
+  /// 只拉一次（成功进内存，另有本地缓存）；失败不写缓存，再点展开即重试。
+  Future<void> _loadTeachingClasses(XkCourse c) async {
+    if (!widget.loggedIn) return;
+    final key = _jxbKey(c);
+    if (_jxbLists[key]?.courses.isNotEmpty == true ||
+        _jxbLoading.contains(key)) {
+      return;
+    }
+    final round = _roundOf(c);
+    if (round == null || !mounted) return;
+    setState(() => _jxbLoading.add(key));
+    try {
+      final res = await widget.client.fetchXkJxbList(
+        round: round,
+        course: c,
+        hiddenFields: _index?.hiddenFields ?? const {},
+        xkxnm: _index?.xkxnm,
+        xkxqm: _index?.xkxqm,
+        zjuGhb: _index?.zjuGhb ?? false,
+      );
+      if (!mounted) return;
+      setState(() => _jxbLists[key] = res);
+    } catch (_) {
+      // 失败静默保留可重试（不写缓存，不弹窗打断浏览）
+    } finally {
+      if (mounted) setState(() => _jxbLoading.remove(key));
     }
   }
 
@@ -1099,6 +1143,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                       categories: m.categories,
                       extraTags: m.tags,
                       extraDetails: _mergedDetails(m),
+                      teachingClasses:
+                          _jxbLists[_jxbKey(m.base)]?.courses ?? const [],
+                      jxbLoading: _jxbLoading.contains(_jxbKey(m.base)),
+                      onExpand: () => _loadTeachingClasses(m.base),
                     ),
                   ),
               ],
@@ -1700,6 +1748,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                       state: _stateOf(c, states),
                       onTap: () => _showCourseStateHint(_stateOf(c, states)),
                       categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
+                      teachingClasses:
+                          _jxbLists[_jxbKey(c)]?.courses ?? const [],
+                      jxbLoading: _jxbLoading.contains(_jxbKey(c)),
+                      onExpand: () => _loadTeachingClasses(c),
                     ),
                   ),
               ],
@@ -1777,6 +1829,14 @@ class CourseBubble extends StatefulWidget {
   /// 加载失败/未命中一律显示「评分：暂无」。
   final TeacherRatingStore? ratings;
 
+  /// 教学班明细（用户展开课程卡时按需拉取）：KcList 只给课程级聚合行，
+  /// 教师/时间/地点在教务网页上要点开教学班才显示，数据源为 JxbList。
+  final List<XkCourse> teachingClasses;
+  final bool jxbLoading;
+
+  /// 展开回调：页面据此按需拉取该课程的教学班（只拉一次，失败可再点重试）。
+  final VoidCallback? onExpand;
+
   const CourseBubble({
     super.key,
     required this.course,
@@ -1788,6 +1848,9 @@ class CourseBubble extends StatefulWidget {
     this.extraTags = const [],
     this.extraDetails,
     this.ratings,
+    this.teachingClasses = const [],
+    this.jxbLoading = false,
+    this.onExpand,
   });
 
   @override
@@ -1813,9 +1876,12 @@ class _CourseBubbleState extends State<CourseBubble> {
       }();
 
   /// 点按：先透传给外层（页面在此弹已修/在修的防重复 SnackBar），再切换展开。
+  /// 展开时通知页面按需拉取教学班（已拉过/正在拉由页面去重）。
   void _handleTap() {
     widget.onTap?.call();
-    setState(() => _expanded = !_expanded);
+    final expand = !_expanded;
+    setState(() => _expanded = expand);
+    if (expand) widget.onExpand?.call();
   }
 
   @override
@@ -1980,7 +2046,72 @@ class _CourseBubbleState extends State<CourseBubble> {
                       fontSize: 11.5,
                       color: scheme.onSurface.withValues(alpha: 0.85))),
             ),
-          _ratingBlock(context, c),
+          if (widget.jxbLoading)
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text('正在加载教学班…',
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+            )
+          else if (widget.teachingClasses.isNotEmpty)
+            _teachingClassesBlock(context)
+          else
+            _ratingBlock(context, c),
+        ],
+      ),
+    );
+  }
+
+  /// 教学班明细：教研网网页上点开课程后看到的内容（教学班/教师/时间/地点/容量），
+  /// 每个教学班单独一行并各自匹配教师评分（平行班教师可能不同）。
+  Widget _teachingClassesBlock(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('教学班（${widget.teachingClasses.length}）',
+              style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurface.withValues(alpha: 0.8))),
+          for (var i = 0; i < widget.teachingClasses.length; i++)
+            _teachingClassLine(context, widget.teachingClasses[i], i),
+        ],
+      ),
+    );
+  }
+
+  Widget _teachingClassLine(BuildContext context, XkCourse j, int index) {
+    final scheme = Theme.of(context).colorScheme;
+    final head = <String>[
+      if (j.jxbmc.isNotEmpty) '教学班 ${j.jxbmc}' else '教学班 ${index + 1}',
+      if (j.teacher.isNotEmpty) j.teacher,
+    ].join(' · ');
+    final meta = <String>[
+      if (j.sksj.isNotEmpty) j.sksj,
+      if (j.cdmc.isNotEmpty) j.cdmc,
+      if (j.cap != null || j.selected != null)
+        '容量 ${j.cap ?? '-'}/已选 ${j.selected ?? '-'}',
+    ].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.only(top: 3),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(head,
+              style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: scheme.onSurface.withValues(alpha: 0.9))),
+          if (meta.isNotEmpty)
+            Text(meta,
+                style: TextStyle(
+                    fontSize: 11,
+                    color: scheme.onSurface.withValues(alpha: 0.72))),
+          _ratingFor(context, j.teacher),
         ],
       ),
     );
@@ -1988,7 +2119,13 @@ class _CourseBubbleState extends State<CourseBubble> {
 
   /// 教师评分行（含标签 Chip）。外部注入 store 时同步查询；
   /// 否则懒加载共享资产，未完成/失败按未命中处理（显示「评分：暂无」）。
-  Widget _ratingBlock(BuildContext context, XkCourse c) {
+  Widget _ratingBlock(BuildContext context, XkCourse c) =>
+      _ratingFor(context, c.teacher, c.kcmc);
+
+  /// 教师评分行（含标签 Chip）。外部注入 store 时同步查询；
+  /// 否则懒加载共享资产，未完成/失败按未命中处理（显示「评分：暂无」）。
+  Widget _ratingFor(BuildContext context, String teacher,
+      [String courseName = '']) {
     Widget line(TeacherRating? r) {
       final found = r != null;
       return Column(
@@ -2020,11 +2157,11 @@ class _CourseBubbleState extends State<CourseBubble> {
     }
 
     final store = widget.ratings;
-    if (store != null) return line(store.lookupAny(c.teacher, c.kcmc));
+    if (store != null) return line(store.lookupAny(teacher, courseName));
     return FutureBuilder<TeacherRatingStore>(
       future: _loadSharedStore(),
       builder: (context, snap) => snap.connectionState == ConnectionState.done
-          ? line(snap.data?.lookupAny(c.teacher, c.kcmc))
+          ? line(snap.data?.lookupAny(teacher, courseName))
           : line(null),
     );
   }

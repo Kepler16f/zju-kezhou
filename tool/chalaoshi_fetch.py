@@ -31,6 +31,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # ── 配置区（换源时只改这一段）────────────────────────────────────────────
@@ -44,6 +45,10 @@ DEFAULT_DELAY = 1.2                         # 每次请求间隔（秒），防�
 TITLE_RE = re.compile(r"<title>\s*(.+?)老师\s*([0-9]+(?:\.[0-9]+)?)分\s*([0-9]+)人打分")
 # 发现链接锚点：/t/<数字>/
 LINK_RE = re.compile(r"/t/(\d+)/")
+# 学院筛选项：<option value="5">电气工程学院</option>
+COLLEGE_RE = re.compile(r'<option\s+value="(\d+)"[^>]*>\s*([^<]*?)\s*</option>')
+# 教师条目：<a href="/t/123/">姓名</a>（学院列表页/首页同构）
+TEACHER_LINK_RE = re.compile(r'href="/t/(\d+)/"[^>]*>\s*([^<]{1,30}?)\s*</a>')
 # ── /配置区 ──────────────────────────────────────────────────────────────
 
 
@@ -52,6 +57,52 @@ def fetch(url, *, timeout=TIMEOUT):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         charset = resp.headers.get_content_charset() or "utf-8"
         return resp.read().decode(charset, errors="replace")
+
+
+def post_form(url, fields, *, timeout=TIMEOUT):
+    """POST application/x-www-form-urlencoded（学院筛选：POST / college=<id>）。"""
+    data = urllib.parse.urlencode(fields).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        charset = resp.headers.get_content_charset() or "utf-8"
+        return resp.read().decode(charset, errors="replace")
+
+
+def resolve_name_ids(names, *, base=BASE_URL, delay=DEFAULT_DELAY,
+                     timeout=TIMEOUT, colleges=None):
+    """按姓名解析教师 ID：逐个学院 POST 首页筛选，建立 姓名→/t/<id>/ 映射。
+
+    站点的搜索 JS 已失效（/static/js/search.js 恒为空），学年/学期无关；
+    学院列表页返回的 <a href="/t/id/">姓名</a> 是唯一稳定的姓名→ID 来源。
+    抓取量 = 学院数（约 40）× 1 次，按 delay 串行，单次运行约 1 分钟。
+    """
+    home = fetch(base + "/", timeout=timeout)
+    mapping = {}
+    for tid, tname in TEACHER_LINK_RE.findall(home):
+        mapping.setdefault(tname, tid)
+    college_ids = [cid for cid, cname in COLLEGE_RE.findall(home) if cname]
+    if colleges:
+        college_ids = [c for c in college_ids if c in set(colleges)]
+    for i, cid in enumerate(college_ids):
+        try:
+            html = post_form(base + "/", {"college": cid}, timeout=timeout)
+        except Exception as e:  # noqa: BLE001 - 单学院失败不终止，继续累积
+            print(f"  学院 {cid} 失败：{e}", file=sys.stderr)
+            continue
+        for tid, tname in TEACHER_LINK_RE.findall(html):
+            mapping.setdefault(tname, tid)
+        if i < len(college_ids) - 1:
+            time.sleep(delay)
+    out, miss = {}, []
+    for name in names:
+        if name in mapping:
+            out[name] = mapping[name]
+        else:
+            miss.append(name)
+    return out, miss
 
 
 def clamp_score(raw):
@@ -132,6 +183,7 @@ def scrape_one(tid, *, base=BASE_URL, dry=False, timeout=TIMEOUT):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="查老师评分抓取器（可替换数据源适配层）")
     ap.add_argument("--ids", help="逗号分隔的教师 ID 子集，如 1,8,893")
+    ap.add_argument("--names", help="逗号/顿号分隔的教师姓名；先按学院列表解析 ID 再抓取")
     ap.add_argument("--discover", action="store_true", help="从首页发现 /t/<id>/ 链接")
     ap.add_argument("--limit", type=int, default=100, help="发现模式最多抓多少门")
     ap.add_argument("--delay", type=float, default=DEFAULT_DELAY, help="请求间隔秒")
@@ -149,10 +201,21 @@ def main(argv=None):
             print(f"发现失败：{e}", file=sys.stderr)
             return 2
         ids = discover_ids(home, args.limit)
+    elif args.names:
+        wanted = [s.strip() for s in re.split(r"[,，、;；\s]+", args.names) if s.strip()]
+        try:
+            mapping, unresolved = resolve_name_ids(
+                wanted, base=args.base, delay=args.delay, timeout=args.timeout)
+        except Exception as e:  # noqa: BLE001 - 解析失败即终止，保留已有产物
+            print(f"姓名解析失败：{e}", file=sys.stderr)
+            return 2
+        if unresolved:
+            print(f"未在学院列表中找到：{'、'.join(unresolved)}", file=sys.stderr)
+        ids = list(mapping.values())
     elif args.ids:
         ids = [s.strip() for s in args.ids.split(",") if s.strip()]
     else:
-        print("需指定 --ids 或 --discover", file=sys.stderr)
+        print("需指定 --ids / --names / --discover 之一", file=sys.stderr)
         return 2
 
     merged = load_existing(args.out)
