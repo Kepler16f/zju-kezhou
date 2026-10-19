@@ -32,7 +32,7 @@
 | 平台 | 文件 |
 |---|---|
 | Windows arm64 / x64 | KeZhouSetup-0.13.5-win-arm64.exe / -x64.exe |
-| Android arm64 / armv7 / x64 | app-arm64-v8a-release.apk 等 |
+| Android arm64 | app-arm64-v8a-release.apk |
 | iOS（未签名 ipa，显示名 ClassArk） | kezhou-unsigned.ipa |
 | macOS arm64 / x64 | KeZhou-macos-*.dmg（拖拽安装，含 /Applications 链接） |
 | Linux arm64 / x64 | KeZhou-linux-*.deb（dpkg -i 直装，kezhou 命令启动） |

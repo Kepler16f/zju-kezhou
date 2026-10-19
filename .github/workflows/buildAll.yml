@@ -87,9 +87,10 @@ jobs:
     if: ${{ inputs.android == true || startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/build-android.yml
     with:
+      # 安卓只出 arm64 单架构（现代设备全是 arm64）；其余 ABI 仅手动勾选时构建。
       arm64: ${{ github.event_name != 'workflow_dispatch' || inputs.android_arm64 }}
-      armv7: ${{ github.event_name != 'workflow_dispatch' || inputs.android_armv7 }}
-      x64: ${{ github.event_name != 'workflow_dispatch' || inputs.android_x64 }}
+      armv7: ${{ github.event_name == 'workflow_dispatch' && inputs.android_armv7 }}
+      x64: ${{ github.event_name == 'workflow_dispatch' && inputs.android_x64 }}
 
   windows:
     name: Windows

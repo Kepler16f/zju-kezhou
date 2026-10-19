@@ -8,7 +8,7 @@
 
 ## 一屏看懂
 
-- **全平台成品**：Android(arm64/armv7/x86_64)、iOS(ipa)、鸿蒙 NEXT HAP、Windows(arm64/x64)、Linux(arm64/x64)、macOS(arm64/x64)。
+- **全平台成品**：Android(arm64)、iOS(ipa)、鸿蒙 NEXT HAP、Windows(arm64/x64)、Linux(arm64/x64)、macOS(arm64/x64)。
 - **真实数据、只读通道**：登录自己账号，成绩/课表/培养方案实时拉取；不提交选课、不改任何教务数据，`eval/check_readonly.py` 在 CI 机械拦截写接口。
 - **五个页签**：学业 / 方案 / 选课 / 工具 / 设置 + 全局 AI 悬浮助手；底栏排序与启动默认首页可在设置里自定义。
 - **选课指导模式**：学生自愿导出脱敏「学业档案分享包」（可附带 AI 选课咨询记录）发给指导教师，教师端纯审阅、不登录教务（见 `docs/教师模式合规说明.md`）。
