@@ -358,6 +358,113 @@ class ForeignLangLevelTest(unittest.TestCase):
         self.assertFalse(any("外语口径" in n for n in r["caliber_notes"]))
 
 
+class ForeignAnchorTest(unittest.TestCase):
+    """用户反馈 #7（v1.5.1）：外语板块无课程表时，已修/在修的外语课必须计得进。
+    与 Dart test/foreign_lang_flow_test.dart 同数据同断言（双引擎镜像）。"""
+
+    @staticmethod
+    def _plan(foreign_has_courses=True):
+        courses = [
+            {"course_id": "CS1001", "name": "程序设计入门", "credits": 4.0,
+             "module_id": "major", "offered": ["秋", "春"], "offered_years": None,
+             "prereq": [], "source": {"page": 1}},
+        ]
+        if foreign_has_courses:
+            courses.insert(0, {"course_id": "EN1001", "name": "大学英语I", "credits": 2.0,
+                               "module_id": "foreign", "offered": ["秋", "春"],
+                               "offered_years": None, "prereq": [], "source": {"page": 1}})
+        return {
+            "meta": {"major": "fl_anchor", "source_doc": "复现",
+                     "grade": "2024", "verified_at": "2025-09-01", "total_credits": 160},
+            "modules": [
+                {"module_id": "foreign", "module_path": "通识教育/外语类", "title": "外语类",
+                 "level": 1, "category": None, "required_credits": 6.0,
+                 "plan_credits_raw": None, "plan_credits_unit": "学分", "notes": []},
+                {"module_id": "major", "module_path": "专业教育/专业核心", "title": "专业核心",
+                 "level": 1, "category": None, "required_credits": 40.0,
+                 "plan_credits_raw": None, "plan_credits_unit": "学分", "notes": []},
+            ],
+            "courses": courses,
+        }
+
+    @staticmethod
+    def _rec_transcript(courses, planned=None):
+        return {"student": {"alias": "t", "major": "fl_anchor", "grade": "2024",
+                            "current_semester": "2025-A"},
+                "source": "paste", "courses": courses,
+                "planned_courses": planned or []}
+
+    def _foreign(self, report):
+        return [m for m in report["summary"] if m["module_id"] == "foreign"][0]
+
+    def test_b_no_table_passed_counts(self):
+        # B：板块无课表 + 已修大学英语I → earned 计入、不再落 extra_courses
+        rec = self._rec_transcript([
+            {"course_id": "XJ001", "name": "大学英语I", "credits": 2.0,
+             "grade": 85, "semester": "2023-A", "category": "基础外语"}])
+        r = audit.build(rec, self._plan(foreign_has_courses=False),
+                        action={"foreign_lang_level": "L1"})
+        f = self._foreign(r)
+        self.assertEqual(f["earned"], 2.0)
+        self.assertEqual(f["gap"], 4.0)
+        self.assertEqual(r["extra_courses"], [])
+
+    def test_c_no_table_planned_selected_no_credit(self):
+        # C：板块无课表 + 在修大学英语II → 补挂行 + selected_no_credit=1
+        rec = self._rec_transcript([], planned=[
+            {"course_id": "", "name": "大学英语II", "credits": 2.0}])
+        r = audit.build(rec, self._plan(foreign_has_courses=False))
+        f = self._foreign(r)
+        self.assertEqual(f["selected_no_credit"], 1)
+        self.assertTrue(any(c.get("planned_only") for c in f["plan_courses"]))
+
+    def test_a_with_table_no_double_attach(self):
+        # A：板块有课表：锚定不重复挂载（plan_courses 仍 1 行）
+        rec = self._rec_transcript([
+            {"course_id": "XJ001", "name": "大学英语I", "credits": 2.0,
+             "grade": 85, "semester": "2023-A", "category": "基础外语"}])
+        r = audit.build(rec, self._plan(foreign_has_courses=True),
+                        action={"foreign_lang_level": "L1"})
+        f = self._foreign(r)
+        self.assertEqual(f["earned"], 2.0)
+        self.assertEqual(len(f["plan_courses"]), 1)
+
+    def test_minor_language_untouched(self):
+        # 小语种课名 + 无外语板块：一律不动（宁缺勿猜），仍走 extra
+        plan = self._plan(foreign_has_courses=False)
+        plan["modules"] = [m for m in plan["modules"] if m["module_id"] != "foreign"]
+        rec = self._rec_transcript([
+            {"course_id": "JP1", "name": "日语入门", "credits": 2.0,
+             "grade": 85, "semester": "2023-A"}])
+        r = audit.build(rec, plan)
+        self.assertIn("日语入门", [c["name"] for c in r["extra_courses"]])
+
+
+class NormalizeMatchTest(unittest.TestCase):
+    """归一化兜底（#7 等级变体）。与 Dart 归一化组同断言。"""
+
+    def test_variants_hit_unique(self):
+        names = ["大学英语I", "大学英语II", "大学英语III", "大学英语IV"]
+        by = {n: {"course_id": n, "name": n} for n in names}
+        for v, expect_ in (("大学英语（I）", "大学英语I"), ("大学英语（Ⅰ）", "大学英语I"),
+                           ("大学英语1", "大学英语I"), ("大学英语I（基础外语）", "大学英语I"),
+                           ("大学英语（四）", "大学英语IV"), ("大学英语肆", "大学英语IV"),
+                           ("大学英语 IV", "大学英语IV")):
+            self.assertEqual(audit.unique_normalized_match(v, names, by)["name"],
+                             expect_, v)
+
+    def test_ambiguous_gives_up(self):
+        names = ["大学英语I", "大学英语II", "大学英语III", "大学英语IV"]
+        by = {n: {"course_id": n, "name": n} for n in names}
+        self.assertIsNone(audit.unique_normalized_match("大学英语", names, by))
+
+    def test_normalize_stable(self):
+        self.assertEqual(audit.normalize_course_name("数据结构"), "数据结构")
+        self.assertEqual(audit.normalize_course_name("高等数学（上）"),
+                         audit.normalize_course_name("高等数学上"))
+        self.assertEqual(audit.normalize_course_name("C语言"), "c语言")
+
+
 class MultiTagDoubleCountTest(unittest.TestCase):
     """多重计分（v1.4 用户口径）：一节课归属多个模块时学分两边都计。"""
 

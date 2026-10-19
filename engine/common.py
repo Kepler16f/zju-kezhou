@@ -41,9 +41,12 @@ def course_open_idx(course, from_year, horizon_years):
         cycle = course.get("offered_years")
         if cycle and y not in cycle:
             continue
-        if "秋" in course["offered"]:
+        # 与 Dart Timeline.courseOpenIdx 对齐：offered 缺省/None 视为不开课，
+        # 绝不抛（合成行/实时方案行可能没有该键——#7 行锚定合成行即此形态）。
+        offered = course.get("offered") or []
+        if "秋" in offered:
             out.append(y * 2)
-        if "春" in course["offered"]:
+        if "春" in offered:
             out.append(y * 2 + 1)
     return sorted(out)
 

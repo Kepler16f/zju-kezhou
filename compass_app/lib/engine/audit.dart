@@ -171,6 +171,67 @@ bool isForeignLangModule(Map<String, dynamic> m) {
   return t.contains('外语') || t.contains('英语');
 }
 
+/// 课程行外语名判据（与板块判据同一组词面：外语/英语；宁缺勿猜不扫 日语 等
+/// 小语种——成绩单小语种课极少且板块名通常含「外语」，会走板块路径）。
+bool isForeignCourseName(String name) =>
+    name.contains('外语') || name.contains('英语');
+
+/// 外语板块行锚定（v1.5.1 #7）：详见 build() 调用点注释。纯函数：返回可能需要
+/// 补挂合成行的新 plan（浅拷贝 + courses 追加），条件不满足一律原样返回。
+Map<String, dynamic> _attachForeignAnchors(
+    Map<String, dynamic> record, Map<String, dynamic> plan) {
+  final modules = (plan['modules'] as List? ?? const []).cast<Map<String, dynamic>>();
+  final foreignMods = modules.where(isForeignLangModule).toList();
+  if (foreignMods.length != 1) return plan; // 0 个无关；>1 个歧义不猜
+  final recordCourses =
+      (record['courses'] as List? ?? const []).cast<Map<String, dynamic>>();
+  final foreignRows = recordCourses
+      .where((r) => isForeignCourseName('${r['name'] ?? ''}'.trim()))
+      .toList();
+  if (foreignRows.isEmpty) return plan;
+  final planCourses =
+      (plan['courses'] as List? ?? const []).cast<Map<String, dynamic>>();
+  final foreignMid = '${foreignMods.single['module_id']}';
+  // 板块已列外语课程表 → 锚定由既有匹配（ID/相似度/归一化兜底）负责，绝不重复挂。
+  if (planCourses.any((c) => '${c['module_id'] ?? ''}' == foreignMid &&
+      isForeignCourseName('${c['name'] ?? ''}'.trim()))) {
+    return plan;
+  }
+  final existingIds = {for (final c in planCourses) '${c['course_id'] ?? ''}'};
+  final existingNames = {
+    for (final c in planCourses)
+      normalizeCourseName('${c['name'] ?? ''}'.trim())
+  };
+  final synth = <Map<String, dynamic>>[];
+  final claimed = <String>{}; // 成绩单同名/同id行只合成一次（重修）
+  for (final r in foreignRows) {
+    final rid = '${r['course_id'] ?? ''}'.trim();
+    final rname = '${r['name'] ?? ''}'.trim();
+    if (rname.isEmpty) continue;
+    if (rid.isNotEmpty && existingIds.contains(rid)) continue;
+    if (existingNames.contains(normalizeCourseName(rname))) continue;
+    if (!claimed.add(rid.isNotEmpty ? rid : rname)) continue;
+    final cr = r['credits'];
+    synth.add(<String, dynamic>{
+      'course_id': rid.isEmpty ? rname : rid,
+      'name': rname,
+      'credits': cr is num && cr > 0 ? cr.toDouble() : 0.0,
+      'module_id': foreignMid,
+      'nature': '必修',
+      'offered': null,
+      'grade_cycle': null,
+      'offered_years': null,
+      'prereq': <String>[],
+      'source': <String, dynamic>{'page': null},
+    });
+  }
+  if (synth.isEmpty) return plan;
+  return <String, dynamic>{
+    ...plan,
+    'courses': [...planCourses, ...synth],
+  };
+}
+
 double _r2(double v) => double.parse(v.toStringAsFixed(2));
 
 /// 模块「有效要求学分」：修正两类「积分重复计算」（纯函数，宁缺勿猜、只降不升）：
@@ -270,6 +331,14 @@ class AuditEngine {
 
   Map<String, dynamic> build(Map<String, dynamic> record, Map<String, dynamic> plan,
       {Map<String, dynamic>? action, Set<String>? uiActiveNames}) {
+    // ── 外语板块行锚定（v1.5.1，用户反馈 #7「外语类课程也没匹配上去」）──────
+    // 外语板块常见「方案只写应修学分、不给课程表」。此时成绩单里已修的外语课
+    // （大学英语I/II…）在 plan['courses'] 无锚点，落进 extra_courses，外语板块
+    // earned=0、gap 虚大（复现：已修大学英语I → earned=0.0/gap=6.0）。修法：
+    // 存在唯一外语板块且该板块未列任何外语名课程行时，把未匹配的外语名成绩单
+    // 行作为合成行挂到该板块（course_id 用成绩单行自身 id/名）。命中才返回
+    // 浅拷贝，不命中/无需挂载原样返回，绝不改动传入对象（纯函数）。
+    plan = _attachForeignAnchors(record, plan);
     // action 参数校验（宁缺勿猜：非法外语等级显式报错，不静默忽略；未知键忽略）
     final foreignLevelRaw = action?['foreign_lang_level'];
     if (foreignLevelRaw != null &&
@@ -392,12 +461,19 @@ class AuditEngine {
       byId[c['course_id'] as String] = c;
     }
 
-    // 计划选课（已选未出分）：计入选课组口径的“已选未获学分”
+    // 计划选课（已选未出分）：计入选课组口径的“已选未获学分”。
+    // 键口径（v1.5.1 #7）：course_id 为空时用课程名兜底——外语板块无课程表时
+    // 已选行常见只有名字（教务 zzxk 行无课号），两侧键必须同源才数得上。
     final planCourses =
         (record['planned_courses'] as List? ?? []).cast<Map<String, dynamic>>();
     for (final x in planCourses) {
-      final cid = x['course_id'];
-      if (cid != null) selectedNoCreditIds.add('$cid');
+      final cid = '${x['course_id'] ?? ''}'.trim();
+      final nm = '${x['name'] ?? ''}'.trim();
+      if (cid.isNotEmpty) {
+        selectedNoCreditIds.add(cid);
+      } else if (nm.isNotEmpty) {
+        selectedNoCreditIds.add(nm);
+      }
     }
 
     // ── 在修证据（v1.5 三态打通，用户 #4/#9）──────────────────────────────
@@ -614,11 +690,20 @@ class AuditEngine {
       }
 
       // 已选未获学分课程数：方案课程里「已修未取得学分（未通过/在修未出分/
-      // 弃修待录缓考无效）或已列入计划选课」且尚未取得学分的去重门数
+      // 弃修待录缓考无效）或已列入计划选课」且尚未取得学分的去重门数。
+      // 键口径与上方一致：id 优先，空则用名（#7 外语板块无课号行）。
+      String rowKey(Map<String, dynamic> c) {
+        final cid = '${c['course_id'] ?? ''}'.trim();
+        return cid.isNotEmpty ? cid : '${c['name'] ?? ''}'.trim();
+      }
+
       final selectedNoCredit = planCoursesOfModule
-          .where((c) =>
-              !earnedCids.contains('${c['course_id']}') &&
-              selectedNoCreditIds.contains('${c['course_id']}'))
+          .where((c) {
+            final k = rowKey(c);
+            return k.isNotEmpty &&
+                !earnedCids.contains('${c['course_id']}') &&
+                selectedNoCreditIds.contains(k);
+          })
           .length;
       final planCourseStats = <String, int>{
         'total': planCoursesOfModule.length,

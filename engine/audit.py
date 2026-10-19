@@ -132,6 +132,132 @@ def is_foreign_lang_module(m):
     return "外语" in t or "英语" in t
 
 
+def is_foreign_course_name(name):
+    """课程行外语名判据（与板块判据同一组词面；与 Dart isForeignCourseName 逐字对齐）。"""
+    return "外语" in name or "英语" in name
+
+
+# 全角罗马（小写区 U+2170..U+2169；大写区经 lower() 归入）→ 半角。
+_FW_ROMAN = {"ⅰ": "i", "ⅱ": "ii", "ⅲ": "iii", "ⅳ": "iv", "ⅴ": "v",
+             "ⅵ": "vi", "ⅶ": "vii", "ⅷ": "viii", "ⅸ": "ix", "ⅹ": "x"}
+_CN_DIGIT = {"一": "1", "壹": "1", "二": "2", "贰": "2", "三": "3", "叁": "3",
+             "四": "4", "肆": "4", "五": "5", "伍": "5", "六": "6", "陆": "6",
+             "七": "7", "柒": "7", "八": "8", "捌": "8", "九": "9", "玖": "9"}
+# 半角罗马记号 → 阿拉伯（顺序与 Dart romanMap 逐字一致：长词先替换）。
+_ROMAN_MAP = [("viii", "8"), ("iii", "3"), ("vii", "7"), ("ix", "9"), ("iv", "4"),
+              ("vi", "6"), ("ii", "2"), ("x", "10"), ("v", "5"), ("i", "1")]
+_BRACKET_OPEN = "（(【[《「『"
+_BRACKET_CLOSE = "）)】]》」』"
+_WHITESPACE = " \t\r\n　"
+
+
+def normalize_course_name(name):
+    """归一化课名（与 Dart matching.normalizeCourseName 逐字对齐）：小写、去空白、
+    去括号字符、全角罗马→半角、中文/财务数字→阿拉伯、词边界罗马记号→阿拉伯。"""
+    s = name.lower()
+    for ch in _WHITESPACE:
+        s = s.replace(ch, "")
+    s = "".join(c for c in s if c not in _BRACKET_OPEN + _BRACKET_CLOSE)
+    for k, v in _FW_ROMAN.items():
+        s = s.replace(k, v)
+    for k, v in _CN_DIGIT.items():
+        s = s.replace(k, v)
+    for token, rep in _ROMAN_MAP:
+        s = _replace_roman(s, token, rep)
+    return s
+
+
+def _replace_roman(s, token, rep):
+    """词边界替换（前后非 [a-z0-9]）：与 Dart RegExp lookbehind 语义一致。"""
+    out, i, n = [], 0, len(s)
+    tlen = len(token)
+    while True:
+        j = s.find(token, i)
+        if j < 0:
+            out.append(s[i:])
+            break
+        prev_ok = j == 0 or not _is_word_char(s[j - 1])
+        next_ok = j + tlen >= n or not _is_word_char(s[j + tlen])
+        if prev_ok and next_ok:
+            out.append(s[i:j])
+            out.append(rep)
+            i = j + tlen
+        else:
+            out.append(s[i:j + tlen])
+            i = j + tlen
+    return "".join(out)
+
+
+def _is_word_char(c):
+    return ("a" <= c <= "z") or ("0" <= c <= "9")
+
+
+def unique_normalized_match(record_name, names, name_to_course):
+    """归一化「唯一包含」兜底（与 Dart _uniqueNormalizedMatch 对齐）：记录归一化名
+    与方案归一化名相等或互包含视为候选；恰一候选才认，歧义/无解返回 None。"""
+    rn = normalize_course_name(record_name)
+    if not rn:
+        return None
+    hit, count = None, 0
+    for pn in names:
+        cn = normalize_course_name(pn)
+        if not cn:
+            continue
+        if cn == rn or cn in rn or rn in cn:
+            count += 1
+            hit = name_to_course[pn]
+            if count > 1:
+                return None
+    return hit if count == 1 else None
+
+
+def attach_foreign_anchors(record, plan):
+    """外语板块行锚定（v1.5.1 #7，与 Dart _attachForeignAnchors 逐字对齐）：
+    唯一外语板块未列外语课程表时，把成绩单里外语名课程作为合成行挂到该板块。
+    条件不满足一律原样返回（纯函数，不改动传入对象）。"""
+    modules = plan.get("modules") or []
+    foreign_mods = [m for m in modules if is_foreign_lang_module(m)]
+    if len(foreign_mods) != 1:
+        return plan
+    record_courses = record.get("courses") or []
+    foreign_rows = [r for r in record_courses
+                    if is_foreign_course_name(str(r.get("name") or "").strip())]
+    if not foreign_rows:
+        return plan
+    plan_courses = plan.get("courses") or []
+    foreign_mid = str(foreign_mods[0].get("module_id"))
+    if any(str(c.get("module_id") or "") == foreign_mid and
+           is_foreign_course_name(str(c.get("name") or "").strip())
+           for c in plan_courses):
+        return plan
+    existing_ids = {str(c.get("course_id") or "") for c in plan_courses}
+    existing_names = {normalize_course_name(str(c.get("name") or "").strip()) for c in plan_courses}
+    synth, claimed = [], set()
+    for r in foreign_rows:
+        rid = str(r.get("course_id") or "").strip()
+        rname = str(r.get("name") or "").strip()
+        if not rname:
+            continue
+        if rid and rid in existing_ids:
+            continue
+        if normalize_course_name(rname) in existing_names:
+            continue
+        if (rid or rname) in claimed:
+            continue
+        claimed.add(rid or rname)
+        cr = r.get("credits")
+        synth.append({"course_id": rid or rname, "name": rname,
+                      "credits": float(cr) if isinstance(cr, (int, float)) and cr > 0 else 0.0,
+                      "module_id": foreign_mid, "nature": "必修", "offered": None,
+                      "grade_cycle": None, "offered_years": None, "prereq": [],
+                      "source": {"page": None}})
+    if not synth:
+        return plan
+    new_plan = dict(plan)
+    new_plan["courses"] = list(plan_courses) + synth
+    return new_plan
+
+
 def _r2(v):
     return round(float(v), 2)
 
@@ -211,7 +337,9 @@ def _is_passed(r):
 
 
 def match(record, plan):
-    """已修记录 ↔ 方案课程：course_id 精确优先，名称相似度≥0.85 兜底。
+    """已修记录 ↔ 方案课程：course_id 精确优先，名称相似度≥0.85 兜底；
+    仍不命中时最后用「归一化名唯一包含」兜底（#7 外语等级变体写法；唯一候选
+    才认，歧义放弃——与 Dart matchRecordToPlan 逐字对齐）。
     匹配失败的课程单独列示，不抵扣任何模块学分（防止"超修任意课"蒙混过关）。"""
     by_id = {c["course_id"]: c for c in plan["courses"]}
     names = [c["name"] for c in plan["courses"]]
@@ -226,6 +354,8 @@ def match(record, plan):
             close = difflib.get_close_matches(r["name"], names, 1, 0.85)
             if close:
                 course = name_to_course[close[0]]
+            if course is None:
+                course = unique_normalized_match(r["name"], names, name_to_course)
         if course is None:
             unmatched.append(r)
         else:
@@ -260,6 +390,8 @@ def aggregate(matched, plan):
 
 
 def build(record, plan, action=None, ui_active_names=None):
+    # 外语板块行锚定（v1.5.1 #7）：与 Dart build 同位置调用，规则逐字一致。
+    plan = attach_foreign_anchors(record, plan)
     # action 参数校验（宁缺勿猜：非法外语等级显式报错，不静默忽略；未知键忽略）
     foreign_level_raw = (action or {}).get("foreign_lang_level")
     if foreign_level_raw is not None and str(foreign_level_raw) not in FOREIGN_LANG_CAPS:
@@ -359,10 +491,14 @@ def build(record, plan, action=None, ui_active_names=None):
     by_id = {c["course_id"]: c for c in plan["courses"]}
     # 计划选课（已选未出分）：计入选课组口径的"已选未获学分"
     plan_courses = record.get("planned_courses") or []
+    # 键口径（v1.5.1 #7，与 Dart 一致）：id 优先，空则用课程名兜底。
     for x in plan_courses:
-        cid = x.get("course_id")
-        if cid is not None:
-            selected_no_credit_ids.add(str(cid))
+        cid = str(x.get("course_id") or "").strip()
+        nm = str(x.get("name") or "").strip()
+        if cid:
+            selected_no_credit_ids.add(cid)
+        elif nm:
+            selected_no_credit_ids.add(nm)
 
     # ── 在修证据（v1.5 三态打通，用户 #4/#9；与 Dart 同口径）────────────────
     # 「在修未出分」= 已列入计划选课（planned_courses）或调用方显式传入的
@@ -503,12 +639,42 @@ def build(record, plan, action=None, ui_active_names=None):
                                   "grade": r_hit.get("grade")}
             item["page"] = (c.get("source") or {}).get("page")
             plan_courses_of_module.append(item)
+        # 方案外已选外语课（用户反馈 #9/#7，与 Dart 同口径）：外语模块常见「方案
+        # 只写应修学分、不给课程表」，已选外语课不在 module_courses 里，导致三色
+        # 明细看不到。按课名把计划选课/已选行补进外语模块（planned_only=true），
+        # 只进 selected_no_credit（在修），不改 earned / gap 口径。
+        if is_foreign_lang_module(m):
+            for p in plan_courses:
+                pid = str(p.get("course_id") or "").strip()
+                pname = str(p.get("name") or "").strip()
+                key = pid or pname
+                if not key:
+                    continue
+                if any(str(c.get("course_id") or "").strip() == pid or
+                       (str(c.get("name") or "").strip() == pname and pname)
+                       for c in module_courses):
+                    continue
+                if not is_foreign_course_name(pname):
+                    continue
+                if key in seen_plan_course_ids:
+                    continue
+                seen_plan_course_ids.add(key)
+                plan_courses_of_module.append({
+                    "course_id": pid or None, "name": pname,
+                    "credits": p.get("credits"), "offered": None,
+                    "offered_years": None, "terms": [], "closed": False,
+                    "passed": False, "planned_only": True, "page": None})
         # 已选未获学分课程数：方案课程里「已修未取得学分（未通过/在修未出分/
-        # 弃修待录缓考无效）或已列入计划选课」且尚未取得学分的去重门数
+        # 弃修待录缓考无效）或已列入计划选课」且尚未取得学分的去重门数。
+        # 键口径与 Dart 一致：id 优先，空则用名（#7 外语板块无课号行）。
+        def row_key(x):
+            cid = str(x.get("course_id") or "").strip()
+            return cid or str(x.get("name") or "").strip()
         selected_no_credit = sum(
             1 for x in plan_courses_of_module
-            if str(x["course_id"]) not in earned_cids
-            and str(x["course_id"]) in selected_no_credit_ids)
+            if row_key(x)
+            and str(x.get("course_id")) not in earned_cids
+            and row_key(x) in selected_no_credit_ids)
         plan_course_stats = {"total": len(plan_courses_of_module),
                              "passed": sum(1 for x in plan_courses_of_module if x["passed"]),
                              "pending": sum(1 for x in plan_courses_of_module if not x["passed"]),
