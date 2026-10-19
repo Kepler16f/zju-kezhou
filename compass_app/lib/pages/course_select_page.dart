@@ -22,6 +22,7 @@ import '../data/ai_config.dart';
 import '../data/ai_prompts.dart';
 import '../data/credential_store.dart';
 import '../data/semester.dart';
+import '../data/teacher_rating.dart';
 import '../data/xk_models.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
@@ -1757,7 +1758,14 @@ int gridColumns(double availableWidth) {
 
 /// 课程气泡：宽度随课程名自适应，Wrap 排列；标签在第二行，详情在 Tooltip。
 /// 所有抓到的课程都要展示，因此不再有 120 条上限。
-class CourseBubble extends StatelessWidget {
+///
+/// 点按展开（需求：选课卡可看详情）：再点收起。展开态在卡内直接显示
+/// 修读状态/课程号/学分/教师/时间/地点/容量与「查老师」教师评分，
+/// 并放大字号与内边距（AnimatedSize 过渡，参考 tools_page 用法）；收起回到原紧凑样式。
+/// 外层调用点的 ConstrainedBox(maxWidth) 继续封顶宽度；展开卡用本组件内
+/// ConstrainedBox 给出更大 minWidth，让详情行有呼吸空间。
+/// 原防重复 SnackBar 语义保留：onTap 先透传给页面（页面据此弹提示），再切换展开。
+class CourseBubble extends StatefulWidget {
   final XkCourse course;
   final bool conflict;
   final bool selected;
@@ -1766,6 +1774,11 @@ class CourseBubble extends StatelessWidget {
   final List<String> categories; // 类别标签（诉求 #11：可多枚，全部显示）
   final List<String> extraTags;
   final String? extraDetails;
+
+  /// 教师评分本地表（数据源统一「查老师」，零网络）。
+  /// null → 组件自行懒加载 assets/data/teacher_ratings.json（全页共享一次）；
+  /// 加载失败/未命中一律显示「评分：暂无」。
+  final TeacherRatingStore? ratings;
 
   const CourseBubble({
     super.key,
@@ -1777,18 +1790,48 @@ class CourseBubble extends StatelessWidget {
     this.categories = const [],
     this.extraTags = const [],
     this.extraDetails,
+    this.ratings,
   });
 
   @override
+  State<CourseBubble> createState() => _CourseBubbleState();
+}
+
+class _CourseBubbleState extends State<CourseBubble> {
+  bool _expanded = false;
+
+  /// 评分表共享加载通道：整棵页面只读一次资产（rootBundle 本地 IO，零网络）。
+  static Future<TeacherRatingStore>? _sharedStore;
+
+  static Future<TeacherRatingStore> _loadSharedStore() => _sharedStore ??=
+      () async {
+        try {
+          final src = await rootBundle
+              .loadString('assets/data/teacher_ratings.json');
+          return TeacherRatingStore.fromSerialized(src);
+        } catch (_) {
+          // 资产缺失/解析脏数据：安全降级为空表（UI 显示「评分：暂无」）
+          return TeacherRatingStore.empty;
+        }
+      }();
+
+  /// 点按：先透传给外层（页面在此弹已修/在修的防重复 SnackBar），再切换展开。
+  void _handleTap() {
+    widget.onTap?.call();
+    setState(() => _expanded = !_expanded);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final c = course;
+    final c = widget.course;
     final isFull =
         c.cap != null && c.selected != null && c.selected! >= c.cap!;
     final left =
         c.cap != null && c.selected != null ? c.cap! - c.selected! : null;
-    final effectiveState = state == PlanCourseState.unknown && selected
-        ? PlanCourseState.active
-        : state;
+    final effectiveState =
+        widget.state == PlanCourseState.unknown && widget.selected
+            ? PlanCourseState.active
+            : widget.state;
     final display = courseDisplayState(effectiveState);
     final stateColor = switch (display) {
       PlanCourseState.earned => ScholarPalette.earnedGreen,
@@ -1796,19 +1839,23 @@ class CourseBubble extends StatelessWidget {
       _ => Colors.grey,
     };
     final dimmed = display == PlanCourseState.earned;
-    final allTags = <String>{...c.tags, ...extraTags};
+    final allTags = <String>{...c.tags, ...widget.extraTags};
     // Chip 去重（诉求 #11）：类别名在 tags 兼容口径里也会出现，同一文本只出一枚；
     // 类别 Chip 用独立色并放在最前，剩余标签按原有顺序跟上。
-    final seen = <String>{courseStateLabel(effectiveState), ...categories};
+    final seen = <String>{
+      courseStateLabel(effectiveState),
+      ...widget.categories
+    };
     final tags = <Widget>[
       _miniTag(courseStateLabel(effectiveState), stateColor),
       if (c.xf != null) _miniTag('${c.xf} 学分', Colors.blueGrey),
-      for (final t in categories) _miniTag(t, Colors.indigo),
+      for (final t in widget.categories) _miniTag(t, Colors.indigo),
       if (c.jxbmc.isNotEmpty && seen.add(c.jxbmc))
         _miniTag(c.jxbmc, Colors.blueGrey),
-      if (conflict && seen.add('冲突')) _miniTag('冲突', Colors.red),
-      if (display != PlanCourseState.active && selected && seen.add('本学期已选'))
-        _miniTag('本学期已选', Colors.blue),
+      if (widget.conflict && seen.add('冲突')) _miniTag('冲突', Colors.red),
+      if (display != PlanCourseState.active &&
+          widget.selected &&
+          seen.add('本学期已选')) _miniTag('本学期已选', Colors.blue),
       if (isFull && seen.add('已满'))
         _miniTag('已满', Colors.orange)
       else if (left != null && seen.add('余 $left'))
@@ -1826,61 +1873,160 @@ class CourseBubble extends StatelessWidget {
       if (c.cdmc.isNotEmpty) '地点 ${c.cdmc}',
       if (c.cap != null || c.selected != null)
         '容量 ${c.cap ?? '-'}/已选 ${c.selected ?? '-'}',
-      if (extraDetails != null && extraDetails!.trim().isNotEmpty)
-        extraDetails!.trim(),
+      if (widget.extraDetails != null && widget.extraDetails!.trim().isNotEmpty)
+        widget.extraDetails!.trim(),
     ].join('\n');
     final scheme = Theme.of(context).colorScheme;
     return Tooltip(
       message: details,
       child: GestureDetector(
-        onTap: onTap,
+        onTap: _handleTap,
         child: Opacity(
           opacity: dimmed ? 0.62 : 1,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(
-              color: display == PlanCourseState.active
-                  ? ScholarPalette.selectedBlue.withValues(alpha: 0.10)
-                  : selected
-                      ? scheme.tertiaryContainer
-                      : scheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: conflict
-                    ? Colors.red
-                    : display == PlanCourseState.active
-                        ? ScholarPalette.selectedBlue.withValues(alpha: 0.45)
-                        : scheme.outlineVariant,
-                width: conflict ? 1.2 : 0.8,
-              ),
+          child: ConstrainedBox(
+            // 展开态：minWidth 放大给详情行留空间（宽度上限仍由页面外层 maxWidth 约束；
+            // 可用宽度不足时 BoxConstraints.enforce 自动收敛，不会溢出）。
+            constraints: BoxConstraints(
+              minWidth: _expanded ? 260 : 0,
+              maxWidth: _expanded ? 520 : double.infinity,
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(c.kcmc,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.bold,
-                        color: dimmed
-                            ? scheme.onSurface.withValues(alpha: 0.55)
-                            : null)),
-                if (tags.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Wrap(
-                      spacing: 3,
-                      runSpacing: 2,
-                      children: tags,
-                    ),
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              alignment: Alignment.topLeft,
+              child: Container(
+                padding: EdgeInsets.symmetric(
+                    horizontal: _expanded ? 14 : 10,
+                    vertical: _expanded ? 9 : 5),
+                decoration: BoxDecoration(
+                  color: display == PlanCourseState.active
+                      ? ScholarPalette.selectedBlue.withValues(alpha: 0.10)
+                      : widget.selected
+                          ? scheme.tertiaryContainer
+                          : scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: widget.conflict
+                        ? Colors.red
+                        : display == PlanCourseState.active
+                            ? ScholarPalette.selectedBlue
+                                .withValues(alpha: 0.45)
+                            : scheme.outlineVariant,
+                    width: widget.conflict ? 1.2 : 0.8,
                   ),
-              ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(c.kcmc,
+                        maxLines: _expanded ? 2 : 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: _expanded ? 14 : 12.5,
+                            fontWeight: FontWeight.bold,
+                            color: dimmed
+                                ? scheme.onSurface.withValues(alpha: 0.55)
+                                : null)),
+                    if (tags.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Wrap(
+                          spacing: 3,
+                          runSpacing: 2,
+                          children: tags,
+                        ),
+                      ),
+                    if (_expanded)
+                      _detailBlock(context, c, effectiveState),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
       ),
+    );
+  }
+
+  /// 展开态详情块：逐行「标签 值」，缺字段整行省略（宁缺勿猜）；
+  /// 评分行始终显示——命中「评分 9.3/10（422 人评 · 查老师）」，否则「评分：暂无」。
+  Widget _detailBlock(
+      BuildContext context, XkCourse c, PlanCourseState effectiveState) {
+    final scheme = Theme.of(context).colorScheme;
+    final lines = <String>[
+      '修读状态 ${courseStateLabel(effectiveState)}'
+          '${effectiveState == PlanCourseState.active ? '（已选未出分，不计入已修）' : ''}',
+      if (c.kch.isNotEmpty) '课程号 ${c.kch}',
+      if (c.xf != null) '学分 ${c.xf}',
+      if (c.teacher.isNotEmpty) '教师 ${c.teacher}',
+      if (c.sksj.isNotEmpty) '时间 ${c.sksj}',
+      if (c.cdmc.isNotEmpty) '地点 ${c.cdmc}',
+      if (c.cap != null || c.selected != null)
+        '容量 ${c.cap ?? '-'}/已选 ${c.selected ?? '-'}',
+      if (widget.extraDetails != null && widget.extraDetails!.trim().isNotEmpty)
+        widget.extraDetails!.trim(),
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final l in lines)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 1),
+              child: Text(l,
+                  style: TextStyle(
+                      fontSize: 11.5,
+                      color: scheme.onSurface.withValues(alpha: 0.85))),
+            ),
+          _ratingBlock(context, c),
+        ],
+      ),
+    );
+  }
+
+  /// 教师评分行（含标签 Chip）。外部注入 store 时同步查询；
+  /// 否则懒加载共享资产，未完成/失败按未命中处理（显示「评分：暂无」）。
+  Widget _ratingBlock(BuildContext context, XkCourse c) {
+    Widget line(TeacherRating? r) {
+      final found = r != null;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            found ? r.displayText : '评分：暂无',
+            style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: found
+                    ? Colors.amber.shade700
+                    : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6)),
+          ),
+          if (found && r.tags.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Wrap(
+                spacing: 3,
+                runSpacing: 2,
+                children: [
+                  for (final t in r.tags) _miniTag(t, Colors.teal)
+                ],
+              ),
+            ),
+        ],
+      );
+    }
+
+    final store = widget.ratings;
+    if (store != null) return line(store.lookup(c.teacher, c.kcmc));
+    return FutureBuilder<TeacherRatingStore>(
+      future: _loadSharedStore(),
+      builder: (context, snap) => snap.connectionState == ConnectionState.done
+          ? line(snap.data?.lookup(c.teacher, c.kcmc))
+          : line(null),
     );
   }
 

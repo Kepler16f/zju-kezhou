@@ -32,6 +32,7 @@ flutter:
     - assets/golden/
     - assets/samples/
     - assets/knowledge/
+    - assets/data/
   fonts:
     # Noto Sans SC (OFL-1.1)，SubsetOTF 按 GB2312+应用文案裁剪：干净机器上中文一致渲染
     - family: NotoSansSC
