@@ -19,7 +19,19 @@
 ///    （earned 与 selected_no_credit 同步双计；同一模块内仍去重、重修只计一次）；
 ///  * 总学分口径（v1.4）：毕业总要求以方案声明 meta.total_credits（最低毕业
 ///    学分）为准——totals 新增 plan_total_credits / total_basis；模块级要求照旧，
-///    方案未声明时回落模块求和并在 trace.notes 说明。
+///    方案未声明时回落模块求和并在 trace.notes 说明；
+///  * 三态打通与三选一（v1.5，2026-10-18 用户 #4/#8/#9）：
+///    ① 在修证据降级：缺口类警告（graduation_risk / offering_closed 明细措辞）
+///      读取 record['planned_courses']（可选参数 uiActiveNames 可并入 UI 侧证据），
+///      已选（在修未出分）的课不再按「未修」报缺口——全额覆盖缺口时
+///      red→yellow 并注记「已在修，待出成绩」，部分覆盖时文案给出「已选 X 门
+///      N 学分（在修），仍缺 …」；missing_courses 行标记 active:true。
+///      earned/totals 口径不变（在修绝不抵扣已获学分，既有红线）；
+///    ② 并列选项组（alternative_groups）合成后，被落选选项模块的缺口类警告
+///      一并清除（此前按三个选项分别生成红警，合成后未清理 → 缺口重复报警）；
+///      组行自身缺口 >0 时补一条组级 graduation_risk；
+///    ③ Python 镜像（engine/audit.py）补齐 alternative_groups 组行、singlePick
+///      达成、countShort 与在修降级，双引擎逐字段对齐。
 library;
 
 import 'dart:convert';
@@ -222,7 +234,7 @@ double effectiveRequiredCredits(
 }
 
 class AuditEngine {
-  static const engineVersion = '1.4';
+  static const engineVersion = '1.5';
   static const graduationYears = 6;
 
   final Map<String, dynamic> plans; // major -> PlanFile（内置 golden）
@@ -257,7 +269,7 @@ class AuditEngine {
   // 已修↔方案的匹配与通过判定已移至 engine/matching.dart（选课建议共用，行为不变）。
 
   Map<String, dynamic> build(Map<String, dynamic> record, Map<String, dynamic> plan,
-      {Map<String, dynamic>? action}) {
+      {Map<String, dynamic>? action, Set<String>? uiActiveNames}) {
     // action 参数校验（宁缺勿猜：非法外语等级显式报错，不静默忽略；未知键忽略）
     final foreignLevelRaw = action?['foreign_lang_level'];
     if (foreignLevelRaw != null &&
@@ -388,6 +400,39 @@ class AuditEngine {
       if (cid != null) selectedNoCreditIds.add('$cid');
     }
 
+    // ── 在修证据（v1.5 三态打通，用户 #4/#9）──────────────────────────────
+    // 「在修未出分」= 已列入计划选课（planned_courses，main.dart 已按教务已选
+    // 回填）或调用方显式传入的 uiActiveNames（UI 侧本学期已选/课表证据；
+    // 不传时仅用 record 内证据，引擎自足，main.dart 无需改调用点）。
+    // 仅用于警告降级与 missing_courses 标记，绝不抵扣 earned / gap / totals
+    //（在修不计已修是既有红线）。
+    final activeIds = <String>{}; // 方案课程号口径
+    final activeNames = <String>{}; // 课程名口径
+    void addActive(Object? id, Object? name) {
+      final i = '$id'.trim();
+      if (id != null && i.isNotEmpty && i != 'null') activeIds.add(i);
+      final n = '${name ?? ''}'.trim();
+      if (n.isNotEmpty) activeNames.add(n);
+    }
+
+    for (final x in planCourses) {
+      addActive(x['course_id'], x['name']);
+    }
+    for (final n in uiActiveNames ?? const <String>{}) {
+      final t = n.trim();
+      if (t.isNotEmpty) activeNames.add(t);
+    }
+    final activeNameList = activeNames.toList();
+    // 与审计匹配同口径：精确名命中，或 difflib 风格相似度 ≥0.85 兜底。
+    bool isActiveCourse(Map<String, dynamic> c) {
+      final cid = '${c['course_id'] ?? ''}'.trim();
+      if (cid.isNotEmpty && activeIds.contains(cid)) return true;
+      final nm = '${c['name'] ?? ''}'.trim();
+      if (nm.isEmpty || activeNameList.isEmpty) return false;
+      if (activeNames.contains(nm)) return true;
+      return getCloseMatches(nm, activeNameList, n: 1, cutoff: 0.85).isNotEmpty;
+    }
+
     // 模块课程一次取齐（保持 plan['courses'] 原序）：剩余/明细/组口径共用
     final coursesByModule = <String, List<Map<String, dynamic>>>{};
     for (final c in (plan['courses'] as List).cast<Map<String, dynamic>>()) {
@@ -408,6 +453,10 @@ class AuditEngine {
     final summary = <Map<String, dynamic>>[];
     final warnings = <Map<String, dynamic>>[];
     var groupApplied = false; // 是否有模块的组口径折算实际生效（供 caliber_notes）
+    // 每模块缺口类警告（graduation_risk / offering_closed）在 warnings 中的
+    // 起始下标；并列选项组合成后据此清除落选选项的警告（v1.5）。
+    final moduleWarnStart = <String, int>{};
+    final moduleWarnEnd = <String, int>{};
 
     for (final m in planModules) {
       final mid = m['module_id'] as String;
@@ -472,6 +521,15 @@ class AuditEngine {
               ? '🟡 待补'
               : '🔴 学籍年限内无法补足';
 
+      // 在修覆盖（v1.5，用户 #4/#9）：剩余课程里「已列入计划选课（在修未出分）」
+      // 的部分。只降级警告措辞，不抵扣 gap/earned（既有红线：在修不算已获）。
+      final remainingActive =
+          remaining.where(isActiveCourse).toList(); // 未通过的在修课（可补学分）
+      final activeCredit = double.parse(remainingActive
+          .fold<num>(0, (s, c) => s + (c['credits'] as num))
+          .toStringAsFixed(2));
+      final hasActive = gap > 0 && remainingActive.isNotEmpty;
+
       final missing = <Map<String, dynamic>>[];
       if (gap > 0) {
         final sorted = [...remaining]..sort(
@@ -487,6 +545,9 @@ class AuditEngine {
             'offered_years': c['offered_years'],
             'terms': fi.map(Timeline.idxStr).toList(),
             'closed': fi.isEmpty,
+            // 在修标记（v1.5）：已选未出分的课不再当作普通缺口，UI 据此
+            // 呈现「在修」三态；credits 合计口径不变。
+            'active': isActiveCourse(c),
             'page': src?['page'],
           });
         }
@@ -595,6 +656,7 @@ class AuditEngine {
       String refOf(Map<String, dynamic> c) =>
           '${c['course_id']}@p${(c['source'] as Map<String, dynamic>?)?['page']}';
 
+      moduleWarnStart[mid] ??= warnings.length;
       if (color == 'red' && gap > 0) {
         final closed = remaining.where((c) => futureIdx(c).isEmpty).toList();
         final open = remaining.where((c) => futureIdx(c).isNotEmpty).toList();
@@ -607,10 +669,23 @@ class AuditEngine {
         final cause = closed.isNotEmpty && closedCredit >= gap
             ? '方案内该模块剩余课程在学籍年限内已无开课窗口：$detail'
             : '即使重修补上（可补 ${_g(double.parse(open.fold<num>(0, (s, c) => s + (c['credits'] as num)).toStringAsFixed(2)))} 分），缺口 ${_g(gap)} 分仍超出未来可选学分';
+        // 在修全额覆盖缺口 → 降级 yellow（延毕红警不再按「未修」口径报）；
+        // 部分覆盖 → 仍 red 但文案给出「已选 N 学分（在修），仍缺 …」。
+        final fullyCovered = hasActive && activeCredit >= gap - 1e-9;
         warnings.add({
           'type': 'graduation_risk',
-          'level': 'red',
-          'text': '「${m['module_path']}」缺口 ${_g(gap)} 分，$cause。存在延毕风险，请尽快与教务确认替代方案。',
+          'level': fullyCovered ? 'yellow' : 'red',
+          'text': fullyCovered
+              ? '「${m['module_path']}」缺口 ${_g(gap)} 分（已在修，待出成绩）：'
+                  '已选 ${remainingActive.length} 门 ${_g(activeCredit)} 学分，'
+                  '出分即达成，暂无延毕风险。'
+              : hasActive
+                  ? '「${m['module_path']}」缺口 ${_g(gap)} 分，已选 ${remainingActive.length} 门'
+                      ' ${_g(activeCredit)} 学分（在修，待出成绩），'
+                      '仍缺 ${_g(double.parse((gap - activeCredit).clamp(0.0, double.infinity).toStringAsFixed(2)))} 分：'
+                      '$cause。存在延毕风险，请尽快与教务确认替代方案。'
+                  : '「${m['module_path']}」缺口 ${_g(gap)} 分，$cause。'
+                      '存在延毕风险，请尽快与教务确认替代方案。',
           'refs': closed.take(3).map(refOf).toList(),
         });
       } else if (color == 'yellow' && gap > 0) {
@@ -632,7 +707,11 @@ class AuditEngine {
               : '（仅${(c['offered'] as List).first}开课）';
           final takenFailed = matched.any((pair) =>
               pair[1]['course_id'] == c['course_id'] && !isPassed(pair[0] as Map<String, dynamic>));
-          final verb = takenFailed ? '已修未过需重修' : '尚未修';
+          final verb = takenFailed
+              ? '已修未过需重修'
+              : isActiveCourse(c)
+                  ? '已在修，待出成绩' // v1.5：不再把在修课报成「尚未修」
+                  : '尚未修';
           warnings.add({
             'type': 'offering_closed',
             'level': 'yellow',
@@ -642,6 +721,7 @@ class AuditEngine {
           });
         }
       }
+      moduleWarnEnd[mid] = warnings.length;
     }
 
     // 先修检查（已修侧）
@@ -726,6 +806,9 @@ class AuditEngine {
       };
       final groupRows = <Map<String, dynamic>>[];
       final optionIds = <String>{};
+      // v1.5（A2）：落选选项模块警告的 warnings 下标集与组级风险新警告。
+      final pruneWarnIdx = <int>{};
+      final groupWarnings = <Map<String, dynamic>>[];
       for (final raw in altGroupsRaw) {
         if (raw is! Map) continue;
         final opts = raw['options'];
@@ -828,7 +911,76 @@ class AuditEngine {
                   .cast<Map<String, dynamic>>()),
           ],
         });
+        // v1.5（A2）：组内各选项模块在上方按「三份都要求」各自生成过缺口警告
+        //（本专业进阶/跨专业学习/自主修读 ×3 红警）。组行达成度只认最优选项，
+        // 故清除全部选项模块的缺口类警告，仅在组行仍红时报一条组级风险。
+        for (final id in optionIds) {
+          final s = moduleWarnStart[id];
+          final e = moduleWarnEnd[id];
+          if (s != null && e != null) {
+            for (var i = s; i < e; i++) {
+              pruneWarnIdx.add(i);
+            }
+          }
+        }
+        if (color == 'red' && gap > 0) {
+          final groupMissing = <Map<String, dynamic>>[
+            for (final r in bestRows)
+              ...((r['missing_courses'] as List? ?? const [])
+                  .cast<Map<String, dynamic>>()),
+          ];
+          double cred(Map<String, dynamic> c) =>
+              ((c['credits'] as num?) ?? 0).toDouble();
+          final closed = groupMissing.where((c) => c['closed'] == true).toList();
+          final open = groupMissing.where((c) => c['closed'] != true).toList();
+          final closedCredit =
+              double.parse(closed.fold<double>(0, (s, c) => s + cred(c)).toStringAsFixed(2));
+          final detail = closed
+              .take(3)
+              .map((c) => '《${c['name']}》${_g(cred(c))}分')
+              .join('、');
+          final cause = closed.isNotEmpty && closedCredit >= gap
+              ? '方案内该组剩余课程在学籍年限内已无开课窗口：$detail'
+              : '即使重修补上（可补 ${_g(double.parse(open.fold<double>(0, (s, c) => s + cred(c)).toStringAsFixed(2)))} 分），缺口 ${_g(gap)} 分仍超出未来可选学分';
+          final actives = groupMissing.where((c) => c['active'] == true).toList();
+          final activeCredit = double.parse(
+              actives.fold<double>(0, (s, c) => s + cred(c)).toStringAsFixed(2));
+          final fullyCovered = actives.isNotEmpty && activeCredit >= gap - 1e-9;
+          groupWarnings.add({
+            'type': 'graduation_risk',
+            'level': fullyCovered ? 'yellow' : 'red',
+            'text': fullyCovered
+                ? '「${raw['path']}」缺口 ${_g(gap)} 分（已在修，待出成绩）：'
+                    '已选 ${actives.length} 门 ${_g(activeCredit)} 学分，'
+                    '出分即达成，暂无延毕风险。'
+                : actives.isNotEmpty
+                    ? '「${raw['path']}」缺口 ${_g(gap)} 分，已选 ${actives.length} 门'
+                        ' ${_g(activeCredit)} 学分（在修，待出成绩），'
+                        '仍缺 ${_g(double.parse((gap - activeCredit).clamp(0.0, double.infinity).toStringAsFixed(2)))} 分：'
+                        '$cause。存在延毕风险，请尽快与教务确认替代方案。'
+                    : '「${raw['path']}」缺口 ${_g(gap)} 分，$cause。'
+                        '存在延毕风险，请尽快与教务确认替代方案。',
+            'refs': closed
+                .take(3)
+                .map((c) => '${c['course_id']}@p${c['page']}')
+                .toList(),
+          });
+        }
       }
+      // v1.5：落选（含非最优）选项模块的旧缺口警告在此统一剔除（组行只按
+      // 最优选项报一条），「三选一缺口 ×3」不再重复。剔除下标只覆盖模块循环
+      // 段（pruneWarnIdx），循环后新增的警告（先修/计划/冲突等）不受影响。
+      if (pruneWarnIdx.isNotEmpty) {
+        final kept = <Map<String, dynamic>>[];
+        for (var i = 0; i < warnings.length; i++) {
+          if (!pruneWarnIdx.contains(i)) kept.add(warnings[i]);
+        }
+        warnings
+          ..clear()
+          ..addAll(kept);
+      }
+      warnings.addAll(groupWarnings);
+
       // 组行插到首个选项的位置；选项模块行不再单独展示，避免「20+20+20」。
       final firstIndex = <String, int>{};
       for (final g in groupRows) {

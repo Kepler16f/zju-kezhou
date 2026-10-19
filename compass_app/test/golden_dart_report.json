@@ -371,6 +371,7 @@
             "2028-B(春)"
           ],
           "closed": false,
+          "active": false,
           "page": 21
         }
       ]
@@ -644,6 +645,7 @@
             "2028-A(秋)"
           ],
           "closed": false,
+          "active": true,
           "page": 25
         },
         {
@@ -659,6 +661,7 @@
             "2028-A(秋)"
           ],
           "closed": false,
+          "active": true,
           "page": 25
         },
         {
@@ -675,6 +678,7 @@
             "2028-B(春)"
           ],
           "closed": false,
+          "active": false,
           "page": 26
         },
         {
@@ -691,6 +695,7 @@
             "2028-B(春)"
           ],
           "closed": false,
+          "active": false,
           "page": 27
         },
         {
@@ -706,6 +711,7 @@
             "2028-A(秋)"
           ],
           "closed": false,
+          "active": true,
           "page": 28
         }
       ]
@@ -835,6 +841,7 @@
           ],
           "terms": [],
           "closed": true,
+          "active": false,
           "page": 31
         },
         {
@@ -853,6 +860,7 @@
             "2027-A(秋)"
           ],
           "closed": false,
+          "active": false,
           "page": 31
         },
         {
@@ -869,6 +877,7 @@
             "2027-B(春)"
           ],
           "closed": false,
+          "active": true,
           "page": 30
         },
         {
@@ -885,6 +894,7 @@
             "2028-B(春)"
           ],
           "closed": false,
+          "active": true,
           "page": 32
         }
       ]
@@ -1016,6 +1026,7 @@
             "2028-B(春)"
           ],
           "closed": false,
+          "active": false,
           "page": 35
         },
         {
@@ -1035,6 +1046,7 @@
             "2028-B(春)"
           ],
           "closed": false,
+          "active": false,
           "page": 34
         },
         {
@@ -1050,6 +1062,7 @@
             "2028-A(秋)"
           ],
           "closed": false,
+          "active": false,
           "page": 33
         },
         {
@@ -1069,6 +1082,7 @@
             "2028-B(春)"
           ],
           "closed": false,
+          "active": false,
           "page": 33
         },
         {
@@ -1083,6 +1097,7 @@
           ],
           "terms": [],
           "closed": true,
+          "active": false,
           "page": 34
         }
       ]
@@ -1173,6 +1188,7 @@
             "2028-A(秋)"
           ],
           "closed": false,
+          "active": false,
           "page": 36
         },
         {
@@ -1188,6 +1204,7 @@
           ],
           "terms": [],
           "closed": true,
+          "active": false,
           "page": 36
         },
         {
@@ -1203,6 +1220,7 @@
           ],
           "terms": [],
           "closed": true,
+          "active": false,
           "page": 36
         }
       ]
@@ -1228,7 +1246,7 @@
     {
       "type": "offering_closed",
       "level": "yellow",
-      "text": "「算法设计与分析」3分尚未修，（仅秋开课），可选窗口：2027-A(秋)、2028-A(秋)；错过需等待。",
+      "text": "「算法设计与分析」3分已在修，待出成绩，（仅秋开课），可选窗口：2027-A(秋)、2028-A(秋)；错过需等待。",
       "refs": [
         "CS2003@p25"
       ]
@@ -1244,7 +1262,7 @@
     {
       "type": "offering_closed",
       "level": "yellow",
-      "text": "「信息安全导论」2分尚未修，（隔年开课，仅 2027 学年），可选窗口：2027-B(春)；错过需等待。",
+      "text": "「信息安全导论」2分已在修，待出成绩，（隔年开课，仅 2027 学年），可选窗口：2027-B(春)；错过需等待。",
       "refs": [
         "CS3102@p30"
       ]
@@ -1366,7 +1384,7 @@
   "disclaimer": "本报告仅供与导师沟通参考，正式认定以教务系统为准。",
   "trace": {
     "plan": "2023级计算机专业本科培养方案（合成演示样例） 2023级（核验日 2026-10-13）",
-    "engine": "v1.4",
+    "engine": "v1.5",
     "notes": [
       "总计学分口径：方案声明最低毕业学分 103 分（meta.total_credits），各模块要求之和为 103 分——模块间课程交叉/折算时二者可不同，毕业总要求以方案声明为准。"
     ]

@@ -12,6 +12,15 @@
    学分按等级封顶（L1=6 / L2=4.5 / L3=3）；等级缺省不假设，trace 注明；
  * 已选 vs 已获：每模块输出 selected_no_credit（已选未获学分课程数），与 earned
    （已获学分）分开呈现；报告顶层附 caliber_notes 口径说明。
+ * 三态打通与三选一（v1.5，用户 #4/#8/#9；与 Dart engine/audit.dart 逐逻辑对齐）：
+   ① 在修证据降级：graduation_risk 读取 record['planned_courses']（可选参数
+     ui_active_names 并入 UI 侧证据），在修全额覆盖缺口时 red→yellow 并注记
+     「（已在修，待出成绩）」，部分覆盖时给出「已选 X 门 N 学分（在修），仍缺 …」；
+     missing_courses 行标记 active:true；earned/totals 口径不变；
+   ② 并列选项组（alternative_groups）组行合成（取最优选项计一次，选项行不单独
+     展示），落选选项的缺口类警告一并清除，组行仍红时补一条组级 graduation_risk；
+   ③ 多选一/任选其一（single_pick）达成口径与选课组门数校验（countShort）补齐，
+     与 Dart 既有行为对齐（此前 Python 缺失的镜像漂移一并修复）。
 """
 import difflib
 import json
@@ -20,7 +29,7 @@ import re
 import common
 from common import PASS_GRADE, SEMESTERS_PER_GRADE_YEAR, sem_idx, sem_str, idx_str
 
-ENGINE_VERSION = "1.4"
+ENGINE_VERSION = "1.5"
 GRADUATION_YEARS = 6  # 最长学籍年限（年），自入学学年起算
 PLAN_JSON = r'''{}'''  # golden 方案注入：{"computer_science": {...}, "software_engineering": {...}}
 
@@ -76,6 +85,14 @@ def _count_rule_from_text(text):
         x = _parse_cn_count(m.group(1))
         if x is not None and x > 0:
             return x
+    # 「多选一 / 任选其一」= 选 1 门即达成；裸「任选」不匹配（任意选修不是约束）。
+    if re.search(r"(多选一|任选其一|任选一门|只选一门|选择其中一门|选其中一门)", text):
+        return 1
+    m = re.search("(?:任选|只选|选择其中)\\s*(" + _CN_NUM + r")\s*门", text)
+    if m:
+        x = _parse_cn_count(m.group(1))
+        if x is not None and x > 0:
+            return x
     return None
 
 
@@ -89,7 +106,7 @@ def detect_module_group_rule(m):
      4. 模块标识文本（module_path + title）里的「N 选 M / 选 N 门 / 至少 N 门」。"""
     ns = m.get("n_select")
     if isinstance(ns, (int, float)) and ns >= 1:
-        return {"min_courses": int(round(ns)), "min_credits": None, "source": "n_select"}
+        return {"min_courses": int(round(ns)), "min_credits": None, "source": "n_select", "single_pick": False}
     for key in ("group", "choice_rule"):
         g = m.get(key)
         if not isinstance(g, dict):
@@ -99,11 +116,12 @@ def detect_module_group_rule(m):
         mcx = g.get("min_credits")
         mcx = float(mcx) if isinstance(mcx, (int, float)) and mcx else None
         if mc is not None or mcx is not None:
-            return {"min_courses": mc, "min_credits": mcx, "source": key}
+            return {"min_courses": mc, "min_credits": mcx, "source": key,
+                    "single_pick": g.get("single_pick") is True}
     id_text = "%s %s" % (m.get("module_path") or "", m.get("title") or "")
     from_text = _count_rule_from_text(id_text)
     if from_text is not None:
-        return {"min_courses": from_text, "min_credits": None, "source": "title"}
+        return {"min_courses": from_text, "min_credits": None, "source": "title", "single_pick": False}
     return None
 
 
@@ -241,7 +259,7 @@ def aggregate(matched, plan):
     return earned, passed_ids, earned_cids, selected_no_credit_ids
 
 
-def build(record, plan, action=None):
+def build(record, plan, action=None, ui_active_names=None):
     # action 参数校验（宁缺勿猜：非法外语等级显式报错，不静默忽略；未知键忽略）
     foreign_level_raw = (action or {}).get("foreign_lang_level")
     if foreign_level_raw is not None and str(foreign_level_raw) not in FOREIGN_LANG_CAPS:
@@ -345,6 +363,35 @@ def build(record, plan, action=None):
         cid = x.get("course_id")
         if cid is not None:
             selected_no_credit_ids.add(str(cid))
+
+    # ── 在修证据（v1.5 三态打通，用户 #4/#9；与 Dart 同口径）────────────────
+    # 「在修未出分」= 已列入计划选课（planned_courses）或调用方显式传入的
+    # ui_active_names（UI 侧本学期已选/课表证据；不传时仅用 record 内证据）。
+    # 仅用于警告降级与 missing_courses 标记，绝不抵扣 earned / gap / totals。
+    active_ids, active_names, active_name_list = set(), set(), []
+    def _add_active_name(nm):
+        if nm and nm not in active_names:
+            active_names.add(nm)
+            active_name_list.append(nm)  # 保持插入序（Dart Set.toList 同语义）
+    for x in plan_courses:
+        cid = str(x.get("course_id") or "").strip()
+        if cid:
+            active_ids.add(cid)
+        _add_active_name(str(x.get("name") or "").strip())
+    for n in (ui_active_names or []):
+        _add_active_name(str(n).strip())
+
+    def is_active_course(c):
+        """与审计匹配同口径：课号精确，或课程名精确/相似度 ≥0.85 兜底。"""
+        cid = str(c.get("course_id") or "").strip()
+        if cid and cid in active_ids:
+            return True
+        nm = str(c.get("name") or "").strip()
+        if not nm or not active_name_list:
+            return False
+        if nm in active_names:
+            return True
+        return bool(difflib.get_close_matches(nm, active_name_list, 1, 0.85))
     # 模块课程一次取齐（保持 plan["courses"] 原序）：剩余/明细/组口径共用
     courses_by_module = {}
     for c in plan["courses"]:
@@ -362,6 +409,9 @@ def build(record, plan, action=None):
 
     summary, warnings = [], []
     group_applied = False  # 是否有模块的组口径折算实际生效（供 caliber_notes）
+    # 每模块缺口类警告（graduation_risk / offering_closed）在 warnings 中的
+    # 起始/结束下标；并列选项组合成后据此清除落选选项的警告（v1.5）。
+    module_warn_start, module_warn_end = {}, {}
     for m in plan["modules"]:
         module_courses = courses_by_module.get(str(m["module_id"]), [])
         group_rule = detect_module_group_rule(m)
@@ -378,13 +428,45 @@ def build(record, plan, action=None):
             elif foreign_cap < req:
                 req = foreign_cap
         got = round(earned[m["module_id"]], 2)
-        gap = round(max(0.0, req - got), 2)
-        # 剩余可选 = 未通过该模块全部课程（含"已修未过待重修"，它们仍可补学分）
-        remaining = [c for c in module_courses if c["course_id"] not in passed_ids]
+        min_courses = (group_rule or {}).get("min_courses")
+        passed_in_group = set()
+        if min_courses is not None:
+            for c in module_courses:
+                cid = str(c["course_id"])
+                if cid in passed_ids:
+                    passed_in_group.add(cid)
+        # #3：多选一/任选其一——选够门数即整组达成，允许已获学分少于标注
+        # （标注是整组上限，不是必须全修）。
+        single_pick_satisfied = bool((group_rule or {}).get("single_pick")) and \
+            min_courses is not None and len(passed_in_group) >= min_courses
+        gap = 0.0 if single_pick_satisfied else round(max(0.0, req - got), 2)
+        # 剩余可选 = 未通过课程；同一模块内同课号重复行只计一次
+        # （无课号行无法判同，不去重——宁缺勿猜）
+        remaining, seen_remaining = [], set()
+        for c in module_courses:
+            cid = str(c["course_id"])
+            if cid in passed_ids:
+                continue
+            if cid and cid in seen_remaining:
+                continue
+            if cid:
+                seen_remaining.add(cid)
+            remaining.append(c)
         open_before_grad = round(sum(c["credits"] for c in remaining if future_idx(c)), 2)
-        color = "green" if gap <= 1e-9 else ("yellow" if gap <= open_before_grad + 1e-9 else "red")
+        # 选课组门数校验：学分够但通过门数不足（重课覆盖多门轻课要求的罕见失配）
+        # 不得判绿——此时 gap 可能为 0，颜色仍按待补呈现。
+        count_short = min_courses is not None and len(passed_in_group) < min_courses
+        color = ("green" if (gap <= 1e-9 and not count_short)
+                 else ("yellow" if gap <= open_before_grad + 1e-9 else "red"))
         status = {"green": "🟢 已达成", "yellow": "🟡 待补",
                   "red": "🔴 学籍年限内无法补足"}[color]
+
+        # 在修覆盖（v1.5，用户 #4/#9）：剩余课程里「已列入计划选课（在修未出分）」
+        # 的部分。只降级警告措辞，不抵扣 gap/earned（在修不算已获是既有红线）。
+        remaining_active = [c for c in remaining if is_active_course(c)]
+        active_credit = round(sum(c["credits"] for c in remaining_active), 2)
+        has_active = gap > 0 and bool(remaining_active)
+
         missing = []
         if gap > 0:
             for c in sorted(remaining, key=lambda x: -x["credits"]):
@@ -393,6 +475,8 @@ def build(record, plan, action=None):
                                 "credits": c["credits"], "offered": c["offered"],
                                 "offered_years": c.get("offered_years"),
                                 "terms": [idx_str(i) for i in fi], "closed": not fi,
+                                # 在修标记（v1.5）：已选未出分的课不再当作普通缺口。
+                                "active": is_active_course(c),
                                 "page": (c.get("source") or {}).get("page")})
         # 方案课程全量明细：展开卡片时展示“培养方案详细要求”，不再只有
         # gap=0 时的「学分已满足」。missing_courses 保留以兼容旧消费者。
@@ -446,6 +530,7 @@ def build(record, plan, action=None):
                     "course_stats": plan_course_stats, "missing_courses": missing})
         summary.append(row)
 
+        module_warn_start.setdefault(str(m["module_id"]), len(warnings))
         if color == "red" and gap > 0:
             closed_courses = [c for c in remaining if not future_idx(c)]
             open_courses = [c for c in remaining if future_idx(c)]
@@ -456,9 +541,24 @@ def build(record, plan, action=None):
             else:
                 cause = "即使重修补上（可补 %g 分），缺口 %g 分仍超出未来可选学分" % (
                     round(sum(c["credits"] for c in open_courses), 2), gap)
-            warnings.append({"type": "graduation_risk", "level": "red",
-                             "text": "「%s」缺口 %g 分，%s。存在延毕风险，请尽快与教务确认替代方案。"
-                                      % (m["module_path"], gap, cause),
+            # 在修全额覆盖缺口 → 降级 yellow（延毕红警不再按「未修」口径报）；
+            # 部分覆盖 → 仍 red 但文案给出「已选 N 学分（在修），仍缺 …」。
+            fully_covered = has_active and active_credit >= gap - 1e-9
+            if fully_covered:
+                text = ("「%s」缺口 %g 分（已在修，待出成绩）：已选 %d 门 %g 学分，"
+                        "出分即达成，暂无延毕风险。"
+                        % (m["module_path"], gap, len(remaining_active), active_credit))
+            elif has_active:
+                text = ("「%s」缺口 %g 分，已选 %d 门 %g 学分（在修，待出成绩），"
+                        "仍缺 %g 分：%s。存在延毕风险，请尽快与教务确认替代方案。"
+                        % (m["module_path"], gap, len(remaining_active), active_credit,
+                           round(max(0.0, gap - active_credit), 2), cause))
+            else:
+                text = ("「%s」缺口 %g 分，%s。存在延毕风险，请尽快与教务确认替代方案。"
+                        % (m["module_path"], gap, cause))
+            warnings.append({"type": "graduation_risk",
+                             "level": "yellow" if fully_covered else "red",
+                             "text": text,
                              "refs": ["%s@p%s" % (c["course_id"], (c.get("source") or {}).get("page"))
                                       for c in closed_courses[:3]]})
         elif color == "yellow" and gap > 0:
@@ -470,7 +570,12 @@ def build(record, plan, action=None):
                 why = "（隔年开课，仅 %s 学年）" % "、".join(str(y) for y in cyc) if cyc \
                     else "（仅%s开课）" % c["offered"][0]
                 taken_failed = c["course_id"] in {cc["course_id"] for rr, cc in matched if not _is_passed(rr)}
-                verb = "已修未过需重修" if taken_failed else "尚未修"
+                if taken_failed:
+                    verb = "已修未过需重修"
+                elif is_active_course(c):
+                    verb = "已在修，待出成绩"  # v1.5：不再把在修课报成「尚未修」
+                else:
+                    verb = "尚未修"
                 warnings.append({"type": "offering_closed", "level": "yellow",
                                  "text": "「%s」%g分%s，%s，可选窗口：%s；错过需等待。"
                                           % (c["name"], c["credits"], verb, why,

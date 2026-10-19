@@ -289,7 +289,7 @@ class GroupRuleTest(unittest.TestCase):
 
     def test_engine_trace_v14_and_caliber_notes(self):
         r = audit.build(rec(), PLANS["computer_science"])
-        self.assertEqual(r["trace"]["engine"], "v1.4")
+        self.assertEqual(r["trace"]["engine"], "v1.5")
         self.assertIn("caliber_notes", r)
         self.assertTrue(any("earned=已获学分" in n for n in r["caliber_notes"]))
         self.assertTrue(any("selected_no_credit=已选未获学分" in n for n in r["caliber_notes"]))
