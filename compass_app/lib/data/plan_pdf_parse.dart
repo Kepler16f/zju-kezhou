@@ -56,6 +56,24 @@ class PdfModuleSection {
     return m == null ? 0 : (double.tryParse(m.group(0)!) ?? 0);
   }
 
+  /// 认定类板块（美育/劳育/创新创业/心理健康）要求：方案 PDF 把这类板块的
+  /// 学分写在板块修读说明里（「要求学生修读2学分××类课程」），层级标题行
+  /// 「(1)美育类」本身没有学分标注 → creditsRaw 恒为空，标题行显示不出学分
+  /// （用户反馈 #6「其他必修环节学分没和其他模块一样样式的解析显示出来」）。
+  /// 这里只读不改写 creditsRaw：审计适配器按自己的口径从说明抽数
+  /// （plan_audit_adapter.certifiedRequiredCredits，正则同源），若改写
+  /// creditsRaw 会使 keptSectionFlags/requiredCreditsFrom 两处口径漂移。
+  /// 学时数字不认（劳育类「修读32学时」是学时不是学分）；isCountRule 板块
+  /// （creditsRaw 是门数）返回 null，绝不冒充。
+  String? get declaredCreditsFromNotes {
+    if (isCountRule || creditsRaw.trim().isNotEmpty) return null;
+    for (final n in notes) {
+      final m = RegExp(r'修读\s*(\d+(?:\.\d+)?)\s*学分').firstMatch(n);
+      if (m != null) return m.group(1);
+    }
+    return null;
+  }
+
   /// 单位为「门」的子规则：credits 是"要求修读门数"而非学分。
   /// 上层审计/展示据此区分，勿把该数字直接当 required_credits 用。
   bool get isCountRule => creditsUnit == '门';
@@ -400,6 +418,54 @@ Iterable<String> _splitCourseSegments(String line) sync* {
 bool _looksLikeProse(String line) {
   if (line.length >= 8) return true;
   return RegExp(r'[，。；：（）]|\d').hasMatch(line);
+}
+
+/// 总体要求（整章/全局口径段落）判据（用户反馈 #3：「各板块修读要求前面
+/// 多出来那么多总体要求统统隐藏，从课程修读要求开始」）：
+/// 章节开头的毕业总学分口径、指导性总述等全局段落，经 pending→flush 被
+/// 误归到每个板块 notes 头部。展示层（_moduleBlock/_subBlock/_notesBlock）
+/// 据此过滤，只留板块级的课程修读要求。
+///
+/// 启发式（宁缺勿猜——拿不准一律返回 false 保留为修读要求，绝不误删
+/// 真实课程要求；引擎审计仍读完整 notes，本判据只影响方案页展示）：
+///  1. 总括口径词：出现「总学分 / 学分合计 / 合计学分 / 共计 / 毕业要求」
+///     「毕业总 / 以上各类 / 以上各 / 各类课程」等把多个板块合并计数的表述；
+///     「以上」「共计」单独也命中——它们是典型的"回指全章"的总结句开头。
+///  2. 章节号开头：以「一、二、…、十、」这类中文序号起头且整条较长 →
+///     是 PDF 还原文本里混进 notes 的整章总述行（板块自身的层级标题不会
+///     以这种形态落进 notes，落到这里的多是指导性计划的段落序号）。
+///  3. 异常长概述：长度 ≥ 80 且不含任何"本板块怎么修"的动作词（修读/选修/
+///     必修/应修/限选/任选/认定/成绩/课程清单）→ 视为总述；含动作词则保留。
+///     阈值取 80：真实板块说明最长约 70 字（美育类整条 68 字），总述段
+///     （二/三/四课堂口径段合并后普遍 100+）。
+bool isOverallRequirement(String note) {
+  final s = note.trim();
+  if (s.isEmpty) return false;
+  // 1) 总括口径词（合并计数/回指全章的表述）。
+  if (RegExp(
+          r'总学分|学分合计|合计学分|共计|总要求|毕业要求|毕业总学分|最低毕业学分|以上各类|以上各|各类课程')
+      .hasMatch(s)) {
+    return true;
+  }
+  // 「以上」「共计」单独出现即是回指句；但「修读2学分以上」这类板块级
+  // 下限要求也含"以上"——须它不是紧跟在学分数字之后才算总括。
+  final yishang = RegExp(r'以上').firstMatch(s);
+  if (yishang != null &&
+      yishang.start > 0 &&
+      !RegExp(r'[\d.]\s*(?:学分|门|学时|课程)\s*$').hasMatch(s.substring(0, yishang.start))) {
+    return true;
+  }
+  // 2) 中文序号起头的整章总述（「一、…」且非短标题行）。
+  if (RegExp(r'^[一二三四五六七八九十]+、').hasMatch(s) && s.length >= 30) {
+    return true;
+  }
+  // 3) 异常长且无任何板块级修读动作词 → 总述。
+  if (s.length >= 80 &&
+      !RegExp(r'修读|选修|必修|应修|限选|任选|认定|成绩|课程清单|记点')
+          .hasMatch(s)) {
+    return true;
+  }
+  return false;
 }
 
 String _cleanTitle(String t) {

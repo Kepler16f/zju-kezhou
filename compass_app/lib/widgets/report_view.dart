@@ -27,11 +27,23 @@ class ReportSection extends StatelessWidget {
   /// 标“已修”，其余为“未修”；不影响任何 earned/gap 数值。
   final PlanCourseEvidence? courseEvidence;
 
+  /// 顶栏按钮直达（方案页 #9）：非空时对应瓦片重建并默认展开（token 变化即
+  /// 重建，再次点击按钮可再次展开）；key 供宿主 Scrollable.ensureVisible 定位。
+  /// 全部默认 null —— 无参默认行为与旧版完全一致。
+  final String? modulesRevealToken;
+  final String? warningsRevealToken;
+  final GlobalKey? modulesKey;
+  final GlobalKey? warningsKey;
+
   const ReportSection({
     super.key,
     required this.report,
     this.belowTotals,
     this.courseEvidence,
+    this.modulesRevealToken,
+    this.warningsRevealToken,
+    this.modulesKey,
+    this.warningsKey,
   });
 
   static const _colors = {
@@ -91,9 +103,13 @@ class ReportSection extends StatelessWidget {
         ),
         if (belowTotals != null) belowTotals!,
         const SizedBox(height: 8),
-        ExpansionTile(
-          key: const PageStorageKey<String>('report-modules'),
-          initiallyExpanded: false,
+        KeyedSubtree(
+          key: modulesKey,
+          child: ExpansionTile(
+          key: modulesRevealToken != null
+              ? ValueKey('report-modules#$modulesRevealToken')
+              : const PageStorageKey<String>('report-modules'),
+          initiallyExpanded: modulesRevealToken != null,
           tilePadding: EdgeInsets.zero,
           title: Text('三色学分达成度（${summary.length} 个板块）',
               style: const TextStyle(
@@ -107,6 +123,7 @@ class ReportSection extends StatelessWidget {
             ),
             for (final m in summary) _moduleTile(context, m),
           ],
+        ),
         ),
         if (caliberNotes.isNotEmpty)
           ExpansionTile(
@@ -147,16 +164,21 @@ class ReportSection extends StatelessWidget {
             children: [_extraCard(extra)],
           ),
         if (warnings.isNotEmpty)
-          ExpansionTile(
-            key: const PageStorageKey<String>('report-warnings'),
-            initiallyExpanded: false,
-            tilePadding: EdgeInsets.zero,
-            title: Text('风险提示（${warnings.length} 条）',
-                style: const TextStyle(
-                    fontWeight: FontWeight.bold, fontSize: 15)),
-            children: [
-              for (final w in warnings) _warningCard(w),
-            ],
+          KeyedSubtree(
+            key: warningsKey,
+            child: ExpansionTile(
+              key: warningsRevealToken != null
+                  ? ValueKey('report-warnings#$warningsRevealToken')
+                  : const PageStorageKey<String>('report-warnings'),
+              initiallyExpanded: warningsRevealToken != null,
+              tilePadding: EdgeInsets.zero,
+              title: Text('风险提示（${warnings.length} 条）',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 15)),
+              children: [
+                for (final w in warnings) _warningCard(w),
+              ],
+            ),
           ),
         const SizedBox(height: 10),
         Text(

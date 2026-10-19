@@ -391,11 +391,14 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     final totals = (report['totals'] as Map? ?? const {});
     final trace = (report['trace'] as Map?) ?? const {};
     return [
+      // 顶栏直达按钮（用户反馈 #9）：报告一长就找不到三色学分/风险提示，
+      // 提供一键展开+滚动的入口；风险提示条数>0 带红角标。
+      _revealBar(report),
       Card(
         margin: const EdgeInsets.symmetric(vertical: 4),
         child: ExpansionTile(
           key: PageStorageKey<String>('audit-${trace['plan'] ?? ''}'),
-          initiallyExpanded: false,
+          controller: _auditTileCtl,
           title: const Text('学业达成审计',
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
           subtitle: Text(
@@ -411,12 +414,109 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
                 report: report,
                 belowTotals: _choosedLine(),
                 courseEvidence: _courseEvidence(),
+                modulesRevealToken: _revealModules,
+                warningsRevealToken: _revealWarnings,
+                modulesKey: _modulesKey,
+                warningsKey: _warningsKey,
               ),
             ),
           ],
         ),
       ),
     ];
+  }
+
+  String? _revealModules; // 三色学分直达令牌（每次点击变化 → 瓦片重建并展开）
+  String? _revealWarnings; // 风险提示直达令牌
+  // 审计区外层瓦片：直达按钮经 controller 强制展开。
+  // 注意：保留 ExpansionTileController（3.41+ 的 ExpansibleController 在
+  // flutter-ohos 3.27 不存在，HAP CI 会编译失败——见 [[ohos-327-api-compat-trap]]）。
+  // ignore: deprecated_member_use
+  final ExpansionTileController _auditTileCtl = ExpansionTileController();
+  final GlobalKey _modulesKey = GlobalKey(debugLabel: 'report-modules-anchor');
+  final GlobalKey _warningsKey = GlobalKey(debugLabel: 'report-warnings-anchor');
+
+  /// 顶栏两按钮行：点按 → 先展开审计区，再给对应瓦片发"直达令牌"重建展开，
+  /// 下一帧 ensureVisible 滚动到位。无审计数据时整行不渲染（调用侧已门控）。
+  Widget _revealBar(Map<String, dynamic> report) {
+    final warnings = (report['warnings'] as List? ?? const []);
+    void reveal(bool modules) {
+      setState(() {
+        // 外层审计瓦片先展开，目标子瓦片再收令牌重建（下帧才进树）。
+        _auditTileCtl.expand();
+        if (modules) {
+          _revealModules = 'm${DateTime.now().microsecondsSinceEpoch}';
+        } else {
+          _revealWarnings = 'w${DateTime.now().microsecondsSinceEpoch}';
+        }
+      });
+      // 空句柄重试滚动定位：外层展开 + KeyedSubtree 重建需要额外帧。
+      void scroll(int attempt) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final ctx = (modules ? _modulesKey : _warningsKey).currentContext;
+          if (ctx != null) {
+            Scrollable.ensureVisible(ctx,
+                alignment: 0.06, duration: const Duration(milliseconds: 260));
+          } else if (attempt < 3) {
+            scroll(attempt + 1);
+          }
+        });
+      }
+
+      scroll(0);
+    }
+
+    Widget chip({required String label,
+        required IconData icon,
+        required Color color,
+        required VoidCallback onTap,
+        int badge = 0}) {
+      final content = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 4),
+          Text(label,
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+        ],
+      );
+      return Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: ActionChip(
+          onPressed: onTap,
+          avatar: badge > 0
+              ? Badge.count(count: badge, backgroundColor: Colors.red, child: const SizedBox.shrink())
+              : null,
+          label: content,
+          visualDensity: VisualDensity.compact,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(9), side: BorderSide(color: color.withValues(alpha: 0.45))),
+        ),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 2, bottom: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            chip(
+                label: '三色学分',
+                icon: Icons.donut_small_outlined,
+                color: Colors.indigo,
+                onTap: () => reveal(true)),
+            chip(
+                label: '风险提示',
+                icon: Icons.warning_amber_rounded,
+                color: Colors.red.shade700,
+                badge: warnings.length,
+                onTap: () => reveal(false)),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 审计报告未生成的空态（诉求 #13）：灰字提示 + 去设置按钮。
@@ -824,8 +924,11 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
   }
 
   /// 一级板块：标题行（带 ▾ 整块收起/展开、橙色「N选M」规则徽章）+ 内容；
-  /// 不再各套 Card（诉求 #14），说明命中「以下 N 种模块中的一种」时在
-  /// 标题下加灰字并行选项提示（诉求 #11）。
+  /// 不再各套 Card（诉求 #14）。
+  /// 2026-10-18 展示重构 #3：标题下的灰字并行选项提示与前置总述 note
+  /// 一并移除（并行语义由「规则：…」徽章与下方审计达成行承载，不重复），
+  /// 展开体从课程修读要求开始：课程 chips → 认定 chips → 子板块 →
+  /// 过滤后的板块级修读说明。
   Widget _moduleBlock(_SecNode node, Map<String, PlanCourseState> states) {
     final s = node.section;
     final open = !_collapsedSecs.contains(node.index);
@@ -888,12 +991,8 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
             ),
           ),
         ),
-        if (alt != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 0, 2, 4),
-            child: Text('以下 ${alt.optionCount} 类为并行选项，满足其一即可',
-                style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
-          ),
+        // 灰字「并行选项」提示整段移除（展示重构 #3）：并行语义由
+        // 「规则：…」徽章 + 审计达成行（_groupStatusLine）承载。
         if (alt != null && _groupRowFor(s) != null)
           _groupStatusLine(_groupRowFor(s)!),
         if (open)
@@ -1016,7 +1115,10 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
 
   /// 修读说明：默认收起，点「展开完整修读说明」再看（文字不大段平铺）。
   List<Widget> _notesBlock(PdfModuleSection s, int idx) {
-    if (s.notes.isEmpty) return const [];
+    // 展示重构 #3：总体要求/整章总述段落不在此展示（isOverallRequirement），
+    // 修读说明只留板块级课程要求；引擎审计仍读完整 notes，口径不受影响。
+    final notes = [for (final n in s.notes) if (!isOverallRequirement(n)) n];
+    if (notes.isEmpty) return const [];
     final open = _notesOpen.contains(idx);
     final primary = Theme.of(context).colorScheme.primary;
     return [
@@ -1031,7 +1133,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
               Icon(open ? Icons.expand_less : Icons.expand_more,
                   size: 16, color: primary),
               const SizedBox(width: 2),
-              Text(open ? '收起修读说明' : '展开完整修读说明（${s.notes.length} 条）',
+              Text(open ? '收起修读说明' : '展开完整修读说明（${notes.length} 条）',
                   style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -1046,7 +1148,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (final n in s.notes)
+              for (final n in notes)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
                   child: Text('· $n',
@@ -1100,14 +1202,20 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
     );
   }
 
-  /// 板块学分文案：外语类优先显示设置页生效值（#8），其余照方案原文。
+  /// 板块学分文案：外语类优先显示设置页生效值（#8），其余照方案原文；
+  /// 认定类板块学分写在修读说明里（#6：「其他必修环节学分没和其他模块一样
+  /// 样式显示」）——creditsRaw 为空时按 notes 声明学分兜底同款式展示。
   String? _creditsLabel(PdfModuleSection s) {
     if (s.isCountRule) {
       return s.creditsRaw.trim().isEmpty ? null : '${s.creditsRaw} 门';
     }
     final f = widget.foreignRequiredCredits;
     if (f != null && isForeignSection(s)) return '应修 ${_num(f)} 学分';
-    return s.creditsRaw.trim().isEmpty ? null : '${s.creditsRaw} 学分';
+    if (s.creditsRaw.trim().isEmpty) {
+      final declared = s.declaredCreditsFromNotes;
+      return declared == null ? null : '应修 $declared 学分';
+    }
+    return '${s.creditsRaw} 学分';
   }
 
   /// 已选但不在方案课程表里的课程（#9）：外语类最常见（方案只写
