@@ -121,6 +121,18 @@ class ReportSection extends StatelessWidget {
               child: Text('绿=已获学分；蓝=已选上（已选未获学分，与已取得分开呈现）',
                   style: TextStyle(fontSize: 10.5, color: Colors.grey)),
             ),
+            // 外语口径通知（用户反馈 #7）：引擎把「外语等级→要求学分」的核算
+            // 结果写进 trace.notes，这里搬到三色学分内联展示，让设置页的等级/
+            // 分数选择与方案页学分可见地打通（此前 UI 从不渲染 trace.notes）。
+            for (final n in (trace['notes'] as List? ?? const [])
+                .whereType<String>()
+                .where((n) => n.contains('外语')))
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 3),
+                child: Text('· $n',
+                    style: const TextStyle(
+                        fontSize: 10.5, height: 1.35, color: Colors.indigo)),
+              ),
             for (final m in summary) _moduleTile(context, m),
           ],
         ),

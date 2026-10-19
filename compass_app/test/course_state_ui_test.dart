@@ -131,7 +131,14 @@ void main() {
       'warnings': const <Map<String, dynamic>>[],
       'extra_courses': const <Map<String, dynamic>>[],
       'caliber_notes': const <String>[],
-      'trace': {'plan': '测试方案', 'engine': 'test'},
+      'trace': {
+        'plan': '测试方案',
+        'engine': 'test',
+        'notes': [
+          '外语等级 L2 → 自选 4.5 分：外语类模块要求学分按 4.5 分封顶。',
+          '总计学分口径：方案声明最低毕业学分 103 分。',
+        ],
+      },
       'disclaimer': '测试免责声明',
     };
     const evidence = PlanCourseEvidence(
@@ -151,6 +158,9 @@ void main() {
     expect(find.textContaining('已修学分'), findsOneWidget);
     expect(find.textContaining('3（不计入已修）'), findsOneWidget);
     expect(find.text('8 分'), findsOneWidget);
+    // 外语口径通知（#7）：trace.notes 里外语相关行内联可见，其余 notes 不搬
+    expect(find.textContaining('外语等级 L2 → 自选 4.5 分'), findsOneWidget);
+    expect(find.textContaining('方案声明最低毕业学分'), findsNothing);
 
     await tester.tap(find.text('专业必修'));
     await tester.pumpAndSettle();
