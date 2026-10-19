@@ -29,6 +29,7 @@ import 'data/zju_parse.dart';
 import 'data/zju_parse_ext.dart';
 import 'engine/adapters.dart';
 import 'engine/audit.dart';
+import 'engine/foreign_grade_rule.dart';
 import 'engine/course_marks.dart';
 import 'engine/exam.dart';
 // 课程类别打通（「未分类」修复）：用审计方案板块补全展示链路的 category。
@@ -545,7 +546,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       auditPlan,
       semester: '${record['student']?['current_semester'] ?? ''}',
     );
-    final out = engine.main(record, action: _auditAction());
+    final out = engine.main(record,
+        action: _auditAction(
+            grade: '${record['student']?['grade'] ?? ''}'.trim()));
     if (out.containsKey('error')) {
       setState(() => _notice = out['error'].toString());
       return;
@@ -1021,6 +1024,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       },
       teacherMode: _teacherMode,
       foreignLevel: _foreignLevel,
+      grade: _lastStudent?['grade']?.toString() ??
+          _auditPlan?['meta']?['grade']?.toString(),
       onForeignLevelChange: (v) {
         setState(() => _foreignLevel = v);
         unawaited(_store.saveForeignLevel(v));
@@ -1033,11 +1038,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// 审计动作参数（需求 #5 改版）：_foreignLevel 可能是档位串 L1/L2/L3（向后
   /// 兼容，映射 caps 作默认）或用户自选的正分数串（如 '5.5'，走 foreign_lang_credits）；
   /// 两者都缺 → null，引擎按方案原要求核算。
-  Map<String, dynamic>? _auditAction() {
+  Map<String, dynamic>? _auditAction({String? grade}) {
     final v = _foreignLevel;
     if (v == null) return null;
     final n = double.tryParse(v);
-    if (n != null && n > 0) return {'foreign_lang_credits': n};
+    // 0 = 免修（用户反馈 #10）；负数不合法，交给引擎校验报错。
+    if (n != null) return {'foreign_lang_credits': n};
+    // 2026 级起 L3 免修：等级档位按 0 分要求下发（方案有明确课表时仍以方案为准）。
+    final gradeYear = parseForeignGradeYear(
+        grade ?? _lastStudent?['grade']?.toString() ??
+            _auditPlan?['meta']?['grade']?.toString());
+    if (isForeignExemptByGrade(gradeYear: gradeYear, level: v)) {
+      return {'foreign_lang_credits': 0};
+    }
     return {'foreign_lang_level': v};
   }
 
@@ -1073,12 +1086,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     };
   }
 
-  /// 设置页生效的外语应修学分：数字串直接用，L1/L2/L3 用引擎 caps（#8）。
+  /// 设置页生效的外语应修学分：数字串直接用（0=免修），L1/L2/L3 用引擎 caps（#8）；
+  /// 2026 级起 L3 免修（#10，方案有明确要求时仍以方案为准——此处只给显示值）。
   double? get _foreignCreditsValue {
     final v = _foreignLevel?.trim();
     if (v == null || v.isEmpty) return null;
     final n = double.tryParse(v);
-    if (n != null && n > 0) return n;
+    if (n != null) return n;
+    final gradeYear = parseForeignGradeYear(
+        _lastStudent?['grade']?.toString() ??
+            _auditPlan?['meta']?['grade']?.toString());
+    if (isForeignExemptByGrade(gradeYear: gradeYear, level: v)) return 0;
     return kForeignLangCaps[v.toUpperCase()];
   }
 

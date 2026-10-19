@@ -400,8 +400,9 @@ def build(record, plan, action=None, ui_active_names=None):
     foreign_credits = None
     if foreign_credits_raw is not None:
         v = float(foreign_credits_raw) if isinstance(foreign_credits_raw, (int, float)) else None
-        if v is None or not v > 0:
-            raise ValueError("非法的外语要求学分：%s（需为正数）" % foreign_credits_raw)
+        # 0 = 免修（用户反馈 #10：2026 级起 L3 免修），要求学分按 0 计；负数仍拒绝。
+        if v is None or v < 0:
+            raise ValueError("非法的外语要求学分：%s（需为非负数，0=免修）" % foreign_credits_raw)
         foreign_credits = v
     # 自选学分优先（=用户指定的模块要求，可升可降）；level 档位向后兼容只降不升
     foreign_cap = foreign_credits if foreign_credits is not None else (

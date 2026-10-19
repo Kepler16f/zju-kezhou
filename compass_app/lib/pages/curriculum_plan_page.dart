@@ -1210,7 +1210,10 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       return s.creditsRaw.trim().isEmpty ? null : '${s.creditsRaw} 门';
     }
     final f = widget.foreignRequiredCredits;
-    if (f != null && isForeignSection(s)) return '应修 ${_num(f)} 学分';
+    if (f != null && isForeignSection(s)) {
+      // 0 = 免修（用户反馈 #10：2026 级起 L3 免修；方案有明确课表时以方案为准）
+      return f == 0 ? '免修' : '应修 ${_num(f)} 学分';
+    }
     if (s.creditsRaw.trim().isEmpty) {
       final declared = s.declaredCreditsFromNotes;
       return declared == null ? null : '应修 $declared 学分';

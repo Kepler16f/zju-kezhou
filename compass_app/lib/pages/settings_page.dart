@@ -17,6 +17,7 @@ import '../data/semester.dart';
 import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/audit.dart' show kForeignLangCaps;
+import '../engine/foreign_grade_rule.dart';
 
 enum DataMode { sample, paste, zju }
 
@@ -77,8 +78,13 @@ class SettingsPage extends StatefulWidget {
   /// 外语口径（2026-10-18 改版，不绑死三档）：null=未选择（按方案原要求）；
   /// 'L1'/'L2'/'L3'=档位（映射 kForeignLangCaps 作自选默认）；或正数字符串
   /// （如 '5.5'）=自选要求学分（可超过方案原要求，引擎 foreign_lang_credits）。
+  /// '0'=免修（2026 级起 L3 口径：要求学分按 0 计）。
   final String? foreignLevel;
   final ValueChanged<String?>? onForeignLevelChange;
+
+  /// 学生年级（入学年份字符串，如 '2024'）：外语年级兜底规则按它显示/隐藏选项
+  /// （2026 级起 L3 免修；更早年级各等级均必修大学英语IV）。缺省不套用。
+  final String? grade;
 
   const SettingsPage(
       {super.key, required this.mode, required this.onModeChange,
@@ -101,7 +107,7 @@ class SettingsPage extends StatefulWidget {
       this.tabOrder = '0,1,2,3', this.onTabOrderChange,
       this.defaultTab = 0, this.onDefaultTabChange,
       this.teacherMode = false,
-      this.foreignLevel, this.onForeignLevelChange});
+      this.foreignLevel, this.onForeignLevelChange, this.grade});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -159,22 +165,38 @@ class _SettingsPageState extends State<SettingsPage> {
     if (!_foreignCreditFocus.hasFocus) _commitForeignCredit();
   }
 
-  /// 当前生效的外语要求学分（null=未选择）：数字串取自选分，档位取建议默认。
+  /// 当前生效的外语要求学分（null=未选择）：数字串取自选分（0=免修），
+  /// 档位取默认——2026 级起 L3 按免修（0 分）显示（#10）。
   double? get _effectiveForeignCredits {
     final v = widget.foreignLevel;
     if (v == null) return null;
     final n = double.tryParse(v);
-    if (n != null && n > 0) return n;
+    if (n != null) return n >= 0 ? n : null;
+    if (isForeignExemptByGrade(
+        gradeYear: _gradeYear, level: v)) {
+      return 0;
+    }
     return kForeignLangCaps[v];
   }
 
+  /// 年级（学生年级优先，方案适用年级兜底；解析不出 → null，不套用兜底规则）。
+  int? get _gradeYear => parseForeignGradeYear(
+      widget.grade ?? widget.matchedPlan?.synj);
+
   /// 四档高亮：档位串/等值自选分 → 对应档；自定义分 → 空选（都不高亮）。
+  /// 0 分 = 免修：2026 级起高亮 L3（免修档），其余年级按自定义分处理。
   String? get _foreignSegment {
     final v = widget.foreignLevel;
     if (v == null) return '';
     if (kForeignLangCaps.containsKey(v)) return v;
     final n = double.tryParse(v);
-    if (n == null || n <= 0) return '';
+    if (n == null || n < 0) return '';
+    if (n == 0) {
+      return (_gradeYear != null &&
+              _gradeYear! >= kForeignGradeRuleStartYear)
+          ? 'L3'
+          : null;
+    }
     for (final e in kForeignLangCaps.entries) {
       if ((e.value - n).abs() <= 1e-9) return e.key;
     }
@@ -196,15 +218,19 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 提交/失焦：合法正数 → 上抛（恰为档位分折算回档位串，存档保持 L1/L2/L3 形，
-  /// 便于四档高亮与旧档位语义兼容）；非法（空/非数字/≤0）→ 回落当前生效值，
-  /// 生效值从不落非法态。
+  /// 提交/失焦：合法非负数 → 上抛（恰为档位分折算回档位串，存档保持 L1/L2/L3 形，
+  /// 便于四档高亮与旧档位语义兼容；0=免修单独存 '0'）；非法（空/非数字/负数）→
+  /// 回落当前生效值，生效值从不落非法态。
   void _commitForeignCredit() {
     final onChange = widget.onForeignLevelChange;
     final v = double.tryParse(_foreignCreditCtl.text.trim());
     final cur = _effectiveForeignCredits;
-    if (onChange != null && v != null && v > 0 &&
+    if (onChange != null && v != null && v >= 0 &&
         (cur == null || (v - cur).abs() > 1e-9)) {
+      if (v == 0) {
+        onChange('0');
+        return;
+      }
       for (final e in kForeignLangCaps.entries) {
         if ((e.value - v).abs() <= 1e-9) {
           onChange(e.key);
@@ -439,11 +465,14 @@ class _SettingsPageState extends State<SettingsPage> {
                         style: TextStyle(fontSize: 13)),
                     const SizedBox(height: 6),
                     SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(value: '', label: Text('未选', style: TextStyle(fontSize: 12))),
-                        ButtonSegment(value: 'L1', label: Text('L1·6分', style: TextStyle(fontSize: 12))),
-                        ButtonSegment(value: 'L2', label: Text('L2·4.5分', style: TextStyle(fontSize: 12))),
-                        ButtonSegment(value: 'L3', label: Text('L3·3分', style: TextStyle(fontSize: 12))),
+                      segments: [
+                        const ButtonSegment(value: '', label: Text('未选', style: TextStyle(fontSize: 12))),
+                        const ButtonSegment(value: 'L1', label: Text('L1·6分', style: TextStyle(fontSize: 12))),
+                        const ButtonSegment(value: 'L2', label: Text('L2·4.5分', style: TextStyle(fontSize: 12))),
+                        ButtonSegment(
+                            value: 'L3',
+                            label: Text(foreignL3Label(gradeYear: _gradeYear),
+                                style: const TextStyle(fontSize: 12))),
                       ],
                       // 自定义学分（如 5.5）不属于任何档位：返回 null → 空选，
                       // 绝不能把 '5.5' 塞进 selected（SegmentedButton 会断言崩溃）。
@@ -453,6 +482,15 @@ class _SettingsPageState extends State<SettingsPage> {
                           ? null
                           : (s) => widget.onForeignLevelChange!(s.isEmpty || s.first.isEmpty ? null : s.first),
                     ),
+                    // 年级兜底规则（#10）：方案未列出具体外语课时的显示提示；
+                    // 方案已给明确要求时以方案为准（引擎不动）。
+                    if (foreignGradeHint(gradeYear: _gradeYear) != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(foreignGradeHint(gradeYear: _gradeYear)!,
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.blueGrey)),
+                      ),
                     const SizedBox(height: 6),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
@@ -1091,6 +1129,9 @@ class _AiCardState extends State<_AiCard> {
   bool _busy = false;
   bool _loadingModels = false;
   bool _obscure = true;
+  // AI 直连（用户反馈 #13）：绕过系统代理直连 AI 端点，用于代理干扰 TLS 时排障。
+  // 持久化状态由 AiConfig.direct 持有，此处仅编辑态镜像（保存时随 _collect 上抛）。
+  late bool _direct = widget.config.direct;
   String? _result;
   AiModelInfo? _pickedModel; // 从模型列表选中的条目（用于展示上下文大小）
   late AiConfig _synced = widget.config;
@@ -1107,6 +1148,7 @@ class _AiCardState extends State<_AiCard> {
       _base.text = widget.config.baseUrl;
       _key.text = widget.config.apiKey;
       _model.text = widget.config.model;
+      _direct = widget.config.direct;
       _pickedModel = null;
     }
   }
@@ -1119,16 +1161,20 @@ class _AiCardState extends State<_AiCard> {
     super.dispose();
   }
 
-  AiConfig _collect() => _provider == AiProvider.pollinations
-      // 公益端点形状固定（地址/模型内置、无 Key）：不读输入框——切走再切回时
-      // 隐藏字段可能残留旧值，直接用预设保证存下去的配置永远可用。
-      ? AiConfig.preset(AiProvider.pollinations)
-      : AiConfig(
-          provider: _provider,
-          baseUrl: AiConfig.normalizeBaseUrl(_base.text),
-          apiKey: _key.text.trim(),
-          model: _model.text.trim(),
-        );
+  AiConfig _collect() {
+    final cfg = _provider == AiProvider.pollinations
+        // 公益端点形状固定（地址/模型内置、无 Key）：不读输入框——切走再切回时
+        // 隐藏字段可能残留旧值，直接用预设保证存下去的配置永远可用。
+        ? AiConfig.preset(AiProvider.pollinations)
+        : AiConfig(
+            provider: _provider,
+            baseUrl: AiConfig.normalizeBaseUrl(_base.text),
+            apiKey: _key.text.trim(),
+            model: _model.text.trim(),
+          );
+    // 直连开关与提供方无关（关闭态也保留选择，下次启用即生效）。
+    return cfg.copyWith(direct: _direct);
+  }
 
   Future<void> _save() async {
     final cfg = _collect();
@@ -1319,6 +1365,20 @@ class _AiCardState extends State<_AiCard> {
                 ),
               ),
           ],
+          // AI 直连（用户反馈 #13）：开 Clash/加速器时 TLS 握手被干扰的排障开关。
+          if (_provider != AiProvider.none)
+            SwitchListTile(
+              value: _direct,
+              onChanged: _busy ? null : (v) => setState(() => _direct = v),
+              title: const Text('AI 请求直连（绕过系统代理）',
+                  style: TextStyle(fontSize: 13)),
+              subtitle: const Text(
+                  '开代理/加速器后 AI 偶发 TLS 握手失败可尝试开启；'
+                  '若你的网络必须走代理才能访问 AI 服务，请保持关闭。',
+                  style: TextStyle(fontSize: 11)),
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: Row(

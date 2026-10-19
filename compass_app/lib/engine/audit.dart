@@ -350,8 +350,10 @@ class AuditEngine {
     double? foreignCredits;
     if (foreignCreditsRaw != null) {
       final v = foreignCreditsRaw is num ? foreignCreditsRaw.toDouble() : null;
-      if (v == null || !(v > 0)) {
-        throw ArgumentError('非法的外语要求学分：$foreignCreditsRaw（需为正数）');
+      // 0 = 免修（用户反馈 #10：2026 级起 L3 免修）——要求学分按 0 计；
+      // 负数/非数仍拒绝（宁缺勿猜）。
+      if (v == null || v < 0) {
+        throw ArgumentError('非法的外语要求学分：$foreignCreditsRaw（需为非负数，0=免修）');
       }
       foreignCredits = v;
     }
