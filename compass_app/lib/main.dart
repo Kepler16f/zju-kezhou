@@ -1,5 +1,5 @@
 /// 课舟 App 主入口：底部导航四页签（学业/方案/选课/设置；审计并入方案页，
-/// 2026-10-18 需求 #5：「工具」改为学业页内的「成绩 / 工具」子选项卡）。
+/// 2026-10-19：「成绩 / 工具」子选项卡下线，工具两卡内联学业页素拓看板之后）。
 /// 数据流：设置页选源运行 → 状态持有 courses/report/practice/choosed/timetable → 各页消费。
 /// 持久化：凭证沙箱存储（启动自动登录）；最近会话缓存（重启即恢复数据）；AI 解读配置（出厂默认关闭，悬浮入口点击时引导开启）。
 /// 崩溃兜底：ErrorWidget → 友好错误卡（不再出现灰屏）。
@@ -33,7 +33,7 @@ import 'engine/course_marks.dart';
 import 'engine/exam.dart';
 // 课程类别打通（「未分类」修复）：用审计方案板块补全展示链路的 category。
 import 'engine/plan_audit_adapter.dart' show applyPlanCategories;
-import 'engine/selection.dart' show plannedCoursesFromChoosed;
+import 'engine/selection.dart' show exportRowsFromPlanned, plannedCoursesFromChoosed;
 import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
@@ -193,7 +193,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   // 页签索引常量（评审B：插入/调序只改这里，禁止散落裸数字）。
   // 顺序：0 学业 / 1 方案 / 2 选课 / 3 设置
-  // （审计并入方案页；2026-10-18 需求 #5：工具并入学业页子选项卡）。
+  // （审计并入方案页；2026-10-19：工具两卡内联学业页，不再占子选项卡）。
   static const int tabScholar = 0;
   static const int tabPlan = 1;
   static const int tabSelect = 2;
@@ -483,6 +483,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       courses: _courses,
       plan: _auditPlan,
       aiAdvice: aiAdvice,
+      // 任务 #12：本学期已选（在修未出分）随包自愿导出，教师端可看课程明细。
+      selectedCourses: exportRowsFromPlanned(
+        _choosed,
+        semester: student['current_semester']?.toString(),
+      ),
     );
     await Clipboard.setData(ClipboardData(text: packed.jsonText));
     String pathNote;

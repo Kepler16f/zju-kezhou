@@ -1,7 +1,9 @@
 /// pages/scholar_page.dart — 学业页 v3：顶部日期·学期·周次栏（下接快捷卡，随内容滚动）
-/// + 考试周冲刺置顶卡 + 成绩额头条（点击进成绩详情页）+ GPA 数字格 + 课堂分（素拓）。
-/// 2026-10-18 需求 #5：「工具」并入本页，作为「成绩 / 工具」子选项卡；
-/// 学期走势与 GPA 模拟器仍来自 pages/tools_page.dart，并由 IndexedStack 保活；
+/// + 考试周冲刺置顶卡 + 成绩额头条（点击进成绩详情页）+ GPA 数字格 + 素拓看板。
+/// 2026-10-19 需求：「成绩 / 工具」子选项卡下线——「学期走势（五分制）」与
+/// 「GPA 模拟器」两张卡直接内联在本页成绩列表的「素拓看板」section 之后
+/// （走势构造逻辑由 pages/tools_page.dart 迁入，该页已删除）；走势展开态
+/// 由本页 State 持有（_trendOpen），重建/滚动不丢。
 /// 需求 #2：学分看板区块下线（CreditBoardCard 组件保留于 widgets/scholar_cards.dart）。
 /// 空数据引导去"设置"页。
 library;
@@ -16,9 +18,10 @@ import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/exam.dart';
 import '../widgets/exam_sprint_card.dart';
+import '../widgets/gpa_simulator.dart';
+import '../widgets/line_chart.dart';
 import '../widgets/scholar_cards.dart';
 import 'grade_detail_page.dart';
-import 'tools_page.dart';
 
 class ScholarPage extends StatefulWidget {
   final List<Map<String, dynamic>> courses;
@@ -49,7 +52,7 @@ class ScholarPage extends StatefulWidget {
 class _ScholarPageState extends State<ScholarPage> {
   // 日期栏跨午夜/跨周需自刷新：每小时重算一次足够，且成本低。
   late Timer _clock;
-  int _section = 0; // 0=成绩 1=工具；IndexedStack 保留工具页走势/模拟器状态。
+  bool _trendOpen = false; // 走势卡默认收起（原工具页语义，随本页 State 保活）。
 
   @override
   void initState() {
@@ -75,47 +78,34 @@ class _ScholarPageState extends State<ScholarPage> {
     final sourceLabel = widget.sourceLabel;
     final onGoSettings = widget.onGoSettings;
     final onRefresh = widget.onRefresh;
-    final tools = ToolsPage(
-      courses: courses,
-      marks: marks,
-      onRefresh: onRefresh,
-      onGoSettings: onGoSettings,
-    );
 
     if (courses.isEmpty) {
       return Column(
         children: [
           _dateBanner(context),
-          _sectionTabs(context),
           Expanded(
-            child: IndexedStack(
-              index: _section,
-              children: [
-                Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(22),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.school_outlined,
-                            size: 48,
-                            color: Theme.of(context).colorScheme.outline),
-                        const SizedBox(height: 8),
-                        const Text('暂无学业数据', style: TextStyle(fontSize: 15)),
-                        const SizedBox(height: 4),
-                        const Text('切到「设置」页，选择样例 / 粘贴成绩 / 登录教务网',
-                            style: TextStyle(fontSize: 11.5, color: Colors.grey)),
-                        const SizedBox(height: 10),
-                        FilledButton.tonalIcon(
-                            onPressed: onGoSettings,
-                            icon: const Icon(Icons.settings_outlined, size: 18),
-                            label: const Text('去设置')),
-                      ],
-                    ),
-                  ),
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(22),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.school_outlined,
+                        size: 48,
+                        color: Theme.of(context).colorScheme.outline),
+                    const SizedBox(height: 8),
+                    const Text('暂无学业数据', style: TextStyle(fontSize: 15)),
+                    const SizedBox(height: 4),
+                    const Text('切到「设置」页，选择样例 / 粘贴成绩 / 登录教务网',
+                        style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                    const SizedBox(height: 10),
+                    FilledButton.tonalIcon(
+                        onPressed: onGoSettings,
+                        icon: const Icon(Icons.settings_outlined, size: 18),
+                        label: const Text('去设置')),
+                  ],
                 ),
-                tools,
-              ],
+              ),
             ),
           ),
         ],
@@ -127,19 +117,15 @@ class _ScholarPageState extends State<ScholarPage> {
     return Column(
       children: [
         _dateBanner(context),
-        _sectionTabs(context),
         Expanded(
-          child: IndexedStack(
-            index: _section,
-            children: [
-              RefreshIndicator(
-                onRefresh: () async => await onRefresh?.call(),
-                child: ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(12, 2, 12, 18),
-                  children: [
+          child: RefreshIndicator(
+            onRefresh: () async => await onRefresh?.call(),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(12, 2, 12, 18),
+              children: [
                 // 快捷入口移入滚动内容首行（诉求 #8）：与内容同滚；
-                // 顶部日期栏与子选项卡均为紧凑高度，ListView 顶留白 2。
+                // 顶部日期栏为紧凑高度，ListView 顶留白 2。
                 _quickLinks(context),
                 // 考试周冲刺置顶卡（21 天窗口内有考试才渲染，内部 30s 自刷倒计时）
                 if (exams.isNotEmpty) ExamSprintCard(exams: exams),
@@ -208,79 +194,130 @@ class _ScholarPageState extends State<ScholarPage> {
                     ],
                   ),
                 ),
-                    if (choosed != null) _choosedCard(context, choosed),
-                    const SectionHeader('课堂分（素拓）'),
-                    Card(
-                      child: practice.isEmpty
-                          ? const ListTile(
-                              dense: true,
-                              leading: Icon(Icons.info_outline, size: 18),
-                              title: Text('未获取', style: TextStyle(fontSize: 13)),
-                              subtitle: Text('教务网模式登录后自动拉取第二/三/四课堂记点',
-                                  style: TextStyle(fontSize: 10.5)))
-                          : Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                                children: [
-                                  for (final e in practice.entries)
-                                    Column(
-                                      children: [
-                                        Text(e.value.toStringAsFixed(1),
-                                            style: const TextStyle(
-                                                fontSize: 19,
-                                                fontWeight: FontWeight.bold)),
-                                        Text(e.key,
-                                            style:
-                                                const TextStyle(fontSize: 10.5)),
-                                      ],
-                                    ),
-                                ],
-                              ),
-                            ),
-                    ),
-                  ],
+                if (choosed != null) _choosedCard(context, choosed),
+                const SectionHeader('素拓看板'),
+                Card(
+                  child: practice.isEmpty
+                      ? const ListTile(
+                          dense: true,
+                          leading: Icon(Icons.info_outline, size: 18),
+                          title: Text('未获取', style: TextStyle(fontSize: 13)),
+                          subtitle: Text('教务网模式登录后自动拉取第二/三/四课堂记点',
+                              style: TextStyle(fontSize: 10.5)))
+                      : Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              for (final e in practice.entries)
+                                Column(
+                                  children: [
+                                    Text(e.value.toStringAsFixed(1),
+                                        style: const TextStyle(
+                                            fontSize: 19,
+                                            fontWeight: FontWeight.bold)),
+                                    Text(e.key,
+                                        style:
+                                            const TextStyle(fontSize: 10.5)),
+                                  ],
+                                ),
+                            ],
+                          ),
+                        ),
                 ),
-              ),
-              tools,
-            ],
+                // ↓ 原「工具」两卡内联（2026-10-19 需求：子选项卡下线）。
+                // 学期走势：可收起卡片（诉求 #6），默认收起，收起时不构建曲线。
+                _trendCard(context, _trendPoints(courses)),
+                GpaSimulatorCard(courses: courses),
+              ],
+            ),
           ),
         ),
       ],
     );
   }
 
-  /// 「成绩 / 工具」子选项卡：工具页用 IndexedStack 常驻，切回时走势展开态与
-  /// GPA 模拟器输入不丢；紧凑分段控件只占约 34dp，由下方头部压缩抵消。
-  Widget _sectionTabs(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 3, 12, 1),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: SegmentedButton<int>(
-            segments: const [
-              ButtonSegment(
-                  value: 0,
-                  icon: Icon(Icons.school_outlined, size: 14),
-                  label: Text('成绩', key: Key('scholar-tab-grades'))),
-              ButtonSegment(
-                  value: 1,
-                  icon: Icon(Icons.build_outlined, size: 14),
-                  label: Text('工具', key: Key('scholar-tab-tools'))),
-            ],
-            selected: {_section},
-            showSelectedIcon: false,
-            onSelectionChanged: (v) => setState(() => _section = v.first),
-            style: SegmentedButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              textStyle: const TextStyle(
-                  fontSize: 12.5, fontWeight: FontWeight.w600),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
-              minimumSize: const Size(0, 30),
+  /// 走势数据（原 tools_page 构造逻辑迁入）：semesterOrder 与 semesterTrend
+  /// 内部同序（升序，unknown 最前），按下标配对；走势默认五分制（任务包 B）：
+  /// 喂 five/cumulative_five，TrendChart 的 term/cumulative 字段名与分制无关。
+  List<TrendPoint> _trendPoints(List<Map<String, dynamic>> courses) {
+    final trend = Analytics.semesterTrend(courses);
+    final sems = Analytics.semesterOrder(courses);
+    return [
+      for (var i = 0; i < trend.length; i++)
+        TrendPoint(scholarTrendShortLabel(sems[i]), trend[i]['five']!,
+            trend[i]['cumulative_five']!)
+    ];
+  }
+
+  /// 学期走势可收起卡（自学业页/工具页原样迁入，展开态 _trendOpen 归本页 State）。
+  Widget _trendCard(BuildContext context, List<TrendPoint> points) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => setState(() => _trendOpen = !_trendOpen),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(Icons.show_chart,
+                      size: 18, color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: 6),
+                  const Expanded(
+                    child: Text('学期走势（五分制）',
+                        style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.bold)),
+                  ),
+                  AnimatedRotation(
+                    turns: _trendOpen ? 0.5 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    child: const Icon(Icons.expand_more,
+                        size: 20, color: Colors.grey),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            alignment: Alignment.topCenter,
+            child: _trendOpen
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                    child: Column(
+                      children: [
+                        TrendChart(points: points),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _legend(Theme.of(context).colorScheme.primary,
+                                '累计 GPA'),
+                            const SizedBox(width: 12),
+                            _legend(Theme.of(context).colorScheme.tertiary,
+                                '学期 GPA'),
+                          ],
+                        ),
+                      ],
+                    ),
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _legend(Color c, String label) => Row(
+        children: [
+          Container(width: 18, height: 3, color: c),
+          const SizedBox(width: 4),
+          Text(label, style: const TextStyle(fontSize: 11)),
+        ],
       );
 
   /// 紧凑指标格：保留原 TwoLineCard 的标题/大数字/浅色底语义，只收紧内边距与字号。
@@ -650,4 +687,17 @@ Map<String, dynamic>? _bestRecordOf(List<Map<String, dynamic>> rows) {
           .compareTo((a['grade'] as num?)?.toDouble() ?? 0);
     });
   return sorted.first;
+}
+
+/// 学期编码 → 走势图短标签（纯函数，自 pages/tools_page.dart 随走势卡迁入；
+/// 测试锁定于 test/scholar_trend_test.dart）：
+/// '2023-A' → '23秋'，'2023-B' → '24春'，'2022-C' → '23短'。
+/// 先走 data/semester.dart 的 termCodeLabel（'2023-A'→'2023秋冬'），
+/// 再取年份后两位 + 季名首字压缩宽度；解析不了原样返回，'unknown' 显示 '?'。
+String scholarTrendShortLabel(String sem) {
+  if (sem == 'unknown') return '?';
+  final full = termCodeLabel(sem);
+  final m = RegExp(r'^(\d{2})(\d{2})([秋冬春短])').firstMatch(full);
+  if (m == null) return full; // 宁缺勿猜：认不出就显示全称
+  return '${m.group(2)}${m.group(3)}';
 }

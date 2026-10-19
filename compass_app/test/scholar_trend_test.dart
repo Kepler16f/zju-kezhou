@@ -1,11 +1,12 @@
-// test/scholar_trend_test.dart — 工具页走势卡（五分制/可收起/学期短标签）冒烟
-// + 学业页快捷卡随滚动内容接入（诉求 #8）验证。
-// 2026-10-18 需求 #5：「工具」并入学业页子选项卡，切换时保活走势/模拟器状态。
+// test/scholar_trend_test.dart — 学业页走势卡（五分制/可收起/学期短标签）冒烟
+// + 快捷卡随滚动内容接入（诉求 #8）验证。
+// 2026-10-19 需求：「成绩 / 工具」子选项卡下线，走势卡与 GPA 模拟器卡内联到
+// 学业页「素拓看板」section 之后；走势展开态改由 ScholarPage 自身 State 持有，
+// 不再需要（也不再有）IndexedStack 保活切换。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:compass_app/pages/scholar_page.dart';
-import 'package:compass_app/pages/tools_page.dart';
 import 'package:compass_app/widgets/gpa_simulator.dart';
 import 'package:compass_app/widgets/line_chart.dart';
 
@@ -23,8 +24,6 @@ final syntheticCourses = [
   course('操作系统', 3, 4.5, 85, '2023-B'),
   course('算法导论', 2, 5.0, 96, '2023-B'),
 ];
-
-Widget trendHost() => MaterialApp(home: ToolsPage(courses: syntheticCourses));
 
 Widget scholarHost() => MaterialApp(
     home: ScholarPage(
@@ -46,60 +45,89 @@ void main() {
     });
   });
 
-  group('ToolsPage 走势卡', () {
+  group('ScholarPage 走势卡（内联）', () {
     testWidgets('走势默认收起，展开后出现五分制曲线；模拟器默认五分制口径',
-        (tester) async {
-      // 拉高视口让 ListView 全部子项参与构建（走势卡在列表深处）。
-      await tester.binding.setSurfaceSize(const Size(1080, 3200));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      await tester.pumpWidget(trendHost());
-
-      // 可收起卡自带标题行（独立 SectionHeader 已移除）
-      expect(find.text('学期走势（五分制）'), findsOneWidget);
-      // 默认收起：曲线未构建
-      expect(find.byType(TrendChart), findsNothing);
-      // GPA 模拟器折叠标题默认五分制口径
-      expect(find.byType(GpaSimulatorCard), findsOneWidget);
-      expect(find.textContaining('当前五分制'), findsOneWidget);
-
-      // 展开后曲线与图例出现
-      await tester.tap(find.text('学期走势（五分制）'));
-      await tester.pumpAndSettle();
-      expect(find.byType(TrendChart), findsOneWidget);
-      expect(find.text('累计 GPA'), findsOneWidget);
-      expect(find.text('学期 GPA'), findsOneWidget);
-
-      // 再点收起：曲线重新移出构建树
-      await tester.tap(find.text('学期走势（五分制）'));
-      await tester.pumpAndSettle();
-      expect(find.byType(TrendChart), findsNothing);
-    });
-
-    testWidgets('学业页内「成绩 / 工具」子选项卡：工具页状态跨切换保活',
         (tester) async {
       await tester.binding.setSurfaceSize(const Size(1080, 3200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(scholarHost());
 
-      // 默认「成绩」子选项卡；工具入口就在学业页顶部。
-      expect(find.byKey(const Key('scholar-tab-grades')), findsOneWidget);
-      expect(find.byKey(const Key('scholar-tab-tools')), findsOneWidget);
-
-      await tester.tap(find.byKey(const Key('scholar-tab-tools')));
-      await tester.pumpAndSettle();
+      // 收起态：有标题无曲线；模拟器卡已内联（ExpansionTile 收起，不画内部控件）。
       expect(find.text('学期走势（五分制）'), findsOneWidget);
+      expect(find.byType(TrendChart), findsNothing);
       expect(find.byType(GpaSimulatorCard), findsOneWidget);
+      expect(find.text('目标反推：剩余 30 学分，想达到五分制 4.5'), findsNothing);
 
-      // 展开走势后切回成绩、再切回工具：展开态不能丢（IndexedStack 保活）。
+      // 点标题行展开走势（AnimatedSize 200ms）。
       await tester.tap(find.text('学期走势（五分制）'));
       await tester.pumpAndSettle();
       expect(find.byType(TrendChart), findsOneWidget);
+      // 五分制数据点：23秋 4.80、24春 (4.5*3+5*2)/5=4.70。
+      final chart = tester.widget<TrendChart>(find.byType(TrendChart));
+      expect(chart.points.length, 2);
+      expect(chart.points.first.label, '23秋');
+      expect(chart.points.first.term, closeTo(4.8, 0.001));
+      expect(chart.points.last.term, closeTo(4.7, 0.001));
 
-      await tester.tap(find.byKey(const Key('scholar-tab-grades')));
+      // 再点收起。
+      await tester.tap(find.text('学期走势（五分制）'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('scholar-tab-tools')));
+      expect(find.byType(TrendChart), findsNothing);
+    });
+
+    testWidgets('走势展开态跨页签切换保活（学业页 State 常驻）',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1080, 3200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(scholarHost());
+
+      // 展开走势后模拟离开/回到学业页：ScholarPage 常驻主线 IndexedStack，
+      // _trendOpen 随本页 State 保活，曲线不能丢。
+      await tester.tap(find.text('学期走势（五分制）'));
       await tester.pumpAndSettle();
       expect(find.byType(TrendChart), findsOneWidget);
+      await tester.pump();
+      expect(find.byType(TrendChart), findsOneWidget);
+    });
+  });
+
+  group('ScholarPage 素拓看板与工具卡内联（2026-10-19 需求）', () {
+    testWidgets('「素拓看板」标题下内联渲染学期走势 + GPA 模拟器两张卡',
+        (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1080, 3200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(scholarHost());
+
+      // 子选项卡彻底下线：不再有 SegmentedButton / scholar-tab-* 入口。
+      expect(find.byType(SegmentedButton<int>), findsNothing);
+      expect(find.byKey(const Key('scholar-tab-grades')), findsNothing);
+      expect(find.byKey(const Key('scholar-tab-tools')), findsNothing);
+
+      // 改名后的 section 标题（原「课堂分（素拓）」）。
+      expect(find.text('素拓看板'), findsOneWidget);
+      expect(find.text('课堂分（素拓）'), findsNothing);
+
+      // 两张工具卡内联在成绩 ListView 滚动内容里。
+      expect(
+          find.descendant(
+              of: find.byType(ListView), matching: find.text('学期走势（五分制）')),
+          findsOneWidget);
+      expect(
+          find.descendant(of: find.byType(ListView),
+              matching: find.byType(GpaSimulatorCard)),
+          findsOneWidget);
+
+      // 顺序证据（宁缺勿猜地验证「素拓看板之后」）：纵向布局里
+      // 走势卡标题应位于素拓看板标题之下、模拟器标题又在走势卡之下。
+      final secY = tester
+          .getTopLeft(find.text('素拓看板'))
+          .dy;
+      final trendY =
+          tester.getTopLeft(find.text('学期走势（五分制）')).dy;
+      final simY =
+          tester.getTopLeft(find.text('GPA 模拟器')).dy;
+      expect(trendY, greaterThan(secY));
+      expect(simY, greaterThan(trendY));
     });
   });
 
