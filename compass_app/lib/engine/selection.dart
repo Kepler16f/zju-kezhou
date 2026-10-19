@@ -153,6 +153,40 @@ List<Map<String, dynamic>> plannedCoursesFromChoosed(
   return out;
 }
 
+/// 已选课程 → 分享包 v3 `selected_courses` 段（exportRowsFromPlanned）。
+///
+/// 与 [plannedCoursesFromChoosed] 的区别：本函数面向「教师审阅展示」，不接方案、
+/// 不做 course_id 回填（引擎 planned_courses 口径不变），而是带出白名单展示字段——
+/// 形状对齐 share_pack.selectedRowKeepFields：course_id（XkCourse 无课程号时
+/// 留空字符串，导入侧按名称做相似度匹配，绝不造假）/ name / credits /
+/// teacher / sksj / cdmc / semester。空字符串与未知学分不写入（宁缺勿猜）。
+/// [semester] 非空时给每行补学期标签（学生导出时传当前学期）。
+/// 纯函数、不抛异常；返回新 Map，不修改入参。
+List<Map<String, dynamic>> exportRowsFromPlanned(
+  XkListParseResult? choosed, {
+  String? semester,
+}) {
+  if (choosed == null || choosed.state != 'data') {
+    return const <Map<String, dynamic>>[];
+  }
+  final seen = <String>{};
+  final out = <Map<String, dynamic>>[];
+  for (final c in choosed.courses) {
+    final key = '${c.kch}|${c.kcmc}';
+    if (!seen.add(key)) continue; // 同一（课号,课名）多行只算一次，同 selectedRowsOf
+    out.add(<String, dynamic>{
+      'course_id': c.kch,
+      'name': c.kcmc,
+      if (c.xf != null) 'credits': c.xf,
+      if (c.teacher.isNotEmpty) 'teacher': c.teacher,
+      if (c.sksj.isNotEmpty) 'sksj': c.sksj,
+      if (c.cdmc.isNotEmpty) 'cdmc': c.cdmc,
+      if (semester != null && semester.isNotEmpty) 'semester': semester,
+    });
+  }
+  return out;
+}
+
 /// 已选课程 → 培养方案模块的在修学分（复用审计同一匹配口径）。
 Map<String, double> selectedCreditsByModule(
   List<Map<String, dynamic>> selectedRows,

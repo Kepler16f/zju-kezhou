@@ -165,6 +165,21 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
     };
   }
 
+  /// v3：包内选课清单（缺段/v2 旧包 → 空表）。
+  List<Map<String, dynamic>> _selectedOf(Map<String, dynamic> pack) =>
+      sharePackSelected(pack);
+
+  /// 选课明细行副标题：学分 · 教师 · 时间 · 地点（空字段跳过，与成绩页「本学期已选」同款口径）。
+  String _selectedDetail(Map<String, dynamic> r) {
+    final credits = r['credits'];
+    return <String>[
+      if (credits is num) '${_fmt(credits.toDouble())} 学分',
+      if ('${r['teacher'] ?? ''}'.trim().isNotEmpty) '${r['teacher']}'.trim(),
+      if ('${r['sksj'] ?? ''}'.trim().isNotEmpty) '${r['sksj']}'.trim(),
+      if ('${r['cdmc'] ?? ''}'.trim().isNotEmpty) '${r['cdmc']}'.trim(),
+    ].join(' · ');
+  }
+
   /// 生成可复制/落盘的审阅意见文本（纯模板，数据全部来自本机审计结果。
   /// 注意：分享包无分数 → 引擎的 failed_recheck 类提醒天然不生成，
   /// 审阅意见只呈现板块缺口与结构性风险，这是脱敏设计的预期效果）。
@@ -177,6 +192,15 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
         '｜ 入学：${student['grade']} 级 ｜ 当前学期：${student['current_semester']}');
     buf.writeln('学分达成：应修 ${_fmt(t['required'])}，'
         '已获 ${_fmt(t['earned'])}，缺口 ${_fmt(t['gap'])}。');
+    final selected = _selectedOf(_pack!);
+    if (selected.isNotEmpty) {
+      buf.writeln('本学期选课（${selected.length} 门，未出成绩）：');
+      for (final r in selected) {
+        final detail = _selectedDetail(r);
+        buf.writeln('  · ${r['name'] ?? ''}'
+            '${detail.isEmpty ? '' : '（$detail）'}');
+      }
+    }
     final summary = (_report!['summary'] as List).cast<Map<String, dynamic>>();
     buf.writeln('板块达成：');
     for (final s in summary) {
@@ -327,6 +351,33 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
             ),
           ),
           const SizedBox(height: 8),
+          // v3：学生随包自愿导出的本学期选课清单（已选/模拟选课）。
+          // 只展示课程名·学分·教师·时间·地点——包内本就无成绩字段，本页也不显示任何成绩。
+          if (_selectedOf(pack).isNotEmpty) ...[
+            SectionTitle('学生本学期选课（${_selectedOf(pack).length} 门）'),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('以下为学生自愿导出的在修/拟选课程，未出成绩，'
+                        '仅供指导参考，以教务系统为准。',
+                        style: TextStyle(fontSize: 11, color: Colors.grey)),
+                    for (final r in _selectedOf(pack))
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.schedule, size: 18),
+                        title: Text('${r['name'] ?? ''}'),
+                        subtitle: Text(_selectedDetail(r)),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           const SectionTitle('学业达成审计'),
           ReportSection(report: report),
           // 需求 #12：学生随包自愿附带的 AI 选课咨询问答（只展示文本，不重算）。
