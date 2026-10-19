@@ -95,31 +95,50 @@ double requiredCreditsFrom(String creditsRaw) {
 // 2学分心理健康类课程，详见本科生院公布的心理健康类课程清单。」），成绩单里的
 // 同类课（如「大学生心理适应与发展」）因此无法归位。以下按关键词归类。
 
-/// 关键词词表：从真实方案说明文本抽取（2026 级浙大方案各认定类的
-/// 「要求学生修读…课程。可修读……课程清单」句），宁缺勿猜、误归类比不归类更糟：
-///  * 心理健康：说明只提「心理健康类」；成绩单课名常作「心理…」「…适应与发展」，
-///    「心理」即可覆盖（「心理健康」是其子串，不必单列）。
-///  * 美育：说明列「文艺审美类、博雅技艺中艺术类、艺术类专业课程」→ 收
-///    「美术/音乐/艺术/审美/戏剧/书法/舞蹈/美育」；不收裸「文艺」（如
-///    「文艺学」属中文专业课）。
-///  * 创新创业：说明只提「创新创业类」→ 收「创新创业/创业/创新训练/大创」；
-///    裸「创新」太泛（「创新设计」等专业课），不收。
-///  * 劳育：说明提「劳动教育类课程/公共劳动平台/专业实践劳动课程」→ 收
-///    「劳动/劳育/农事/耕读/实践劳动/志愿服务」；**刻意不收裸「实践」**——
-///    社会实践、生产实习、思政课「新时代实践教育」等普通课均含之，误吸面太大，
-///    用「实践劳动」这类复合词限定。
-const _certifiedKeywords = <String, List<String>>{
-  '心理健康类': ['心理', '适应与发展'],
-  // 军体类/思政类（#1）：用户反馈此前把军体课并进思政类、劳育课并进美育类。
-  // 课程名比板块标题更可靠：体育/军事理论/军训 → 军体类；思政课 → 思政类。
-  '军体类': ['体育', '军训', '军事', '体测', '体质'],
-  '思政类': [
-    '思想政治', '马克思主义', '毛泽东思想', '习近平', '思想道德',
-    '近现代史', '形势与政策',
-  ],
-  '美育类': ['美术', '音乐', '艺术', '审美', '戏剧', '书法', '舞蹈', '美育'],
-  '创新创业类': ['创新创业', '创业', '创新训练', '大创'],
-  '劳育类': ['劳动', '劳育', '农事', '耕读', '实践劳动', '志愿服务'],
+/// 关键词词表（带特异性权重）：从真实方案说明文本抽取（2026 级浙大方案各认定类
+/// 「要求学生修读…课程。可修读……课程清单」句），宁缺勿猜、误归类比不归类更糟。
+/// #5（2026-10-18 修正混类）：用户反馈「心理健康类和军体类不是一回事，美育类和
+/// 劳育类不是一回事」，且此前「民乐演奏」被归错。旧实现是「纯 contains + 写死
+/// 优先级取第一个命中」，泛词（实践/服务/教育/创新/训练…）与心理健康排最前共同
+/// 造成 心理吃军体、劳育吃美育/创新创业。现改为**特异性计分**：
+///  * 权重 3 = 类专属名词（军事/国防/军训→军体；心理→心理健康；劳动/农事/
+///    耕读/志愿服务→劳育；音乐/美术/书法/戏剧/舞蹈/民乐/审美→美育…），
+///    权重 2 = 次专属复合词（演奏/演唱/篆刻/摄影/体能/志愿…），
+///    每类得分 = 命中词权重求和（同类多词命中互相加强）；
+///  * 泛化词一律**不收**：裸「实践」（社会实践/生产实习/「新时代实践教育」误吸
+///    面太大，用「实践劳动」式复合词或直接靠「劳动」覆盖）、裸「服务」、裸
+///    「教育」、裸「创新」（「创新设计」属专业课）、裸「训练」、裸「文艺」
+///    （「文艺学」属中文专业课）、裸「运动」（运动训练/运动解剖歧义大，宁缺勿猜）。
+/// 各类词面要点：
+///  * 心理健康：仅「心理」即覆盖「心理健康/心理咨询」等（「心理健康」是其子串，
+///    不必单列；「适应与发展」泛化，删——「大学生心理适应与发展」靠「心理」命中）。
+///  * 军体类（#1）：体育/军训/军事/国防/体质/体测；「军体」为类别名干词，供
+///    成绩单 category 字符串（如「军体类」）回环认同。
+///  * 思政类（#1）：与军体分桶——军事理论/军训归军体不归思政；「思政」为类别名
+///    干词（回环同上）。
+///  * 美育类：补「民乐/器乐/声乐/绘画/美学/影视/戏曲」；「民乐演奏」此前无任何
+///    词命中（「音乐」不含「民乐」）而漏归/被别类捡走，即用户反馈的直接案例。
+///  * 创新创业：创新创业/创业/创新训练/大创；不收裸「创新」。
+///  * 劳育：劳动/劳育/农事/耕读/志愿服务（复合「志愿」降权 2）；不收裸「实践」。
+/// 纯函数、不抛异常；任何词都不命中返回 null（宁缺勿猜）。
+const _certifiedKeywords = <String, Map<String, int>>{
+  '心理健康类': {'心理': 3},
+  '军体类': {
+    '体育': 3, '军事': 3, '国防': 3, '军训': 3, '体质': 3, '体测': 3,
+    '军体': 3, '体能': 2,
+  },
+  '思政类': {
+    '思想政治': 3, '思政': 3, '马克思主义': 3, '毛泽东思想': 3, '习近平': 3,
+    '思想道德': 3, '道德与法治': 3, '近现代史': 3, '形势与政策': 3,
+  },
+  '美育类': {
+    '艺术': 3, '美术': 3, '音乐': 3, '民乐': 3, '器乐': 3, '声乐': 3,
+    '绘画': 3, '书法': 3, '戏剧': 3, '戏曲': 3, '舞蹈': 3, '影视': 3,
+    '审美': 3, '美学': 3, '美育': 3, '演奏': 2, '演唱': 2, '篆刻': 2,
+    '摄影': 2,
+  },
+  '创新创业类': {'创新创业': 3, '创业': 3, '创新训练': 3, '大创': 3},
+  '劳育类': {'劳动': 3, '劳育': 3, '农事': 3, '耕读': 3, '志愿服务': 3, '志愿': 2},
 };
 
 /// 认定类别名集合（课程名纠正只允许在板块类别本身也是认定类时生效，
@@ -128,18 +147,56 @@ const Set<String> _certifiedCategoryValues = {
   '心理健康类', '军体类', '思政类', '美育类', '创新创业类', '劳育类',
 };
 
-/// 多类同命中时的确定性优先级（写死顺序、可测）：心理健康 > 美育 > 创新创业 >
-/// 劳育。心理健康最专（词几乎只出现在心理课），故最优先；劳育词面最宽，最后。
-/// 纯函数：contains 任一关键词即归该类；无命中返回 null（宁缺勿猜）。
+/// 特异性并列时的兜底优先级（写死顺序、可测）：心理健康 > 军体 > 思政 > 美育 >
+/// 创新创业 > 劳育。心理健康/军体/思政分列前三，确保「心理健康类和军体类不是一
+/// 回事」（#5）；劳育词面最宽放最后。**仅当两类得分完全并列时才按此序取先**，
+/// 不再无条件按表序取第一个命中（旧口径 心理吃军体、劳育吃美育的根因）。
+const List<String> _certifiedTiePriority = [
+  '心理健康类', '军体类', '思政类', '美育类', '创新创业类', '劳育类',
+];
+
+/// 纯函数：按 [_certifiedKeywords] 权重计分归类——每类得分 = 课名命中该类
+/// 各关键词的权重之和（类专属名词 3 分 > 次专属复合词 2 分，多词命中叠加）。
+/// 取最高分对应类别；**得分并列**时按 [_certifiedTiePriority] 兜底，仍无并列
+/// 之外的确定性则取词表序最前者；无任何命中返回 null（宁缺勿猜、不抛异常）。
+/// 调用方（coursesCategoryMap / applyPlanCategories / 页面 certifiedRowsForSection）
+/// 签名与返回类型不变。
 String? certifiedCategoryOf(String courseName) {
   final n = courseName.trim();
   if (n.isEmpty) return null;
+  var bestScore = 0;
+  final best = <String>[]; // 并列最高分的类别（按词表序）
   for (final entry in _certifiedKeywords.entries) {
-    for (final k in entry.value) {
-      if (n.contains(k)) return entry.key;
+    // 先收集该类命中的关键词，再剔除「被同类另一命中词包含」的子串词
+    //（如「创业」⊂「创新创业」、「志愿」⊂「志愿服务」）：否则复合词与其子串
+    // 叠加抬高该类分数，会压过本该并列的对手类（#5 回归：艺术与创新创业 曾被
+    // 误判创新创业类）。去重后每类得分 = 互不包含的命中词权重之和。
+    final hit = <String, int>{
+      for (final kw in entry.value.entries)
+        if (n.contains(kw.key)) kw.key: kw.value,
+    };
+    if (hit.isEmpty) continue;
+    var score = 0;
+    for (final e in hit.entries) {
+      if (hit.keys.any((o) => o != e.key && o.contains(e.key))) continue;
+      score += e.value;
+    }
+    if (score == 0) continue;
+    if (score > bestScore) {
+      bestScore = score;
+      best
+        ..clear()
+        ..add(entry.key);
+    } else if (score == bestScore) {
+      best.add(entry.key);
     }
   }
-  return null;
+  if (best.isEmpty) return null;
+  if (best.length == 1) return best.single;
+  for (final cat in _certifiedTiePriority) {
+    if (best.contains(cat)) return cat;
+  }
+  return best.first;
 }
 
 /// 认定类**板块**判据：level≤3 且标题命中类别名干词（比课程词表更窄——
@@ -380,39 +437,68 @@ ChoiceRule? detectChoiceRule(String notesJoined) {
 
 /// 板块说明命中「以下 N 种模块中的一种」→ 返回并行可选信号（含 optionCount，N≥2）；
 /// 否则 null。[siblings] 为该板块的直接子板块（并列选项，满足其一即可，诉求 #11）。
+///
+/// v1.5（任务 #8 三选一断链修复）识别走「notes 关键词 + title 关键词」双路：
+///  * 第一路（原有）：模块级句式说明（「以下N种模块中的一种」等）；
+///  * 第二路（新增）：直接子板块名命中 [_altOptionTitlePattern] ≥2 个——浙大
+///    「个性修读」三选一（本专业进阶 / 跨专业学习（微辅修）/ 学生自主修读）在
+///    方案 JSON / 解析摘要里常常只有并列板块名、没有任选句式说明，旧口径因
+///    缺这一路而从未成组（缺口 ×3 重复计算的根因之一）。
 AlternativeSignal? detectAlternativeModules(
     List<PdfModuleSection> siblings, String parentNotes) {
   final text = parentNotes.trim();
-  if (text.isEmpty) return null;
-  // 模块级句式（必须出现「模块」二字，避免把「本组课程多选一」这类
-  // 课程级规则误升级成模块级并列选项）：
-  //  * 以下 N 种/个模块中的一种
-  //  * 以下 N 个模块（中）任选其一 / 任选一个
-  //  * 三个模块任选其一 / 多选一 / 只选一个
-  final patterns = <RegExp>[
-    RegExp('以下\\s*($_cnNum)\\s*(?:种|个)\\s*模块(?:中|里)?(?:的)?\\s*(?:一种|任选(?:其)?一|任选一个)'),
-    RegExp('($_cnNum)\\s*(?:种|个)\\s*模块(?:中|里)?(?:任选|选择|选)\\s*(?:其)?一'),
-    RegExp(r'模块.{0,12}(?:多选一|任选其一|任选一个|只选一个|选择一个模块)'),
-    RegExp(r'(?:多选一|任选其一|任选一个模块|只选一个模块)'),
-  ];
   String? hit;
   int? declared;
-  for (final re in patterns) {
-    final m = re.firstMatch(text);
-    if (m == null) continue;
-    hit = m.group(0);
-    if (m.groupCount >= 1) declared = _parseCount(m.group(1) ?? '');
-    break;
+  if (text.isNotEmpty) {
+    // 模块级句式（必须出现「模块」二字，避免把「本组课程多选一」这类
+    // 课程级规则误升级成模块级并列选项）：
+    //  * 以下 N 种/个模块中的一种
+    //  * 以下 N 个模块（中）任选其一 / 任选一个
+    //  * 三个模块任选其一 / 多选一 / 只选一个
+    final patterns = <RegExp>[
+      RegExp('以下\\s*($_cnNum)\\s*(?:种|个)\\s*模块(?:中|里)?(?:的)?\\s*(?:一种|任选(?:其)?一|任选一个)'),
+      RegExp('($_cnNum)\\s*(?:种|个)\\s*模块(?:中|里)?(?:任选|选择|选)\\s*(?:其)?一'),
+      RegExp(r'模块.{0,12}(?:多选一|任选其一|任选一个|只选一个|选择一个模块)'),
+      RegExp(r'(?:多选一|任选其一|任选一个模块|只选一个模块)'),
+    ];
+    for (final re in patterns) {
+      final m = re.firstMatch(text);
+      if (m == null) continue;
+      hit = m.group(0);
+      if (m.groupCount >= 1) declared = _parseCount(m.group(1) ?? '');
+      break;
+    }
+    if (hit != null && text.contains('模块')) {
+      final n = declared ?? siblings.length;
+      if (n >= 2 || siblings.length >= 2) {
+        return AlternativeSignal(
+          optionCount: n < 2 ? siblings.length : n,
+          text: hit,
+          optionTitles: siblings.map((s) => s.title).toList(),
+        );
+      }
+    }
   }
-  if (hit == null || !text.contains('模块')) return null;
-  final n = declared ?? siblings.length;
-  if (n < 2 && siblings.length < 2) return null; // 「一种」不构成并列可选
-  return AlternativeSignal(
-    optionCount: n < 2 ? siblings.length : n,
-    text: hit,
-    optionTitles: siblings.map((s) => s.title).toList(),
-  );
+  // 第二路：并列选项板块名（≥2 个直接子板块命中）。宁缺勿猜：单个命中
+  // 不成组（「微辅修」单独出现可能只是辅修子块，非并列语义）。
+  final altTitles = <String>[
+    for (final s in siblings)
+      if (_altOptionTitlePattern.hasMatch(s.title)) s.title.trim(),
+  ];
+  if (altTitles.length >= 2) {
+    return AlternativeSignal(
+      optionCount: siblings.length,
+      text: '并列模块名（${altTitles.join('、')}）任选其一',
+      optionTitles: siblings.map((s) => s.title).toList(),
+    );
+  }
+  return null;
 }
+
+/// 三选一并列选项板块名模式（任务 #8 用户明确口径：本专业进阶/跨专业学习/
+/// 学生自主修读应当三选一）。含「微辅修/个性化修读/个性修读」变体写法。
+final RegExp _altOptionTitlePattern = RegExp(
+    r'本专业进阶|跨专业学习|自主修读|微辅修|个性化修读|个性修读');
 
 // ── 板块取舍（叶子优先，防父子重复计费）────────────────────────────────────
 // 旧规则「有课程 || (level≤2 且有学分标注)」会同时保留父板块与其子板块
