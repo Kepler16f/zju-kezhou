@@ -257,10 +257,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this); // resize 感知 → 暂停网络
+    // AI 对话历史持久化（用户反馈 #14）：任何消息变化后防抖落盘。
+    _aiCtrl.addListener(_scheduleAiHistorySave);
     _assetsReady = _loadAssets().catchError((Object e, StackTrace _) {
       DiagnosticLog.instance.record('资产加载', level: 'error', detail: '$e');
     });
     _restoreSession(); // 先恢复上次会话（即时展示），再后台自动登录刷新
+  }
+
+  /// 对话历史防抖落盘（流式增量每段都会 notify，800ms 合并一次写盘）。
+  Timer? _aiHistoryTimer;
+  void _scheduleAiHistorySave() {
+    _aiHistoryTimer?.cancel();
+    _aiHistoryTimer = Timer(const Duration(milliseconds: 800), () {
+      unawaited(_store.saveAiChatHistory(_aiCtrl.exportHistory()));
+    });
   }
 
   @override
@@ -271,6 +282,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _aiCtrl.removeListener(_scheduleAiHistorySave);
+    _aiHistoryTimer?.cancel();
     _userCtl.dispose();
     _passCtl.dispose();
     _pasteCtl.dispose();
@@ -292,6 +305,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     } catch (e) {
       DiagnosticLog.instance.record('知识库加载', level: 'error', detail: '$e');
     }
+    // 恢复上次 AI 对话（用户反馈 #14）：坏内容静默跳过，绝不阻断启动。
+    try {
+      final hist = await _store.loadAiChatHistory();
+      if (hist != null && hist.trim().isNotEmpty) _aiCtrl.importHistory(hist);
+    } catch (_) {}
   }
 
   /// 恢复上次会话：凭证 → 学号回填 + 自动登录；会话缓存 → 数据即时展示。

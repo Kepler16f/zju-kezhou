@@ -28,6 +28,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -37,6 +38,7 @@ import '../data/ai_config.dart';
 import '../data/ai_knowledge.dart';
 import '../data/ai_prompts.dart';
 import '../data/screen_ocr.dart';
+import 'ai_message_body.dart';
 
 /// 屏幕文字识别的注入缝：默认真机截屏（Windows 内置 OCR）；
 /// 测试注入假实现，避免 widget test 起 powershell 子进程扫真实桌面。
@@ -228,6 +230,90 @@ class AiChatController extends ChangeNotifier {
         for (final m in _messages)
           if (m.status == AiChatMessageStatus.done) m.historyEntry,
       ]);
+
+  /// 导出可持久化的对话快照（JSON 字符串，用户反馈 #14：重开 App 历史不丢）。
+  ///
+  /// 只导可见消息；在途态（queued/sending/streaming）不导——重开时假装还在
+  /// 请求会误导用户。失败消息保留 error 文案（可撤回/重发）。
+  String exportHistory() {
+    final rows = <Map<String, String>>[];
+    for (final m in _messages) {
+      if (m.status == AiChatMessageStatus.queued ||
+          m.status == AiChatMessageStatus.sending ||
+          m.status == AiChatMessageStatus.streaming) {
+        continue;
+      }
+      if (m.content.trim().isEmpty && m.status != AiChatMessageStatus.failed) {
+        continue;
+      }
+      rows.add(<String, String>{
+        'role': m.role.name,
+        'content': m.content,
+        'status': m.status.name,
+        if (m.error != null) 'error': m.error!,
+      });
+    }
+    return jsonEncode(rows);
+  }
+
+  /// 恢复 [exportHistory] 的快照：坏 JSON/非 List/缺字段逐条跳过，绝不抛异常；
+  /// 恢复的消息不触发任何网络（不调 clientFactory），busy 恒为 false。
+  /// assistant 的 failed 态降级为 incomplete（失败状态只属于 user 气泡的语义）。
+  void importHistory(String? serialized) {
+    final raw = serialized?.trim() ?? '';
+    if (raw.isEmpty) return;
+    Object? decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } catch (_) {
+      return;
+    }
+    if (decoded is! List) return;
+    final restored = <AiChatMessage>[];
+    for (final row in decoded) {
+      if (row is! Map) continue;
+      final roleName = '${row['role'] ?? ''}';
+      final role = roleName == 'user'
+          ? AiChatMessageRole.user
+          : roleName == 'assistant'
+              ? AiChatMessageRole.assistant
+              : null;
+      final content = '${row['content'] ?? ''}';
+      if (role == null || content.trim().isEmpty) continue;
+      var status = AiChatMessageStatus.done;
+      switch ('${row['status'] ?? ''}') {
+        case 'failed':
+          status = AiChatMessageStatus.failed;
+          break;
+        case 'incomplete':
+          status = AiChatMessageStatus.incomplete;
+          break;
+        default:
+          status = AiChatMessageStatus.done;
+      }
+      if (role == AiChatMessageRole.assistant &&
+          status == AiChatMessageStatus.failed) {
+        status = AiChatMessageStatus.incomplete;
+      }
+      final err = row['error'];
+      restored.add(AiChatMessage._(
+        id: 'h${++_sequence}',
+        role: role,
+        content: content,
+        status: status,
+        error: err is String && err.isNotEmpty ? err : null,
+      ));
+    }
+    _messages
+      ..clear()
+      ..addAll(restored);
+    _queue.clear();
+    _requestMeta.clear();
+    _assistantByUser.clear();
+    _activeId = null;
+    _activeCancel = null;
+    notifyListeners();
+  }
 
   /// 是否有一次请求在途（输入框不再因 busy 禁用，只用于标题栏 spinner/停止按钮）。
   bool get busy => _activeId != null;
@@ -1130,10 +1216,17 @@ class _AiChatSheetState extends State<AiChatSheet> {
           crossAxisAlignment:
               isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
-            SelectableText(
-              text.isEmpty ? '…' : text,
-              style: const TextStyle(fontSize: 14, height: 1.5),
-            ),
+            if (isUser)
+              SelectableText(
+                text.isEmpty ? '…' : text,
+                style: const TextStyle(fontSize: 14, height: 1.5),
+              )
+            else if (text.trim().isEmpty)
+              const Text('…')
+            else
+              // 用户反馈 #14：AI 回复支持 Markdown 与公式（降级渲染）；
+              // 用户气泡保持纯文本（用户输入不应当作 Markdown 解释）。
+              AiMessageBody(text),
             if (status != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),

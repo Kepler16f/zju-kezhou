@@ -264,6 +264,33 @@ class CredentialStore {
     } catch (_) {}
   }
 
+  /// AI 对话历史（用户反馈 #14）：本地沙箱明文 JSON，仅存用户自己的问答，
+  /// 不含任何教务凭证；与凭证同目录、同样走混淆存储，方便一键清除时一并删除。
+  Future<void> saveAiChatHistory(String jsonText) async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ai_chat.hist'));
+      await f.writeAsString(_obfuscate(jsonText));
+    } catch (_) {/* 沙箱不可用：静默（历史丢一次不影响主流程） */}
+  }
+
+  /// 读取 AI 对话历史；缺文件/坏内容 → null（调用方跳过恢复），绝不抛异常。
+  Future<String?> loadAiChatHistory() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ai_chat.hist'));
+      if (!await f.exists()) return null;
+      return _deobfuscate(await f.readAsString());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> deleteAiChatHistory() async {
+    try {
+      final f = File(p.join((await _dirGet()).path, 'ai_chat.hist'));
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
+  }
+
   /// 桌面端窗口偏好落盘（ui.cfg）：关闭窗口是否收起到托盘。
   /// 与 ai.cfg 同理不用 cache_ 前缀（清缓存不该重置用户习惯），
   /// 一键清除全量数据时由 [deleteUiPrefs] 显式删除。
