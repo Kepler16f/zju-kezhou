@@ -217,27 +217,50 @@ class _MinorPlanPageState extends State<MinorPlanPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.loggedIn) return _notLoggedIn();
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-      children: [
-        _header(),
-        if (_error != null) _errorCard(_error!),
-        _searchSection(),
-        if (_loadingPlan)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 28),
-            child: Center(child: CircularProgressIndicator()),
-          ),
-        if (!_loadingPlan && _selected != null) ..._minorResult(_selected!),
-        const SizedBox(height: 8),
-        const Text(
-            '微辅修板块来自该专业官方培养方案 PDF（教务网只读查询），'
-            '以教务系统展示为准；修读申请以开设微辅修专业的通知为准。',
-            style: TextStyle(fontSize: 11, color: Colors.grey)),
-      ],
+    final scheme = Theme.of(context).colorScheme;
+    // v0.13.9 修复（用户反馈）：本页是被 push 的独立路由，此前直接返回 ListView
+    // ——没有 Scaffold 铺底，移动端整页黑底；也没有避开系统状态栏（标题压状态栏）。
+    // 现统一 Scaffold(surface 背景) + AppBar（自带状态栏安全区）+ SafeArea。
+    return Scaffold(
+      backgroundColor: scheme.surface,
+      appBar: AppBar(
+        title: const Text('微辅修'),
+        actions: [
+          if (_catalogFromCache)
+            const Padding(
+              padding: EdgeInsets.only(right: 12),
+              child: Center(
+                child: Text('目录来自缓存',
+                    style: TextStyle(fontSize: 11, color: Colors.grey)),
+              ),
+            ),
+        ],
+      ),
+      body: SafeArea(
+        top: false, // AppBar 已处理状态栏安全区，避免双重留白
+        child: widget.loggedIn ? _loggedInBody(context) : _notLoggedIn(),
+      ),
     );
   }
+
+  Widget _loggedInBody(BuildContext context) => ListView(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+        children: [
+          if (_error != null) _errorCard(_error!),
+          _searchSection(),
+          if (_loadingPlan)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 28),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          if (!_loadingPlan && _selected != null) ..._minorResult(_selected!),
+          const SizedBox(height: 8),
+          const Text(
+              '微辅修板块来自该专业官方培养方案 PDF（教务网只读查询），'
+              '以教务系统展示为准；修读申请以开设微辅修专业的通知为准。',
+              style: TextStyle(fontSize: 11, color: Colors.grey)),
+        ],
+      );
 
   Widget _notLoggedIn() => Center(
         child: Padding(
@@ -261,26 +284,6 @@ class _MinorPlanPageState extends State<MinorPlanPage> {
                 icon: const Icon(Icons.settings_outlined),
                 label: const Text('去设置'),
               ),
-            ],
-          ),
-        ),
-      );
-
-  Widget _header() => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              const Icon(Icons.school_outlined, size: 20),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text('微辅修',
-                    style:
-                        TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-              ),
-              if (_catalogFromCache)
-                const Text('目录来自缓存',
-                    style: TextStyle(fontSize: 11, color: Colors.grey)),
             ],
           ),
         ),
