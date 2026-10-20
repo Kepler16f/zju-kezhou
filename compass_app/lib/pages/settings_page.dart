@@ -702,7 +702,7 @@ class _SettingsPageState extends State<SettingsPage> {
               const ListTile(
                 leading: Icon(Icons.favorite_outline),
                 title: Text('开源致谢'),
-                subtitle: Text('字体 Noto Sans SC（OFL）；教务协议参考开源社区成果',
+                subtitle: Text('字体 Noto Sans SC（OFL-1.1）；教务接口事实参考 Celechron（GPL-3.0）社区经验，代码独立实现',
                     style: TextStyle(fontSize: 11)),
               ),
               const Divider(height: 1, indent: 16),
