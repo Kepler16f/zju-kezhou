@@ -239,4 +239,16 @@ void main() {
     expect(find.textContaining('教学班暂不可用：限频退避'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('展开只变高不变宽（宽度冻结：不再把 Wrap 邻居横向顶走）', (tester) async {
+    await pumpBubble(tester, ratings: store);
+    final before = tester.getSize(find.byType(CourseBubble));
+    await tester.tap(find.byType(CourseBubble));
+    await tester.pumpAndSettle();
+    final after = tester.getSize(find.byType(CourseBubble));
+    expect(after.width, before.width); // 宽度冻结：点按瞬间实测并锁定
+    expect(after.height, greaterThan(before.height)); // 只允许向下展开
+    expect(find.text('时间 周一 1-2 节'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

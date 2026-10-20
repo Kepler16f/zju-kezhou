@@ -23,6 +23,7 @@ import '../data/ai_prompts.dart';
 import '../data/credential_store.dart';
 import '../data/semester.dart';
 import '../data/teacher_rating.dart';
+import '../data/teacher_rating_live.dart';
 import '../data/xk_models.dart';
 import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
@@ -125,6 +126,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   final Map<String, XkListParseResult> _jxbLists = {};
   final Set<String> _jxbLoading = {};
   String _jxbKey(XkCourse c) => '${c.kch}\u0000${c.kcmc}';
+
+  /// 教师评分实时客户端（v0.13.8）：页面生命周期内共享，同名请求去重、
+  /// 24h 本地缓存；离线/站点不可达自动回落种子表，绝不阻塞选课页。
+  late final TeacherRatingLive _ratingLive = TeacherRatingLive(widget.store);
 
   /// 网格分页窗口（性能修复：真实选课池单入口可达 1000+ 门，
   /// 一次性构建让滑动与每次 setState 展开都付出全量重建代价）。
@@ -1208,36 +1213,30 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final m in page)
-                      ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: maxW),
-                        child: RepaintBoundary(
-                          child: CourseBubble(
-                            course: m.base,
-                            conflict: ttSlots.isNotEmpty &&
-                                Timeline.slotsConflict(m.slots, ttSlots) != null,
-                            selected: _isCourseSelected(m.base, selectedKeys),
-                            state: _stateOf(m.base, states),
-                            onTap: () =>
-                                _showCourseStateHint(_stateOf(m.base, states)),
-                            // 诉求 #11：跨入口合并后的全部类别（去重保序）逐枚出 Chip
-                            categories: m.categories,
-                            extraTags: m.tags,
-                            extraDetails: _mergedDetails(m),
-                            teachingClasses:
-                                _jxbLists[_jxbKey(m.base)]?.courses ?? const [],
-                            jxbLoading: _jxbLoading.contains(_jxbKey(m.base)),
-                            jxbNote: _jxbNote(m.base),
-                            onExpand: () => _loadTeachingClasses(m.base),
-                          ),
-                        ),
+                _masonry(maxW, [
+                  for (final m in page)
+                    RepaintBoundary(
+                      child: CourseBubble(
+                        course: m.base,
+                        conflict: ttSlots.isNotEmpty &&
+                            Timeline.slotsConflict(m.slots, ttSlots) != null,
+                        selected: _isCourseSelected(m.base, selectedKeys),
+                        state: _stateOf(m.base, states),
+                        onTap: () =>
+                            _showCourseStateHint(_stateOf(m.base, states)),
+                        // 诉求 #11：跨入口合并后的全部类别（去重保序）逐枚出 Chip
+                        categories: m.categories,
+                        extraTags: m.tags,
+                        extraDetails: _mergedDetails(m),
+                        teachingClasses:
+                            _jxbLists[_jxbKey(m.base)]?.courses ?? const [],
+                        jxbLoading: _jxbLoading.contains(_jxbKey(m.base)),
+                        jxbNote: _jxbNote(m.base),
+                        liveRatings: _ratingLive,
+                        onExpand: () => _loadTeachingClasses(m.base),
                       ),
-                  ],
-                ),
+                    ),
+                ]),
                 _showMoreButton(gridKey, shown, items.length),
               ],
             );
@@ -1804,7 +1803,33 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         ),
       );
 
-  /// 课程列表：全部展示，每门课一个按名称自适应宽度的气泡，Wrap 排列节省空间。
+  /// 瀑布分栏（v0.13.8 用户诉求：展开只挤压正下方，其他列不动）。
+  /// Wrap 是「行对齐」布局：任何一张卡变高，整行抬高、下方所有行整体下移；
+  /// 改为按目标列宽切 N 列、每列独立纵排——展开只推远本列下方的卡，
+  /// 其他列纹丝不动。卡片仍按内容自适应宽度（列内左对齐），不改气泡观感。
+  Widget _masonry(double maxW, List<Widget> cards) {
+    const laneTarget = 220.0;
+    const gap = 6.0;
+    final lanes = ((maxW + gap) / (laneTarget + gap)).floor().clamp(1, 6);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var c = 0; c < lanes; c++) ...[
+          if (c > 0) const SizedBox(width: gap),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = c; i < cards.length; i += lanes) cards[i],
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// 课程列表：全部展示，每门课一个按名称自适应宽度的气泡，分栏排列节省空间。
   /// 冲突/已满/余量/已选/课程性质标签全部附在气泡上（详情在 Tooltip）。
   /// [pageKey] 分页窗口键（不同入口/视图各自独立展开进度，互不串扰）。
   List<Widget> _courseCards(List<XkCourse> courses,
@@ -1830,32 +1855,26 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final c in page)
-                      ConstrainedBox(
-                        constraints: BoxConstraints(maxWidth: maxW),
-                        child: RepaintBoundary(
-                          child: CourseBubble(
-                            course: c,
-                            conflict: ttSlots.isNotEmpty &&
-                                Timeline.slotsConflict(c.slots, ttSlots) != null,
-                            selected: _isCourseSelected(c, selectedKeys),
-                            state: _stateOf(c, states),
-                            onTap: () => _showCourseStateHint(_stateOf(c, states)),
-                            categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
-                            teachingClasses:
-                                _jxbLists[_jxbKey(c)]?.courses ?? const [],
-                            jxbLoading: _jxbLoading.contains(_jxbKey(c)),
-                            jxbNote: _jxbNote(c),
-                            onExpand: () => _loadTeachingClasses(c),
-                          ),
-                        ),
+                _masonry(maxW, [
+                  for (final c in page)
+                    RepaintBoundary(
+                      child: CourseBubble(
+                        course: c,
+                        conflict: ttSlots.isNotEmpty &&
+                            Timeline.slotsConflict(c.slots, ttSlots) != null,
+                        selected: _isCourseSelected(c, selectedKeys),
+                        state: _stateOf(c, states),
+                        onTap: () => _showCourseStateHint(_stateOf(c, states)),
+                        categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
+                        teachingClasses:
+                            _jxbLists[_jxbKey(c)]?.courses ?? const [],
+                        jxbLoading: _jxbLoading.contains(_jxbKey(c)),
+                        jxbNote: _jxbNote(c),
+                        liveRatings: _ratingLive,
+                        onExpand: () => _loadTeachingClasses(c),
                       ),
-                  ],
-                ),
+                    ),
+                ]),
                 _showMoreButton(gridKey, shown, items.length),
               ],
             );
@@ -1937,6 +1956,10 @@ class CourseBubble extends StatefulWidget {
   final List<XkCourse> teachingClasses;
   final bool jxbLoading;
 
+  /// 实时评分客户端（v0.13.8）：非 null 时，评分行先显示本地种子表值，
+  /// 随后异步向「查老师」拉最新评分（24h 缓存）并就地刷新——评分不写死。
+  final TeacherRatingLive? liveRatings;
+
   /// 教学班未就绪时的一行如实说明（失败原因/空结果/限频冷却…）；
   /// null → 不提示（未展开前、或已成功拿到教学班）。
   final String? jxbNote;
@@ -1958,6 +1981,7 @@ class CourseBubble extends StatefulWidget {
     this.teachingClasses = const [],
     this.jxbLoading = false,
     this.jxbNote,
+    this.liveRatings,
     this.onExpand,
   });
 
@@ -1967,6 +1991,12 @@ class CourseBubble extends StatefulWidget {
 
 class _CourseBubbleState extends State<CourseBubble> {
   bool _expanded = false;
+
+  /// 展开时冻结的自然宽度（用户诉求 v0.13.8：展开只让本卡变高，
+  /// 不得变宽——Wrap 行组成由宽度决定，宽度不变同行邻居才纹丝不动，
+  /// 被推远的只有下方行）。点按展开瞬间从渲染树实测，未取到则不冻结。
+  final GlobalKey _bodyKey = GlobalKey();
+  double? _frozenWidth;
 
   /// 评分表共享加载通道：整棵页面只读一次资产（rootBundle 本地 IO，零网络）。
   static Future<TeacherRatingStore>? _sharedStore;
@@ -1988,6 +2018,12 @@ class _CourseBubbleState extends State<CourseBubble> {
   void _handleTap() {
     widget.onTap?.call();
     final expand = !_expanded;
+    if (expand) {
+      final ro = _bodyKey.currentContext?.findRenderObject();
+      if (ro is RenderBox && ro.size.width > 0) {
+        _frozenWidth = ro.size.width;
+      }
+    }
     setState(() => _expanded = expand);
     if (expand) widget.onExpand?.call();
   }
@@ -2057,17 +2093,23 @@ class _CourseBubbleState extends State<CourseBubble> {
         child: Opacity(
           opacity: dimmed ? 0.62 : 1,
           child: ConstrainedBox(
-            // 展开态：minWidth 放大给详情行留空间（宽度上限仍由页面外层 maxWidth 约束；
-            // 可用宽度不足时 BoxConstraints.enforce 自动收敛，不会溢出）。
-            constraints: BoxConstraints(
-              minWidth: _expanded ? 260 : 0,
-              maxWidth: _expanded ? 520 : double.infinity,
-            ),
+            // 展开态宽度冻结（用户诉求 v0.13.8）：只变高、绝不加宽——
+            // Wrap 行组成由卡片宽度决定，宽度纹丝不动，同行邻居就不会被横向顶走，
+            // 被推远的只有该卡正下方的行。宽度取点按展开瞬间实测的自然宽度；
+            // 实测缺位时保持原状（同样不加宽）。旧版 260/520 强制加宽已废弃。
+            constraints: () {
+              final frozen = _frozenWidth;
+              if (_expanded && frozen != null) {
+                return BoxConstraints.tightFor(width: frozen);
+              }
+              return const BoxConstraints();
+            }(),
             child: AnimatedSize(
               duration: const Duration(milliseconds: 180),
               curve: Curves.easeOut,
               alignment: Alignment.topLeft,
               child: Container(
+                key: _bodyKey,
                 padding: EdgeInsets.symmetric(
                     horizontal: _expanded ? 14 : 10,
                     vertical: _expanded ? 9 : 5),
@@ -2289,17 +2331,33 @@ class _CourseBubbleState extends State<CourseBubble> {
       );
     }
 
+    Widget liveLine(String name, TeacherRating? initial,
+        {bool labeled = false, String? displayName}) {
+      final live = widget.liveRatings;
+      if (live == null || name.trim().isEmpty) {
+        return line(initial, labeled: labeled, name: displayName);
+      }
+      return _LiveRatingLine(
+        name: name,
+        initial: initial,
+        live: live,
+        builder: (r) => line(r, labeled: labeled, name: displayName),
+      );
+    }
+
     Widget build(TeacherRatingStore store) {
       if (names.length <= 1) {
         // 单教师（或无教师）：沿用原一行口径，不加名前缀。
-        return line(store.lookupAny(teacher, courseName));
+        final n = names.isEmpty ? teacher.trim() : names.first;
+        return liveLine(n, store.lookupAny(teacher, courseName));
       }
       return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           for (final name in names)
-            line(store.lookup(name, courseName), labeled: true, name: name),
+            liveLine(name, store.lookup(name, courseName),
+                labeled: true, displayName: name),
         ],
       );
     }
@@ -2430,4 +2488,48 @@ class CourseMiniCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 单教师评分行（实时刷新，v0.13.8）：
+/// 首帧立即显示本地种子表/缓存值（可为 null=暂无），随后异步向站点取最新评分，
+/// 拿到且数值变化时仅刷新本行——不写死、不闪烁、失败静默保持原值。
+class _LiveRatingLine extends StatefulWidget {
+  final String name;
+  final TeacherRating? initial;
+  final TeacherRatingLive live;
+  final Widget Function(TeacherRating?) builder;
+
+  const _LiveRatingLine({
+    required this.name,
+    required this.initial,
+    required this.live,
+    required this.builder,
+  });
+
+  @override
+  State<_LiveRatingLine> createState() => _LiveRatingLineState();
+}
+
+class _LiveRatingLineState extends State<_LiveRatingLine> {
+  TeacherRating? _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = widget.initial;
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final fresh = await widget.live.lookup(widget.name);
+    if (!mounted || fresh == null) return;
+    final old = _value;
+    if (old != null && old.avg == fresh.avg && old.count == fresh.count) {
+      return;
+    }
+    setState(() => _value = fresh);
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(_value);
 }

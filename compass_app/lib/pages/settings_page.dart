@@ -120,6 +120,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   bool get _showCreds => _credsExpanded ?? (widget.loggedInAs == null);
 
+  /// 「我的数据」文字信息块（v0.13.8 用户诉求）：可收起且默认收起——
+  /// 移动端字体放大后这叠明细很长，默认只留一行标题，点开再看。
+  bool _myDataExpanded = false;
+
 
   /// 「分享给指导教师」：实名导出选项 + 上次导出结果提示（本机内存态，不落盘）。
   bool _shareRealName = false;
@@ -785,50 +789,76 @@ class _SettingsPageState extends State<SettingsPage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Divider(height: 1, indent: 16),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 10, 16, 4),
-          child: Text('我的数据',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-        ),
-        if (courses.isNotEmpty)
-          _dataLine('成绩单',
-              '${courses.length} 门 · 已取得 ${_num(earned)} 学分'),
-        if (choosed != null) _choosedLine(choosed, choosedCredits),
-        const SizedBox(height: 2),
-        if (isZju) ...[
-          if (matchedPlan == null)
-            _dataWarn('尚未匹配到本人培养方案：登录教务网并拉取数据后自动匹配，'
-                '也可到「方案」页手动选择')
-          else ...[
-            _dataLine(
-                '我的培养方案',
-                '${matchedPlan.zymc}'
-                '${matchedPlan.gradeLabel.isEmpty ? '' : '（${matchedPlan.gradeLabel}）'}'),
-            if (matchedPlan.subtitle.isNotEmpty)
-              _dataLine('方案信息', matchedPlan.subtitle),
-            _dataLine(
-                '匹配结果',
-                '${matchedPlan.level.label} · '
-                '${matchedPlan.candidateCount > 1 ? '候选 ${matchedPlan.candidateCount} 条' : '唯一匹配'}'),
-            if (matchedPlan.id.isNotEmpty)
-              _dataLine('教学计划号', matchedPlan.id),
-            if (matchedPlan.ambiguous)
-              _dataWarn('有多条相近方案，请到「方案」页确认本人方案'),
-          ],
-        ] else ...[
-          _dataLine(
-              '当前方案',
-              '${builtin.zymc}'
-              '${builtin.gradeLabel.isEmpty ? '' : '（${builtin.gradeLabel}）'}'),
-          _dataLine('方案来源', '内置样例方案（非教务实时方案）'),
-        ],
-        if (planNote != null && planNote.trim().isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
-            child: Text(planNote,
-                style: TextStyle(
-                    fontSize: 11, color: Colors.grey.shade700, height: 1.4)),
+        InkWell(
+          onTap: () => setState(() => _myDataExpanded = !_myDataExpanded),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('我的数据',
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+                AnimatedRotation(
+                  turns: _myDataExpanded ? 0.5 : 0,
+                  duration: const Duration(milliseconds: 150),
+                  child: const Icon(Icons.expand_more, size: 18),
+                ),
+              ],
+            ),
           ),
+        ),
+        if (!_myDataExpanded)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              '成绩单 ${courses.length} 门 · 已取得 ${_num(earned)} 学分'
+              '${choosed != null ? ' · 本学期已选 ${choosed.courses.length} 门' : ''}',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+            ),
+          ),
+        if (_myDataExpanded) ...[
+          if (courses.isNotEmpty)
+            _dataLine('成绩单',
+                '${courses.length} 门 · 已取得 ${_num(earned)} 学分'),
+          if (choosed != null) _choosedLine(choosed, choosedCredits),
+          const SizedBox(height: 2),
+          if (isZju) ...[
+            if (matchedPlan == null)
+              _dataWarn('尚未匹配到本人培养方案：登录教务网并拉取数据后自动匹配，'
+                  '也可到「方案」页手动选择')
+            else ...[
+              _dataLine(
+                  '我的培养方案',
+                  '${matchedPlan.zymc}'
+                  '${matchedPlan.gradeLabel.isEmpty ? '' : '（${matchedPlan.gradeLabel}）'}'),
+              if (matchedPlan.subtitle.isNotEmpty)
+                _dataLine('方案信息', matchedPlan.subtitle),
+              _dataLine(
+                  '匹配结果',
+                  '${matchedPlan.level.label} · '
+                  '${matchedPlan.candidateCount > 1 ? '候选 ${matchedPlan.candidateCount} 条' : '唯一匹配'}'),
+              if (matchedPlan.id.isNotEmpty)
+                _dataLine('教学计划号', matchedPlan.id),
+              if (matchedPlan.ambiguous)
+                _dataWarn('有多条相近方案，请到「方案」页确认本人方案'),
+            ],
+          ] else ...[
+            _dataLine(
+                '当前方案',
+                '${builtin.zymc}'
+                '${builtin.gradeLabel.isEmpty ? '' : '（${builtin.gradeLabel}）'}'),
+            _dataLine('方案来源', '内置样例方案（非教务实时方案）'),
+          ],
+          if (planNote != null && planNote.trim().isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
+              child: Text(planNote,
+                  style: TextStyle(
+                      fontSize: 11, color: Colors.grey.shade700, height: 1.4)),
+            ),
+        ],
         Align(
           alignment: Alignment.centerRight,
           child: TextButton.icon(

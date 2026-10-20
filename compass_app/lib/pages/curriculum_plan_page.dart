@@ -812,7 +812,7 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
       ...p.qywkc,
     ], _courseEvidence());
     return [
-      _card('方案概览', [
+      _collapsibleCard('方案概览', [
         _kv('专业', p.zymc),
         if (p.zydm.isNotEmpty) _kv('专业代码', p.zydm),
         if (p.xymc.isNotEmpty) _kv('开课学院', p.xymc),
@@ -1562,6 +1562,48 @@ class _CurriculumPlanPageState extends State<CurriculumPlanPage> {
           ),
         ),
       );
+
+  /// 可收起卡（用户诉求 v0.13.8：方案概览信息多，允许折叠只看标题）。
+  /// 折叠态常驻一行标题；展开状态按 title 记在本页 State（切方案不重置语义可接受，
+  /// 同页同标题即同一卡）。默认展开，保持既有浏览习惯。
+  final Map<String, bool> _collapsedCards = {};
+
+  Widget _collapsibleCard(String title, List<Widget> children) {
+    final collapsed = _collapsedCards[title] ?? false;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () =>
+            setState(() => _collapsedCards[title] = !collapsed),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(12, 10, 12, collapsed ? 10 : 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(title,
+                        style: const TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.bold)),
+                  ),
+                  AnimatedRotation(
+                    turns: collapsed ? 0 : 0.5,
+                    duration: const Duration(milliseconds: 150),
+                    child: const Icon(Icons.expand_more, size: 18),
+                  ),
+                ],
+              ),
+              if (!collapsed) ...[
+                const SizedBox(height: 8),
+                ...children,
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _expandCard(String title, String body) => Card(
         child: ExpansionTile(

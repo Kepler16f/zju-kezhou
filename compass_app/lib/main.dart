@@ -183,7 +183,15 @@ class KeZhouApp extends StatelessWidget {
       // 只要语义树被读屏器/自动化工具启用、且发生节点重新挂载，进程即被
       // 0xc000041d 强杀。这里让应用不产出语义树，重新挂载无从发生。
       // 代价：读屏器读不到本应用内容，属临时规避，待上游修掉该空指针后移除。
-      builder: (context, child) => ExcludeSemantics(child: child!),
+      // 字号钳制（v0.13.8 用户反馈：移动端系统字体放大后首页/设置排版难看）：
+      // 尊重系统缩放但不放任——上限 1.15，小屏高密度 UI 不至崩坏；下限不过度压制。
+      builder: (context, child) => ExcludeSemantics(
+        child: MediaQuery.withClampedTextScaling(
+          minScaleFactor: 0.85,
+          maxScaleFactor: 1.15,
+          child: child!,
+        ),
+      ),
       home: const HomePage(),
     );
   }
