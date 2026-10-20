@@ -29,6 +29,7 @@ import '../data/xk_parse.dart';
 import '../data/zju_client.dart';
 import '../engine/course_state.dart';
 import '../engine/disclaimer.dart';
+import '../engine/jxb_status.dart';
 import '../engine/selection.dart';
 import '../engine/timeline.dart';
 import '../widgets/scholar_cards.dart' show ScholarPalette;
@@ -58,6 +59,10 @@ class CourseSelectPage extends StatefulWidget {
   final int resetToken; // 父级"一键清除"自增令牌：变化即清空本页 AI 会话态
   final VoidCallback onGoSettings;
 
+  /// 模拟选课「导出给老师」：把模拟清单行（_simulatedRows 形状）交给主线
+  /// 并入分享包（main.dart _exportSharePack），与 AI 问答导出同一通道。
+  final void Function(List<Map<String, dynamic>> rows)? onExportSimulated;
+
   /// 把本页已合并的选课候选发布给全局 AI 助手（脱敏摘要，不含个人信息）。
   /// 全局助手由 main.dart 的悬浮按钮呼出，拿不到本页局部状态，故用回调上抛。
   final ValueChanged<Map<String, dynamic>?>? onAiContext;
@@ -81,6 +86,7 @@ class CourseSelectPage extends StatefulWidget {
     required this.aiConfig,
     required this.resetToken,
     required this.onGoSettings,
+    this.onExportSimulated,
     this.onAiContext,
     this.onExportAdvice,
   });
@@ -126,6 +132,295 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   final Map<String, XkListParseResult> _jxbLists = {};
   final Set<String> _jxbLoading = {};
   String _jxbKey(XkCourse c) => '${c.kch}\u0000${c.kcmc}';
+
+  /// 模拟选课（v0.13.10）：键 = 教学班 xkkh（缺省退课号/课名/班号）。
+  /// 纯内存态：绝不发教务写请求；「导出给老师」把清单并入分享包自愿外发。
+  final Map<String, XkCourse> _simulated = {};
+
+  String _jxbKeyOfPage(XkCourse j) {
+    final xkkh = '${j.raw['xkkh'] ?? ''}'.trim();
+    if (xkkh.isNotEmpty) return xkkh;
+    return '${j.kch}\u0000${j.kcmc}\u0000${j.jxbmc}';
+  }
+
+  /// 教务已选教学班 xkkh 集合（状态标签「已选」判定）。
+  Set<String> get _chosenXkkhSet => {
+        for (final c in widget.choosed?.courses ?? const <XkCourse>[])
+          if ('${c.raw['xkkh'] ?? ''}'.trim().isNotEmpty)
+            '${c.raw['xkkh']}'.trim(),
+      };
+
+  /// 占用时隙：课表 + 已选课程 + 模拟选中（冲突判定与 zdbk 同口径）。
+  List<Map<String, dynamic>> get _jxbBusySlots => [
+        ...((_timetable ?? widget.timetable)?.slots ?? const []),
+        for (final c in widget.choosed?.courses ?? const <XkCourse>[]) ...c.slots,
+        for (final j in _simulated.values) ...j.slots,
+      ];
+
+  String _jxbSeqOf(XkCourse j, int index) {
+    if (j.jxbmc.trim().isNotEmpty) return j.jxbmc.trim();
+    final tail = '${j.raw['xkkh'] ?? ''}'.split('-');
+    final candidate = tail.length >= 4 ? tail[tail.length - 2].trim() : '';
+    if (RegExp(r'^\d{4,}$').hasMatch(candidate)) return candidate;
+    return '${index + 1}';
+  }
+
+  Color _jxbStatusColorOf(JxbStatus s) => switch (s) {
+        JxbStatus.selected => Colors.amber.shade800,
+        JxbStatus.conflict => Colors.red.shade700,
+        JxbStatus.insufficient => Colors.grey.shade700,
+        JxbStatus.unselected => Colors.blueGrey.shade600,
+        JxbStatus.available => Colors.green.shade700,
+      };
+
+  /// 模拟切换：已选/余量不足/冲突一律拦截（zdbk 五态限制）。
+  String? _toggleSimulate(XkCourse j) {
+    final key = _jxbKeyOfPage(j);
+    if (_simulated.containsKey(key)) {
+      setState(() => _simulated.remove(key));
+      return null;
+    }
+    final status =
+        classifyJxb(j, chosenXkkh: _chosenXkkhSet, busySlots: _jxbBusySlots);
+    final reason = switch (status) {
+      JxbStatus.selected => '该教学班已在教务网选中，无需模拟',
+      JxbStatus.insufficient => '余量不足，无法模拟选择',
+      JxbStatus.conflict => '与已选/模拟课程时间冲突',
+      _ => null,
+    };
+    if (reason != null) return reason;
+    setState(() => _simulated[key] = j);
+    return null;
+  }
+
+  List<Map<String, dynamic>> _simulatedRows() => [
+        for (final j in _simulated.values)
+          {
+            'course_id': j.kch,
+            'name': j.kcmc,
+            if (j.xf != null) 'credits': j.xf,
+            if (j.teacher.isNotEmpty) 'teacher': j.teacher,
+            if (j.sksj.isNotEmpty) 'sksj': j.sksj,
+            if (j.cdmc.isNotEmpty) 'cdmc': j.cdmc,
+            'semester': widget.currentSemester,
+            'status': 'simulated',
+          },
+      ];
+
+  /// 小标签（弹窗内用；与气泡 _miniTag 同款视觉，独立实现避免跨类耦合）。
+  Widget _statusTag(String text, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(text, style: TextStyle(fontSize: 9.5, color: color)),
+      );
+
+  /// 模拟选班弹窗（桌面双击 / 移动端长按卡片打开）。
+  Future<void> _openSimulateDialog(XkCourse c) async {
+    final classes = _jxbLists[_jxbKey(c)]?.courses ?? const <XkCourse>[];
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (context, setDlg) {
+          final rows = <Widget>[
+            const Text('点选教学班加入模拟清单；已选/余量不足/冲突的班不可选。',
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
+            const SizedBox(height: 4),
+          ];
+          if (classes.isEmpty) {
+            rows.add(_simulateRow(c, setDlg));
+          } else {
+            for (var i = 0; i < classes.length; i++) {
+              rows.add(_simulateRow(classes[i], setDlg, index: i));
+            }
+          }
+          return AlertDialog(
+            title: Text('模拟选课 · ${c.kcmc}',
+                style: const TextStyle(fontSize: 15)),
+            content: SizedBox(
+                width: 430,
+                child: SingleChildScrollView(
+                    child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: rows))),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('关闭')),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _simulateRow(XkCourse j, void Function(void Function()) setDlg,
+      {int? index}) {
+    final key = _jxbKeyOfPage(j);
+    final status =
+        classifyJxb(j, chosenXkkh: _chosenXkkhSet, busySlots: _jxbBusySlots);
+    final simulated = _simulated.containsKey(key);
+    final title = <String>[
+      if (index != null) '教学班 ${_jxbSeqOf(j, index)}',
+      if (j.teacher.isNotEmpty) j.teacher,
+    ].join(' · ');
+    final meta = <String>[
+      if (j.sksj.isNotEmpty) j.sksj,
+      if (j.cdmc.isNotEmpty) j.cdmc,
+      if (j.cap != null) '容量 ${j.cap}',
+      if (j.selected != null) '已选 ${j.selected} 人',
+      if (j.cap != null && j.selected != null)
+        '余 ${(j.cap! - j.selected!).clamp(0, 1 << 30)}',
+    ].join(' · ');
+    return ListTile(
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      title: Text(title.isEmpty ? j.kcmc : title,
+          style: const TextStyle(fontSize: 12.5)),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (meta.isNotEmpty)
+            Text(meta, style: const TextStyle(fontSize: 11)),
+          Row(
+            children: [
+              _statusTag(jxbStatusLabel(status), _jxbStatusColorOf(status)),
+              if (!simulated && !canSimulateJxb(status)) ...[
+                const SizedBox(width: 6),
+                const Text('（不可模拟）',
+                    style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+              ],
+            ],
+          ),
+        ],
+      ),
+      trailing: simulated
+          ? TextButton(
+              onPressed: () {
+                _toggleSimulate(j);
+                setDlg(() {});
+              },
+              child: const Text('移除'),
+            )
+          : FilledButton.tonal(
+              onPressed: canSimulateJxb(status)
+                  ? () {
+                      final reason = _toggleSimulate(j);
+                      if (reason != null) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text(reason),
+                            duration: const Duration(seconds: 2)));
+                      }
+                      setDlg(() {});
+                    }
+                  : null,
+              child: const Text('选入'),
+            ),
+    );
+  }
+
+  /// 模拟清单管理弹窗：查看/移除 + 一键导出给老师。
+  Future<void> _openSimulatedManager() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (context, setDlg) {
+          final items = _simulated.values.toList();
+          return AlertDialog(
+            title: const Text('模拟选课清单', style: TextStyle(fontSize: 15)),
+            content: SizedBox(
+              width: 430,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (items.isEmpty)
+                      const Text('（空）——双击（移动端长按）课程卡片可选入教学班。',
+                          style: TextStyle(fontSize: 12))
+                    else
+                      for (final j in items)
+                        ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(j.kcmc,
+                              style: const TextStyle(fontSize: 12.5)),
+                          subtitle: Text(
+                            <String>[
+                              if (j.xf != null) '${j.xf} 学分',
+                              if (j.teacher.isNotEmpty) j.teacher,
+                              if (j.sksj.isNotEmpty) j.sksj,
+                            ].join(' · '),
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          trailing: TextButton(
+                            onPressed: () {
+                              _toggleSimulate(j);
+                              setDlg(() {});
+                            },
+                            child: const Text('移除'),
+                          ),
+                        ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              if (items.isNotEmpty)
+                TextButton(
+                    onPressed: () {
+                      setState(_simulated.clear);
+                      setDlg(() {});
+                    },
+                    child: const Text('全部清空')),
+              FilledButton.icon(
+                onPressed: items.isEmpty || widget.onExportSimulated == null
+                    ? null
+                    : () {
+                        Navigator.of(context).pop();
+                        widget.onExportSimulated!(_simulatedRows());
+                      },
+                icon: const Icon(Icons.ios_share, size: 16),
+                label: const Text('导出给老师'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// 汇总栏：模拟清单非空时显示在视图顶部，点「管理/导出」查看清单。
+  Widget _simulatedBar() {
+    if (_simulated.isEmpty) return const SizedBox.shrink();
+    final credits =
+        _simulated.values.fold<double>(0, (s, j) => s + (j.xf ?? 0));
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      color: Colors.deepPurple.withValues(alpha: 0.07),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            const Icon(Icons.playlist_add_check,
+                size: 18, color: Colors.deepPurple),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                  '模拟选课 ${_simulated.length} 门 · ${credits.toStringAsFixed(1)} 学分（仅本机模拟，不向教务提交）',
+                  style: const TextStyle(
+                      fontSize: 12, fontWeight: FontWeight.w600)),
+            ),
+            TextButton(
+                onPressed: _openSimulatedManager, child: const Text('管理/导出')),
+          ],
+        ),
+      ),
+    );
+  }
 
   /// 教师评分实时客户端（v0.13.8）：页面生命周期内共享，同名请求去重、
   /// 24h 本地缓存；离线/站点不可达自动回落种子表，绝不阻塞选课页。
@@ -508,7 +803,11 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   /// 入口复合键 → 展示名（失败清单/重试按钮用；找不到原入口时如实显示复合键）。
   String _roundLabel(String rk) {
     for (final r in _index?.rounds ?? const <XkRound>[]) {
-      if (_rk(r) == rk) return r.label.isEmpty ? r.xkkzId : r.label;
+      if (_rk(r) == rk) {
+        // v0.13.10：重名「全部课程」用父类别名（如「通识必修课程」）区分。
+        final name = r.displayLabel;
+        return name.isEmpty ? r.xkkzId : name;
+      }
     }
     return rk;
   }
@@ -806,6 +1105,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         const SizedBox(height: 8),
         _viewSwitch(),
         const SizedBox(height: 8),
+        _simulatedBar(),
         switch (_view) {
           _View.rounds => _roundsView(),
           _View.merged => _mergedView(),
@@ -966,7 +1266,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                 avatar: _roundErrors.containsKey(_rk(r))
                     ? const Icon(Icons.error_outline, size: 14, color: Colors.orange)
                     : null,
-                label: Text(r.label.isEmpty ? '入口' : r.label),
+                label: Text(r.displayLabel.isEmpty ? '入口' : r.displayLabel),
                 selected: _rk(r) == _rk(selected),
                 // 汇总期间冻结轮切换：避免与批量拉取并发打同一入口（评审L1）
                 onSelected: _aggregating
@@ -1232,6 +1532,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                             _jxbLists[_jxbKey(m.base)]?.courses ?? const [],
                         jxbLoading: _jxbLoading.contains(_jxbKey(m.base)),
                         jxbNote: _jxbNote(m.base),
+                        chosenXkkh: _chosenXkkhSet,
+                        busySlots: _jxbBusySlots,
+                        simulatedXkkh: _simulated.keys.toSet(),
+                        onSimulateRequest: () => _openSimulateDialog(m.base),
                         liveRatings: _ratingLive,
                         onExpand: () => _loadTeachingClasses(m.base),
                       ),
@@ -1808,19 +2112,25 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   /// 改为按目标列宽切 N 列、每列独立纵排——展开只推远本列下方的卡，
   /// 其他列纹丝不动。卡片仍按内容自适应宽度（列内左对齐），不改气泡观感。
   Widget _masonry(double maxW, List<Widget> cards) {
-    const laneTarget = 220.0;
-    const gap = 6.0;
-    final lanes = ((maxW + gap) / (laneTarget + gap)).floor().clamp(1, 6);
+    // v0.13.10（用户反馈）：列内卡片横向拉伸对齐（不再按自然宽度留大空隙）、
+    // 卡片之间补 6px 竖向间距（此前 Column 无间距，视觉上像重叠）。
+    const laneTarget = 190.0;
+    const gapX = 6.0;
+    const gapY = 6.0;
+    final lanes = ((maxW + gapX) / (laneTarget + gapX)).floor().clamp(1, 6);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (var c = 0; c < lanes; c++) ...[
-          if (c > 0) const SizedBox(width: gap),
+          if (c > 0) const SizedBox(width: gapX),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (var i = c; i < cards.length; i += lanes) cards[i],
+                for (var i = c; i < cards.length; i += lanes) ...[
+                  if (i != c) const SizedBox(height: gapY),
+                  cards[i],
+                ],
               ],
             ),
           ),
@@ -1870,6 +2180,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                             _jxbLists[_jxbKey(c)]?.courses ?? const [],
                         jxbLoading: _jxbLoading.contains(_jxbKey(c)),
                         jxbNote: _jxbNote(c),
+                        chosenXkkh: _chosenXkkhSet,
+                        busySlots: _jxbBusySlots,
+                        simulatedXkkh: _simulated.keys.toSet(),
+                        onSimulateRequest: () => _openSimulateDialog(c),
                         liveRatings: _ratingLive,
                         onExpand: () => _loadTeachingClasses(c),
                       ),
@@ -1964,6 +2278,17 @@ class CourseBubble extends StatefulWidget {
   /// null → 不提示（未展开前、或已成功拿到教学班）。
   final String? jxbNote;
 
+  /// 已选教学班 xkkh 集合（状态标签「已选」判定；来自教务已选清单）。
+  final Set<String> chosenXkkh;
+
+  /// 当前占用时隙（课表 + 已选 + 模拟选课），用于「冲突」判定。
+  final List<Map<String, dynamic>> busySlots;
+
+  /// 模拟选中的教学班 xkkh 集合（卡片/行显示「模拟中」角标）；
+  /// 模拟入口：桌面双击 / 移动端长按卡片弹窗选班（v0.13.10 用户指定交互）。
+  final Set<String> simulatedXkkh;
+  final VoidCallback? onSimulateRequest;
+
   /// 展开回调：页面据此按需拉取该课程的教学班（只拉一次，失败可再点重试）。
   final VoidCallback? onExpand;
 
@@ -1981,6 +2306,10 @@ class CourseBubble extends StatefulWidget {
     this.teachingClasses = const [],
     this.jxbLoading = false,
     this.jxbNote,
+    this.chosenXkkh = const {},
+    this.busySlots = const [],
+    this.simulatedXkkh = const {},
+    this.onSimulateRequest,
     this.liveRatings,
     this.onExpand,
   });
@@ -2090,6 +2419,9 @@ class _CourseBubbleState extends State<CourseBubble> {
       message: details,
       child: GestureDetector(
         onTap: _handleTap,
+        // 模拟选课入口：双击（桌面）与长按（移动端）都打开选班弹窗。
+        onDoubleTap: widget.onSimulateRequest,
+        onLongPress: widget.onSimulateRequest,
         child: Opacity(
           opacity: dimmed ? 0.62 : 1,
           child: ConstrainedBox(
@@ -2254,8 +2586,28 @@ class _CourseBubbleState extends State<CourseBubble> {
     return '${index + 1}';
   }
 
+  /// 教学班状态标识键：优先真实 xkkh，缺失时退到（课号/课名/班号）组合。
+  String _jxbKeyOf(XkCourse j) {
+    final xkkh = '${j.raw['xkkh'] ?? ''}'.trim();
+    if (xkkh.isNotEmpty) return xkkh;
+    return '${j.kch} ${j.kcmc} ${j.jxbmc}';
+  }
+
+  /// zdbk 图例配色（LIVE 实证）：可选=绿、冲突=红、余量不足=灰绿、
+  /// 未选=蓝灰（保证文字可读）、已选=琥珀。
+  Color _jxbStatusColor(JxbStatus s) => switch (s) {
+        JxbStatus.selected => Colors.amber.shade800,
+        JxbStatus.conflict => Colors.red.shade700,
+        JxbStatus.insufficient => Colors.grey.shade700,
+        JxbStatus.unselected => Colors.blueGrey.shade600,
+        JxbStatus.available => Colors.green.shade700,
+      };
+
   Widget _teachingClassLine(BuildContext context, XkCourse j, int index) {
     final scheme = Theme.of(context).colorScheme;
+    final status = classifyJxb(j,
+        chosenXkkh: widget.chosenXkkh, busySlots: widget.busySlots);
+    final simulated = widget.simulatedXkkh.contains(_jxbKeyOf(j));
     final head = <String>[
       '教学班 ${_jxbSeq(j, index)}',
       if (j.teacher.isNotEmpty) j.teacher,
@@ -2263,8 +2615,11 @@ class _CourseBubbleState extends State<CourseBubble> {
     final meta = <String>[
       if (j.sksj.isNotEmpty) j.sksj,
       if (j.cdmc.isNotEmpty) j.cdmc,
-      if (j.cap != null || j.selected != null)
-        '容量 ${j.cap ?? '-'}/已选 ${j.selected ?? '-'}',
+      // 容量信息（v0.13.10 用户要求）：rs=余量/容量，已选 = 容量 - 余量。
+      if (j.cap != null) '容量 ${j.cap}',
+      if (j.selected != null) '已选 ${j.selected} 人',
+      if (j.cap != null && j.selected != null)
+        '余 ${(j.cap! - j.selected!).clamp(0, 1 << 30)}',
     ].join(' · ');
     return Padding(
       padding: const EdgeInsets.only(top: 3),
@@ -2272,11 +2627,24 @@ class _CourseBubbleState extends State<CourseBubble> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(head,
-              style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                  color: scheme.onSurface.withValues(alpha: 0.9))),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(head,
+                    style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: scheme.onSurface.withValues(alpha: 0.9))),
+              ),
+              const SizedBox(width: 4),
+              _miniTag(jxbStatusLabel(status), _jxbStatusColor(status)),
+              if (simulated) ...[
+                const SizedBox(width: 3),
+                _miniTag('模拟中', Colors.deepPurple),
+              ],
+            ],
+          ),
           if (meta.isNotEmpty)
             Text(meta,
                 style: TextStyle(

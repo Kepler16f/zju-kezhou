@@ -373,7 +373,40 @@ XkIndexParseResult parseXkIndexHtml(String html) {
       dotAll: true);
   final zjuAnchors = zjuAnchorRe.allMatches(html);
   final zjuByDl =
-      <String, ({String dl, String lx, String label, List<String> extraArgs, Map<String, String> attrs})>{};
+      <String, ({String dl, String lx, String label, String group, List<String> extraArgs, Map<String, String> attrs})>{};
+
+  // v0.13.10：解析「全部课程」的上级类别（浙大 ghb 页有多个同名下拉子项）。
+  // 维护 <li kclbmc=…> 开闭栈：锚点所在 li 的 kclbmc 是自身标签，
+  // 再往上一层非空且不同于自身标签的 kclbmc 就是父类别（如「通识必修课程」）。
+  final liEvents = <({int pos, bool open, String name})>[
+    for (final m in RegExp(r'<li\b[^>]*>', caseSensitive: false).allMatches(html))
+      (
+        pos: m.start,
+        open: true,
+        name: _tagAttr(m.group(0)!, 'kclbmc') ?? '',
+      ),
+    for (final m in RegExp(r'</li\s*>', caseSensitive: false).allMatches(html))
+      (pos: m.start, open: false, name: ''),
+  ]..sort((a, b) => a.pos.compareTo(b.pos));
+  String parentGroupAt(int pos, String label) {
+    final stack = <String>[];
+    for (final e in liEvents) {
+      if (e.pos >= pos) break;
+      if (e.open) {
+        stack.add(e.name);
+      } else if (stack.isNotEmpty) {
+        stack.removeLast();
+      }
+    }
+    // 栈顶是锚点自身的 <li>（kclbmc 可能与标签不同，如「本类(专业)选课」），
+    // 父类别 = 往下第一个非空祖先。
+    for (var i = stack.length - 2; i >= 0; i--) {
+      final n = stack[i].trim();
+      if (n.isEmpty) continue;
+      return n;
+    }
+    return '';
+  }
   final zjuArgsRe = RegExp(
       r"""categroyClick\s*\(\s*this\s*((?:\s*,\s*['"][^'"]*['"])+)""",
       caseSensitive: false);
@@ -411,6 +444,7 @@ XkIndexParseResult parseXkIndexHtml(String html) {
             inner.replaceAll(RegExp(r'<[^>]+>'), '').replaceAll(RegExp(r'\s+'), ' ').trim())
         .trim();
     if (dl.isEmpty) continue;
+    final group = parentGroupAt(m.start, label);
     final key = '$dl\u0000$lx'; // 同 dl 跨 lx 子入口不去重（#10），同 dl 同 lx 才合并
     final prev = zjuByDl[key];
     if (prev == null) {
@@ -418,6 +452,7 @@ XkIndexParseResult parseXkIndexHtml(String html) {
         dl: dl,
         lx: lx,
         label: label.isEmpty ? dl : label,
+        group: group,
         extraArgs: extraArgs,
         attrs: attrs,
       );
@@ -431,6 +466,7 @@ XkIndexParseResult parseXkIndexHtml(String html) {
               dl: dl,
               lx: lx.isNotEmpty ? lx : prev.lx,
               label: label.isEmpty ? prev.label : label,
+              group: group.isNotEmpty ? group : prev.group,
               extraArgs: extraArgs,
               attrs: attrs,
             )
@@ -439,6 +475,7 @@ XkIndexParseResult parseXkIndexHtml(String html) {
         dl: base.dl,
         lx: base.lx,
         label: base.label,
+        group: base.group,
         extraArgs: base.extraArgs.isNotEmpty ? base.extraArgs : extraArgs,
         attrs: {...attrs, ...base.attrs}, // 先到者优先，仅补缺失键
       );
@@ -453,6 +490,7 @@ XkIndexParseResult parseXkIndexHtml(String html) {
             xkkzId: e.dl,
             kklxdm: e.lx,
             label: e.label,
+            group: e.group,
             extraArgs: e.extraArgs,
             attrs: e.attrs,
           ),
@@ -703,6 +741,13 @@ XkListParseResult parseXkCourseList(String body,
         if (slotIssues.length < 8) slotIssues.add(i);
       }
     }
+    // 教学班容量（v0.13.10 LIVE 实证）：浙大 JxbList 行用 rs="余量/容量"
+    // （如 41/43 = 余 41 席、容量 43，前端 tr-disable 判定即看首数>0）。
+    // jxbrl/capacity 是其他实例的显式字段，优先；rs 解析出容量与已选。
+    final rsText = '${m['rs'] ?? ''}'.trim();
+    final rsM = RegExp(r'^(\d+)\s*/\s*(\d+)$').firstMatch(rsText);
+    final rsRemain = rsM == null ? null : int.tryParse(rsM.group(1)!);
+    final rsCap = rsM == null ? null : int.tryParse(rsM.group(2)!);
     courses.add(XkCourse(
       kcmc: kcmc,
       kch: cleanListText(_pick(m, const ['kch', 'xk_kch', 'kcdm', 'courseCode'])),
@@ -718,8 +763,10 @@ XkListParseResult parseXkCourseList(String body,
       subTerm: _pick(m, const ['xxq']),
       tags: tags,
       categories: categories,
-      cap: _int(_pick(m, const ['jxbrl', 'capacity'])),
-      selected: _int(_pick(m, const ['yxzrs', 'selected_number', 'yxrs'])),
+      cap: _int(_pick(m, const ['jxbrl', 'capacity'])) ?? rsCap,
+      selected: _int(_pick(m, const ['yxzrs', 'selected_number'])) ??
+          (rsCap != null && rsRemain != null ? rsCap - rsRemain : null) ??
+          _int(_pick(m, const ['yxrs'])),
       slots: slots,
       xkkzId: xkkzId,
       xklc: xklc,

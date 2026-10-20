@@ -1748,6 +1748,9 @@ class ZjuClient {
   /// 上次选课入口是否来自缓存（UI 据此提示"离线/可能过期"）。
   bool lastXkIndexFromCache = false;
 
+  /// 最近一次选课首页原始 HTML（仅诊断/探针用，不落盘、不含凭证）。
+  String? lastXkIndexHtml;
+
   /// 选课首页：入口（类别×轮次）发现 + 查询参数采集（隐藏域）。
   /// 轮次信息内嵌于页面 onclick（无独立轮次接口，评审A1）；xklc 拿不到就留空，不臆取。
   /// 缓存策略（评审L2 改口径）：**缓存优先**——回读带「可能过期」标注，「刷新入口」走直连；
@@ -1762,7 +1765,7 @@ class ZjuClient {
         if (obj is! Map) return null;
         // 缓存 schema 版本：v3 起携带入口全参数（extra_args/attrs，#4 认定型入口）；
         // 旧版本读不到这些参数会让认定类入口仍按缺参请求，直接失效重拉。
-        if ((obj['v'] as num?)?.toInt() != 3) return null;
+        if ((obj['v'] as num?)?.toInt() != 4) return null;
         final rounds = <XkRound>[];
         for (final r in (obj['rounds'] as List? ?? const [])) {
           if (r is Map && '${r['xkkz_id'] ?? ''}'.isNotEmpty) {
@@ -1771,6 +1774,7 @@ class ZjuClient {
               kklxdm: '${r['kklxdm'] ?? ''}',
               xklc: '${r['xklc'] ?? ''}'.isEmpty ? null : '${r['xklc']}',
               label: '${r['label'] ?? ''}',
+              group: '${r['group'] ?? ''}',
               extraArgs: [
                 for (final a in (r['extra_args'] as List? ?? const [])) '$a'
               ],
@@ -1832,11 +1836,12 @@ class ZjuClient {
               issues: [...parsed.issues, ...hbParsed.issues]);
         }
       }
+      lastXkIndexHtml = html;
       if (parsed.rounds.isNotEmpty) {
         await store.saveCache(
             cacheKey,
             json.encode({
-              'v': 3,
+              'v': 4,
               'fetched_at': DateTime.now().millisecondsSinceEpoch,
               'xkxnm': parsed.xkxnm,
               'xkxqm': parsed.xkxqm,
@@ -1851,6 +1856,7 @@ class ZjuClient {
                     'kklxdm': x.kklxdm,
                     'xklc': x.xklc,
                     'label': x.label,
+                    'group': x.group,
                     'extra_args': x.extraArgs,
                     'attrs': x.attrs,
                   }

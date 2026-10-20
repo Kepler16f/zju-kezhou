@@ -58,6 +58,25 @@ void main() {
       expect((planned[1] as Map)['course_id'], isNull);
     });
 
+    test('v0.13.10：status 字段（earned/active/simulated）随包往返', () {
+      final packed = buildSharePack(
+        student: _student(),
+        courses: [
+          {'name': '高等数学', 'credits': 5.0, 'passed': true},
+        ],
+        selectedCourses: [
+          {'name': '军训', 'status': 'earned'},
+          {'name': '微积分（甲）Ⅰ', 'status': 'active'},
+          {'name': '人工智能导论', 'status': 'simulated'},
+        ],
+      );
+      final parsed = json.decode(packed.jsonText) as Map<String, dynamic>;
+      expect(validateSharePack(parsed), isEmpty);
+      final sel = (parsed['selected_courses'] as List).cast<Map>();
+      expect(sel.map((r) => r['status']).toList(),
+          ['earned', 'active', 'simulated']);
+    });
+
     test('白名单强制：调用方塞成绩字段也进不了 selected_courses', () {
       final packed = buildSharePack(
         student: _student(),

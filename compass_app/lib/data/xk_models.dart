@@ -25,6 +25,10 @@ class XkRound {
   final List<String> extraArgs; // onclick 第 3 起字符串参数（语义无证据，只透传/留痕）
   final Map<String, String> attrs; // 锚点 data-* 属性全集（dl/lx 除外；键小写、无 data- 前缀）
 
+  /// 上级类别名（v0.13.10）：浙大 ghb 页里「全部课程」在多个下拉类别下重复出现，
+  /// 解析时取最近的非同名祖先 <li kclbmc=…>，UI 用它替代重复的「全部课程」。
+  final String group;
+
   const XkRound({
     required this.xkkzId,
     this.kklxdm = '',
@@ -32,11 +36,16 @@ class XkRound {
     this.label = '',
     this.extraArgs = const [],
     this.attrs = const {},
+    this.group = '',
   });
+
+  /// 展示名：重复的「全部课程」用上级类别名代替（如「通识必修课程」）。
+  String get displayLabel =>
+      (label == '全部课程' && group.isNotEmpty) ? group : label;
 
   @override
   String toString() =>
-      'XkRound($xkkzId, $kklxdm, $xklc, $label, args=$extraArgs, attrs=$attrs)';
+      'XkRound($xkkzId, $kklxdm, $xklc, $label, group=$group, args=$extraArgs, attrs=$attrs)';
 }
 
 /// 一条课程列表行（解析后）。

@@ -169,6 +169,25 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
   List<Map<String, dynamic>> _selectedOf(Map<String, dynamic> pack) =>
       sharePackSelected(pack);
 
+  /// 行状态标签（v0.13.10）：earned=已获学分（绿）、simulated=模拟选课（紫）、
+  /// 其余/缺字段=在修（蓝，v3 旧包向后兼容按在修处理）。
+  Widget? _selectedStatusChip(Object? status) {
+    final s = '${status ?? ''}';
+    final (label, color) = switch (s) {
+      'earned' => ('已获学分', Colors.green.shade700),
+      'simulated' => ('模拟选课', Colors.deepPurple),
+      _ => ('在修', Colors.blue.shade700),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(label, style: TextStyle(fontSize: 10, color: color)),
+    );
+  }
+
   /// 选课明细行副标题：学分 · 教师 · 时间 · 地点（空字段跳过，与成绩页「本学期已选」同款口径）。
   String _selectedDetail(Map<String, dynamic> r) {
     final credits = r['credits'];
@@ -371,6 +390,7 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
                         leading: const Icon(Icons.schedule, size: 18),
                         title: Text('${r['name'] ?? ''}'),
                         subtitle: Text(_selectedDetail(r)),
+                        trailing: _selectedStatusChip(r['status']),
                       ),
                   ],
                 ),

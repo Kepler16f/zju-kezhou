@@ -34,6 +34,7 @@ import 'engine/audit.dart';
 import 'engine/cache_versions.dart';
 import 'engine/foreign_grade_rule.dart';
 import 'engine/course_marks.dart';
+import 'engine/course_state.dart';
 import 'engine/exam.dart';
 // 课程类别打通（「未分类」修复）：用审计方案板块补全展示链路的 category。
 import 'engine/plan_audit_adapter.dart'
@@ -502,7 +503,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// [aiAdvice] 为选课页「导出给指导教师」传来的 AI 咨询问答（自愿附带）。
   /// 返回提示文本（行数/路径），失败返回原因——设置页直接展示。
   Future<String> _exportSharePack(
-      {bool realName = false, List<Map<String, String>>? aiAdvice}) async {
+      {bool realName = false,
+      List<Map<String, String>>? aiAdvice,
+      List<Map<String, dynamic>>? simulatedCourses}) async {
     if (_courses.isEmpty || _report == null) {
       return '尚未完成学业审计：先在设置页运行一次审计（登录教务或样例均可）';
     }
@@ -516,16 +519,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       'grade': prev['grade']?.toString() ?? _current.substring(0, 4),
       'current_semester': prev['current_semester']?.toString() ?? _current,
     };
+    // v0.13.10（用户反馈：导出要区分已获得学分与已选，和首页本学期已选同步）：
+    // 每行带 status——earned（已获学分，成绩单有通过成绩）/ active（在修未出分），
+    // 判定复用首页/审计同源的 choosedCourseTranscriptState；模拟选课行标 simulated。
+    final selected = exportRowsFromPlanned(
+      _choosed,
+      semester: student['current_semester']?.toString(),
+    );
+    for (final r in selected) {
+      final st = choosedCourseTranscriptState(
+        courseId: '${r['course_id'] ?? ''}',
+        name: '${r['name'] ?? ''}',
+        transcript: _courses,
+      );
+      r['status'] = st == PlanCourseState.earned ? 'earned' : 'active';
+    }
+    for (final r in simulatedCourses ?? const <Map<String, dynamic>>[]) {
+      r['status'] = 'simulated';
+    }
     final packed = buildSharePack(
       student: student,
       courses: _courses,
       plan: _auditPlan,
       aiAdvice: aiAdvice,
       // 任务 #12：本学期已选（在修未出分）随包自愿导出，教师端可看课程明细。
-      selectedCourses: exportRowsFromPlanned(
-        _choosed,
-        semester: student['current_semester']?.toString(),
-      ),
+      selectedCourses: [...selected, ...?simulatedCourses],
     );
     await Clipboard.setData(ClipboardData(text: packed.jsonText));
     String pathNote;
@@ -1346,6 +1364,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             resetToken: _aiSessionReset,
             onGoSettings: () => setState(() => _tabIndex = tabSettings),
             onAiContext: (s) => _selectionSummary = s,
+            // 模拟选课「导出给老师」：清单并入分享包 selected_courses（status=simulated）。
+            onExportSimulated: (rows) async {
+              final messenger = ScaffoldMessenger.of(context);
+              final msg = await _exportSharePack(simulatedCourses: rows);
+              if (mounted) {
+                setState(() => _notice = msg);
+                messenger.showSnackBar(
+                    SnackBar(content: Text(msg), duration: const Duration(seconds: 4)));
+              }
+            },
             // 需求 #12：选课页「导出给指导教师」→ 当前审计 + AI 问答合并成分享包。
             onExportAdvice: (advice) async {
               final messenger = ScaffoldMessenger.of(context); // await 前先捕获

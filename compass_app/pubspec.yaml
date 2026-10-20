@@ -1,7 +1,7 @@
 name: compass_app
 description: "课舟 ClassArk — 本科培养方案结构化与选课风险审计（全平台 Flutter 成品）"
 publish_to: 'none'
-version: 0.13.9+23
+version: 0.13.10+24
 
 environment:
   sdk: ">=3.3.0 <4.0.0"   # 兼容 flutter-ohos 3.27（Dart 3.6）与 stable 3.47

@@ -159,6 +159,32 @@ void main() {
       expect(r.rounds[1].extraArgs, ['2020', '2021']);
     });
 
+    test('浙大 ghb 下拉：重名「全部课程」带出父类别（displayLabel）', () {
+      const html = ''
+          '<ul class="nav nav-tabs">'
+          '<li class="leaf" kclbmc="本类(专业)选课" title="本类(专业)选课">'
+          '<a class="category" data-dl="xk_1" data-lx="bl" '
+          'onclick="categroyClick(this,\'xk_1\',\'bl\')">本类(专业)</a></li>'
+          '<li class="leaf" kclbmc="通识必修课程" title="通识必修课程">'
+          '<a class="dropdown-toggle">通识必修课程</a>'
+          '<ul class="dropdown-menu">'
+          '<li kclbmc="全部课程" title="全部课程">'
+          '<a class="category" data-dl="xk_b" data-lx="bl" '
+          'onclick="categroyClick(this,\'xk_b\',\'bl\')">全部课程</a></li>'
+          '<li kclbmc="军体类" title="军体类">'
+          '<a class="category" data-dl="EB" data-lx="zl" '
+          'onclick="categroyClick(this,\'EB\',\'zl\')">军体类</a></li>'
+          '</ul></li></ul>';
+      final r = parseXkIndexHtml(html);
+      final byId = {for (final x in r.rounds) x.xkkzId: x};
+      expect(byId['xk_b']!.group, '通识必修课程');
+      expect(byId['xk_b']!.displayLabel, '通识必修课程'); // 重名→父类
+      expect(byId['EB']!.group, '通识必修课程');
+      expect(byId['EB']!.displayLabel, '军体类'); // 本身不重名，保留原标签
+      expect(byId['xk_1']!.group, isEmpty); // 顶层无父类
+      expect(byId['xk_1']!.displayLabel, '本类(专业)');
+    });
+
     test('重复 xkkz_id 去重', () {
       const html = '<a onclick="queryCourse(this,\'10\',\'X1\',\'1\')">A</a>'
           '<a onclick="queryCourse(this,\'10\',\'X1\',\'1\')">A</a>';
@@ -284,6 +310,30 @@ void main() {
       expect(r.courses.single.cap, 30);
       expect(r.courses.single.selected, 10);
       expect(r.courses.single.teacher, '李四');
+    });
+
+    test('浙大 JxbList 行 rs=「余量/容量」→ cap/selected（LIVE 实证 41/43）', () {
+      final row = {
+        'kcdm': '03121740',
+        'kcmc': '中外教育改革专题研究',
+        'jsxm': '商丽浩<br>刘海峰',
+        'rs': '41/43',
+        'sfxz': '0',
+        'xkkh': '(2026-2027-1)-03121740-0090223-1',
+      };
+      final c = parseXkCourseList('[${_json(row)}]', xkkzId: 'xk_4')
+          .courses
+          .single;
+      expect(c.cap, 43);
+      expect(c.selected, 2); // 容量 - 余量
+      expect(c.teacher, '商丽浩 / 刘海峰');
+    });
+
+    test('rs 非法形态（--/非数字）→ 不硬造容量', () {
+      final row = {'kcdm': 'X', 'kcmc': '课', 'rs': '--'};
+      final c = parseXkCourseList('[${_json(row)}]', xkkzId: 'R').courses.single;
+      expect(c.cap, isNull);
+      expect(c.selected, isNull);
     });
 
     test('浙大 KcList：裸数组 + kcxx 学分 + xxq 子学期 + 类别标签', () {

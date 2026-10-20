@@ -44,6 +44,9 @@ const Set<String> shareRowKeepFields = {
 /// 行形状由 engine/selection.dart 的 exportRowsFromPlanned 产出。
 const Set<String> selectedRowKeepFields = {
   'course_id', 'name', 'credits', 'teacher', 'sksj', 'cdmc', 'semester',
+  // v0.13.10：行状态 earned（已获学分）/ active（在修）/ simulated（模拟选课），
+  // 教师端据此区分展示；缺字段视为 active（v3 旧包向后兼容）。
+  'status',
 };
 
 /// 学生侧构造分享包 JSON 文本（pretty，便于学生肉眼核对内容后再外发）。

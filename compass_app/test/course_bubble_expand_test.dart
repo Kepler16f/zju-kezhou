@@ -128,7 +128,17 @@ void main() {
           sksj: '周二第1,2节',
           cdmc: '紫金港东2-203',
           cap: 60,
-          selected: 42),
+          selected: 42,
+          // 真实解析层会从 sksj 生成 slots；合成数据直接给出（状态判定依赖它）。
+          slots: [
+            {
+              'day': 2,
+              'start': 1,
+              'end': 2,
+              'week_start': 1,
+              'week_end': 16
+            }
+          ]),
       XkCourse(
           kcmc: '微积分（甲）Ⅰ',
           kch: 'MATH1135G',
@@ -169,7 +179,10 @@ void main() {
     expect(find.textContaining('汪国军'), findsOneWidget);
     expect(find.textContaining('周二第1,2节'), findsOneWidget);
     expect(find.textContaining('紫金港东2-203'), findsOneWidget);
-    expect(find.textContaining('容量 60/已选 42'), findsOneWidget);
+    expect(
+        find.textContaining('容量 60 · 已选 42 人 · 余 18'), findsOneWidget);
+    // zdbk 五态标签（v0.13.10）：无冲突有余量 → 可选
+    expect(find.text('可选'), findsWidgets);
     expect(find.textContaining('教学班 0015103'), findsOneWidget);
     // 平行班教师不同：命中的显示分数，未命中的显示「暂无」
     expect(find.text('评分 9.4/10（148 人评 · 查老师）'), findsOneWidget);
