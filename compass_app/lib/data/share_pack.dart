@@ -31,10 +31,12 @@ const String sharePackFormat = 'kez.share-pack';
 const int sharePackVersion = 3;
 
 /// 导出行保留白名单——审计与展示所需的最小集合。
-/// 名单外字段（grade/five_point/xkkh/source 等）一律剔除，这是脱敏的事实源。
+/// 名单外字段（grade/five_point/xkkh/source/original 等）一律剔除，这是脱敏的事实源。
+/// original 是教务原始成绩文本（数值型如 "90"），与「不含分数」承诺冲突，
+/// 2026-10-21 评审发现后移出白名单（教师端审计只用 passed/credits，无功能损失）。
 const Set<String> shareRowKeepFields = {
   'course_id', 'name', 'credits', 'passed', 'semester',
-  'category', 'original', 'credit_included', 'gpa_included',
+  'category', 'credit_included', 'gpa_included',
 };
 
 /// v3 选课行白名单（selected_courses 段）——导师审阅「本学期选了什么」
@@ -281,7 +283,7 @@ String buildAdviceExportText(List<Map<String, String>> advice) {
 /// 注意 student.grade 是入学年份（引擎必需），故豁免 student 段不扫。
 List<String> scanSensitiveKeys(Map<String, dynamic> pack) {
   const forbidden = {
-    'grade', 'five_point', 'five_point_source', 'xkkh',
+    'grade', 'five_point', 'five_point_source', 'xkkh', 'original',
     'student_id', 'sid', 'password', 'ticket', 'jsessionid',
   };
   final hits = <String>[];

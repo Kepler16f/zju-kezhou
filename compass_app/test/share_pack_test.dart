@@ -46,6 +46,7 @@ void main() {
         expect(r.containsKey('grade'), isFalse);
         expect(r.containsKey('five_point'), isFalse);
         expect(r.containsKey('xkkh'), isFalse);
+        expect(r.containsKey('original'), isFalse);
       }
       // 学生默认匿名（alias 传入「本人」→ 保留，但无学号字段）
       expect((parsed['student'] as Map).containsKey('student_id'), isFalse);
