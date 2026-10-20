@@ -51,6 +51,29 @@ void main() {
       expect(store.lookupAny('', null), isNull);
     });
 
+    test('splitTeacherNames：真实 jsxm 的 <br>/顿号/逗号拆名、去空白去重', () {
+      expect(TeacherRatingStore.splitTeacherNames('商丽浩 / 刘海峰'),
+          ['商丽浩', '刘海峰']);
+      expect(TeacherRatingStore.splitTeacherNames('余超 / 陈伟乐 / 赵云鹏'),
+          ['余超', '陈伟乐', '赵云鹏']);
+      expect(TeacherRatingStore.splitTeacherNames('谭芸、祝一虹'),
+          ['谭芸', '祝一虹']);
+      expect(TeacherRatingStore.splitTeacherNames('张三'), ['张三']);
+      expect(TeacherRatingStore.splitTeacherNames(''), <String>[]);
+      expect(TeacherRatingStore.splitTeacherNames('张三 / 张三'), ['张三']);
+    });
+
+    test('lookupAll：多教师逐个返回（未命中为 null、保序）', () {
+      final store = TeacherRatingStore.fromJson(const {
+        '祝一虹': {'avg': 9.1, 'count': 30},
+      });
+      final hits = store.lookupAll('谭芸 / 祝一虹', null);
+      expect(hits.length, 2);
+      expect(hits[0], isNull); // 谭芸未收录
+      expect(hits[1]?.avg, 9.1);
+      expect(store.lookupAll('', null), isEmpty);
+    });
+
     test('脏数据逐条跳过、绝不抛：非 Map / avg 缺失 / 越界 / 非数值 / NaN / Infinity',
         () {
       final store = TeacherRatingStore.fromJson(const {

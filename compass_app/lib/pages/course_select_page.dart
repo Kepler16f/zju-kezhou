@@ -126,6 +126,33 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   final Set<String> _jxbLoading = {};
   String _jxbKey(XkCourse c) => '${c.kch}\u0000${c.kcmc}';
 
+  /// 网格分页窗口（性能修复：真实选课池单入口可达 1000+ 门，
+  /// 一次性构建让滑动与每次 setState 展开都付出全量重建代价）。
+  /// key=视图/入口/搜索词组合 → 已展示条数；换视图或换搜索词自动回到首页窗口。
+  static const int _gridPageSize = 60;
+  final Map<String, int> _pageLimits = {};
+
+  int _windowCount(String pageKey, int total) {
+    final shown = _pageLimits[pageKey] ?? _gridPageSize;
+    return shown.clamp(1, total).toInt();
+  }
+
+  Widget _showMoreButton(String pageKey, int shown, int total) {
+    if (shown >= total) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          onPressed: () => setState(
+              () => _pageLimits[pageKey] = shown + _gridPageSize),
+          icon: const Icon(Icons.expand_more, size: 18),
+          label: Text('继续显示（还有 ${total - shown} 门）'),
+        ),
+      ),
+    );
+  }
+
   _View _view = _View.rounds;
   final _searchCtl = TextEditingController();
 
@@ -426,6 +453,23 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     return rounds.isEmpty ? null : rounds.first;
   }
 
+  /// 教学班状态一行说明（用户反馈「有些课教学班显示不出来」须可见原因）：
+  /// 展开过且未就绪才提示；未展开过不打扰。
+  String? _jxbNote(XkCourse c) {
+    if (_jxbLoading.contains(_jxbKey(c))) return null; // 已有「正在加载…」
+    final res = _jxbLists[_jxbKey(c)];
+    if (res == null) return null; // 尚未拉过（未展开）
+    if (res.courses.isNotEmpty) return null; // 正常有教学班
+    if (res.blocked || res.state == 'unavailable') {
+      final why = res.issues.isNotEmpty ? res.issues.first : '教务未返回教学班';
+      return '教学班暂不可用：$why（再点一次重试）';
+    }
+    if (res.state == 'empty') {
+      return '该课在教务侧暂无教学班记录（可能只开一个自然班）';
+    }
+    return null;
+  }
+
   /// 用户展开课程卡时按需拉取教学班（教师/时间/地点）。
   /// 只拉一次（成功进内存，另有本地缓存）；失败不写缓存，再点展开即重试。
   Future<void> _loadTeachingClasses(XkCourse c) async {
@@ -615,8 +659,41 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         ],
       );
 
-  Map<String, PlanCourseState> _statesForNames(Iterable<String> names) =>
-      resolvePlanCourseStates(names, _courseEvidence());
+  /// 修读状态缓存：证据（成绩/已选/课表/报告/方案）对象引用不变时，
+  /// 只对新出现的课名做增量解析。
+  /// 性能修复：汇总视图单入口可达 1000+ 门课，每次重建都对全量课名跑一遍
+  /// 方案匹配会在展开/收起时引入肉眼可见的掉帧；证据一变（didUpdateWidget
+  /// 传入新列表或本地刷新课表）缓存自然整体重建。
+  Map<String, PlanCourseState>? _statesCache;
+  Object? _statesKeyTranscript, _statesKeyChoosed, _statesKeyTimetable,
+      _statesKeyReport, _statesKeyPlan, _statesKeyLocalTt;
+
+  Map<String, PlanCourseState> _statesForNames(Iterable<String> names) {
+    final evidenceChanged = _statesCache == null ||
+        _statesKeyTranscript != widget.transcript ||
+        _statesKeyChoosed != widget.choosed ||
+        _statesKeyTimetable != widget.timetable ||
+        _statesKeyLocalTt != _timetable ||
+        _statesKeyReport != widget.report ||
+        _statesKeyPlan != widget.plan;
+    if (evidenceChanged) {
+      _statesCache = {};
+      _statesKeyTranscript = widget.transcript;
+      _statesKeyChoosed = widget.choosed;
+      _statesKeyTimetable = widget.timetable;
+      _statesKeyLocalTt = _timetable;
+      _statesKeyReport = widget.report;
+      _statesKeyPlan = widget.plan;
+    }
+    final missing = [
+      for (final n in names)
+        if (!_statesCache!.containsKey(n)) n
+    ];
+    if (missing.isNotEmpty) {
+      _statesCache!.addAll(resolvePlanCourseStates(missing, _courseEvidence()));
+    }
+    return _statesCache!;
+  }
 
   PlanCourseState _stateOf(XkCourse c, Map<String, PlanCourseState> states) =>
       states[c.kcmc] ?? PlanCourseState.unknown;
@@ -912,7 +989,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         if (list != null) ...[
           _stateBanner(list, selected, loading: loadingThis),
           const SizedBox(height: 4),
-          ..._courseCards(list.courses),
+          ..._courseCards(list.courses, pageKey: 'round|${_rk(selected)}'),
         ] else if (roundError != null) ...[
           Text('该入口状态未知（未开放/会话受限/接口未返回数据），不代表没有课程',
               style: const TextStyle(fontSize: 11, color: Colors.orange)),
@@ -1121,40 +1198,53 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             .toList()
         : sorted;
 
-    Widget grid(List<XkMergedCourse> items) => LayoutBuilder(
+    // 分页窗口键含搜索词：换词即回首页窗口（旧窗口进度对新一批结果没有意义）。
+    final mergedKey = 'merged|$q';
+    Widget grid(List<XkMergedCourse> items, String gridKey) => LayoutBuilder(
           builder: (context, cons) {
             final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
-            return Wrap(
-              spacing: 6,
-              runSpacing: 6,
+            final shown = _windowCount(gridKey, items.length);
+            final page = items.sublist(0, shown);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final m in items)
-                  ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: maxW),
-                    child: CourseBubble(
-                      course: m.base,
-                      conflict: ttSlots.isNotEmpty &&
-                          Timeline.slotsConflict(m.slots, ttSlots) != null,
-                      selected: _isCourseSelected(m.base, selectedKeys),
-                      state: _stateOf(m.base, states),
-                      onTap: () =>
-                          _showCourseStateHint(_stateOf(m.base, states)),
-                      // 诉求 #11：跨入口合并后的全部类别（去重保序）逐枚出 Chip
-                      categories: m.categories,
-                      extraTags: m.tags,
-                      extraDetails: _mergedDetails(m),
-                      teachingClasses:
-                          _jxbLists[_jxbKey(m.base)]?.courses ?? const [],
-                      jxbLoading: _jxbLoading.contains(_jxbKey(m.base)),
-                      onExpand: () => _loadTeachingClasses(m.base),
-                    ),
-                  ),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final m in page)
+                      ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: maxW),
+                        child: RepaintBoundary(
+                          child: CourseBubble(
+                            course: m.base,
+                            conflict: ttSlots.isNotEmpty &&
+                                Timeline.slotsConflict(m.slots, ttSlots) != null,
+                            selected: _isCourseSelected(m.base, selectedKeys),
+                            state: _stateOf(m.base, states),
+                            onTap: () =>
+                                _showCourseStateHint(_stateOf(m.base, states)),
+                            // 诉求 #11：跨入口合并后的全部类别（去重保序）逐枚出 Chip
+                            categories: m.categories,
+                            extraTags: m.tags,
+                            extraDetails: _mergedDetails(m),
+                            teachingClasses:
+                                _jxbLists[_jxbKey(m.base)]?.courses ?? const [],
+                            jxbLoading: _jxbLoading.contains(_jxbKey(m.base)),
+                            jxbNote: _jxbNote(m.base),
+                            onExpand: () => _loadTeachingClasses(m.base),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                _showMoreButton(gridKey, shown, items.length),
               ],
             );
           },
         );
     return [
-      if (visible.isNotEmpty) grid(visible),
+      if (visible.isNotEmpty) grid(visible, '$mergedKey|visible'),
       if (earned.isNotEmpty)
         ExpansionTile(
           key: const PageStorageKey<String>('merged-earned-courses'),
@@ -1168,7 +1258,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           children: [
             Padding(
               padding: const EdgeInsets.only(top: 4, bottom: 4),
-              child: grid(earned),
+              child: grid(earned, '$mergedKey|earned'),
             )
           ],
         ),
@@ -1716,7 +1806,9 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
 
   /// 课程列表：全部展示，每门课一个按名称自适应宽度的气泡，Wrap 排列节省空间。
   /// 冲突/已满/余量/已选/课程性质标签全部附在气泡上（详情在 Tooltip）。
-  List<Widget> _courseCards(List<XkCourse> courses) {
+  /// [pageKey] 分页窗口键（不同入口/视图各自独立展开进度，互不串扰）。
+  List<Widget> _courseCards(List<XkCourse> courses,
+      {String pageKey = 'round'}) {
     if (courses.isEmpty) return const [];
     final ttSlots = (_timetable ?? widget.timetable)?.slots ?? const [];
     final selectedKeys = _selectedCourseKeys();
@@ -1730,37 +1822,48 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
             courseDisplayState(_stateOf(c, states)) != PlanCourseState.earned)
         .toList();
 
-    Widget grid(List<XkCourse> items) => LayoutBuilder(
+    Widget grid(List<XkCourse> items, String gridKey) => LayoutBuilder(
           builder: (context, cons) {
             final maxW = cons.maxWidth.isFinite ? cons.maxWidth : 320.0;
-            return Wrap(
-              spacing: 6,
-              runSpacing: 6,
+            final shown = _windowCount(gridKey, items.length);
+            final page = items.sublist(0, shown);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final c in items)
-                  ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: maxW),
-                    child: CourseBubble(
-                      course: c,
-                      conflict: ttSlots.isNotEmpty &&
-                          Timeline.slotsConflict(c.slots, ttSlots) != null,
-                      selected: _isCourseSelected(c, selectedKeys),
-                      state: _stateOf(c, states),
-                      onTap: () => _showCourseStateHint(_stateOf(c, states)),
-                      categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
-                      teachingClasses:
-                          _jxbLists[_jxbKey(c)]?.courses ?? const [],
-                      jxbLoading: _jxbLoading.contains(_jxbKey(c)),
-                      onExpand: () => _loadTeachingClasses(c),
-                    ),
-                  ),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final c in page)
+                      ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: maxW),
+                        child: RepaintBoundary(
+                          child: CourseBubble(
+                            course: c,
+                            conflict: ttSlots.isNotEmpty &&
+                                Timeline.slotsConflict(c.slots, ttSlots) != null,
+                            selected: _isCourseSelected(c, selectedKeys),
+                            state: _stateOf(c, states),
+                            onTap: () => _showCourseStateHint(_stateOf(c, states)),
+                            categories: c.categories, // 单轮列表同样显示类别 Chip（诉求 #11）
+                            teachingClasses:
+                                _jxbLists[_jxbKey(c)]?.courses ?? const [],
+                            jxbLoading: _jxbLoading.contains(_jxbKey(c)),
+                            jxbNote: _jxbNote(c),
+                            onExpand: () => _loadTeachingClasses(c),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                _showMoreButton(gridKey, shown, items.length),
               ],
             );
           },
         );
     return [
       _courseStateSummary([for (final c in courses) c.kcmc]),
-      if (visible.isNotEmpty) grid(visible),
+      if (visible.isNotEmpty) grid(visible, '$pageKey|visible'),
       if (earned.isNotEmpty)
         ExpansionTile(
           key: const PageStorageKey<String>('round-earned-courses'),
@@ -1774,7 +1877,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
           children: [
             Padding(
               padding: const EdgeInsets.only(top: 4, bottom: 4),
-              child: grid(earned),
+              child: grid(earned, '$pageKey|earned'),
             )
           ],
         ),
@@ -1834,6 +1937,10 @@ class CourseBubble extends StatefulWidget {
   final List<XkCourse> teachingClasses;
   final bool jxbLoading;
 
+  /// 教学班未就绪时的一行如实说明（失败原因/空结果/限频冷却…）；
+  /// null → 不提示（未展开前、或已成功拿到教学班）。
+  final String? jxbNote;
+
   /// 展开回调：页面据此按需拉取该课程的教学班（只拉一次，失败可再点重试）。
   final VoidCallback? onExpand;
 
@@ -1850,6 +1957,7 @@ class CourseBubble extends StatefulWidget {
     this.ratings,
     this.teachingClasses = const [],
     this.jxbLoading = false,
+    this.jxbNote,
     this.onExpand,
   });
 
@@ -2054,8 +2162,18 @@ class _CourseBubbleState extends State<CourseBubble> {
             )
           else if (widget.teachingClasses.isNotEmpty)
             _teachingClassesBlock(context)
-          else
+          else ...[
+            // 教学班未就绪：如实说明原因（失败/空/冷却），再落到课程级评分行。
+            if (widget.jxbNote != null && widget.jxbNote!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(widget.jxbNote!,
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.orange.shade800.withValues(alpha: 0.9))),
+              ),
             _ratingBlock(context, c),
+          ],
         ],
       ),
     );
@@ -2083,10 +2201,21 @@ class _CourseBubbleState extends State<CourseBubble> {
     );
   }
 
+  /// 教学班班号显示：优先 jxbmc；LIVE 实证（2026-10-20）教务 JxbList 行
+  /// jxbmc 恒为空，真实班号在 xkkh 尾段（(2026-2027-1)-ECON2001G-0015103-2
+  /// → 0015103）；再退到列表序号。不臆造字段。
+  String _jxbSeq(XkCourse j, int index) {
+    if (j.jxbmc.trim().isNotEmpty) return j.jxbmc.trim();
+    final tail = '${j.raw['xkkh'] ?? ''}'.split('-');
+    final candidate = tail.length >= 4 ? tail[tail.length - 2].trim() : '';
+    if (RegExp(r'^\d{4,}$').hasMatch(candidate)) return candidate;
+    return '${index + 1}';
+  }
+
   Widget _teachingClassLine(BuildContext context, XkCourse j, int index) {
     final scheme = Theme.of(context).colorScheme;
     final head = <String>[
-      if (j.jxbmc.isNotEmpty) '教学班 ${j.jxbmc}' else '教学班 ${index + 1}',
+      '教学班 ${_jxbSeq(j, index)}',
       if (j.teacher.isNotEmpty) j.teacher,
     ].join(' · ');
     final meta = <String>[
@@ -2124,16 +2253,20 @@ class _CourseBubbleState extends State<CourseBubble> {
 
   /// 教师评分行（含标签 Chip）。外部注入 store 时同步查询；
   /// 否则懒加载共享资产，未完成/失败按未命中处理（显示「评分：暂无」）。
+  /// 一行多教师（教务 jsxm 用 <br>/顿号/逗号拼接）逐个教师各出一行，
+  /// 多教师时行首带教师名区分；各自如实命中/未命中，不合并、不猜分。
   Widget _ratingFor(BuildContext context, String teacher,
       [String courseName = '']) {
-    Widget line(TeacherRating? r) {
+    final names = TeacherRatingStore.splitTeacherNames(teacher);
+    Widget line(TeacherRating? r, {bool labeled = false, String? name}) {
       final found = r != null;
+      final prefix = labeled ? '${name ?? r?.teacher ?? ''}：' : '';
       return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            found ? r.displayText : '评分：暂无',
+            found ? '$prefix${r.displayText}' : '$prefix评分：暂无',
             style: TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w600,
@@ -2156,12 +2289,27 @@ class _CourseBubbleState extends State<CourseBubble> {
       );
     }
 
+    Widget build(TeacherRatingStore store) {
+      if (names.length <= 1) {
+        // 单教师（或无教师）：沿用原一行口径，不加名前缀。
+        return line(store.lookupAny(teacher, courseName));
+      }
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final name in names)
+            line(store.lookup(name, courseName), labeled: true, name: name),
+        ],
+      );
+    }
+
     final store = widget.ratings;
-    if (store != null) return line(store.lookupAny(teacher, courseName));
+    if (store != null) return build(store);
     return FutureBuilder<TeacherRatingStore>(
       future: _loadSharedStore(),
       builder: (context, snap) => snap.connectionState == ConnectionState.done
-          ? line(snap.data?.lookupAny(teacher, courseName))
+          ? build(snap.data ?? TeacherRatingStore.empty)
           : line(null),
     );
   }

@@ -97,6 +97,17 @@ class TeacherRatingStore {
     }
   }
 
+  /// 多教师字段拆名：教务 jsxm 一行多教师用 `<br>`（清洗后为「 / 」），
+  /// 兼容顿号/逗号/分号/竖线。纯函数供 UI 逐教师渲染评分行。
+  static List<String> splitTeacherNames(String teacherNames) {
+    final out = <String>[];
+    for (final raw in teacherNames.split(RegExp(r'[、,，/;；|]+'))) {
+      final kept = raw.trim();
+      if (kept.isNotEmpty && !out.contains(kept)) out.add(kept);
+    }
+    return out;
+  }
+
   /// 查一位教师：先精确原键，再归一化键；未命中返回 null。
   /// [courseName] 为按课过滤预留口径（当前表按教师全局，宁缺勿猜不做模糊推断）。
   TeacherRating? lookup(String teacher, String? courseName) {
@@ -105,7 +116,15 @@ class TeacherRatingStore {
     return _ratings[key];
   }
 
-  /// 多教师字段（教务 jsxm 常见「谭芸 / 祝一虹」）逐个查，返回首位命中。
+  /// 多教师字段逐个查（保留输入顺序，未命中为 null）。
+  /// 评分为教师级数据，各自成行如实展示，不做合并猜测。
+  List<TeacherRating?> lookupAll(String teacherNames, String? courseName) {
+    return [
+      for (final name in splitTeacherNames(teacherNames)) lookup(name, courseName)
+    ];
+  }
+
+  /// 多教师字段逐个查，返回首位命中。
   /// 分隔符覆盖 `<br>` 清洗后的「 / 」以及顿号/逗号/分号；首位命中即代表
   /// 该教学班（评分为教师级数据，不虚构合并分）。
   TeacherRating? lookupAny(String teacherNames, String? courseName) {

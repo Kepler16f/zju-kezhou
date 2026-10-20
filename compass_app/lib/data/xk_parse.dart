@@ -54,7 +54,7 @@ SksjParseResult parseSksj(String text) {
   final mergedSegs = <String>[];
   var carry = '';
   for (final s in segs) {
-    if (RegExp(r'第\s*\d{1,2}\s*(?:[-至、,]\s*\d{1,2})?\s*节').hasMatch(s)) {
+    if (RegExp(r'第\s*\d{1,2}\s*(?:[-至、,]\s*\d{1,2})*\s*节').hasMatch(s)) {
       mergedSegs.add(carry + s);
       carry = '';
     } else {
@@ -97,9 +97,10 @@ List<Map<String, dynamic>>? _parseSegment(String seg, List<String> issues) {
     if (d != null && !days.contains(d)) days.add(d);
   }
   if (days.isEmpty) return null;
-  // 段内**所有**节次各自成槽（"第1-2节,第3-4节" 不再静默丢第二段）
+  // 段内**所有**节次各自成槽（"第1-2节,第3-4节" 不再静默丢第二段）。
+  // 枚举形如「第11,12,13节」「第6,7,8节」（LIVE 实证晚间课 3 节连排）整串捕获后展开。
   final secMatches =
-      RegExp(r'第\s*(\d{1,2})\s*(?:[-至、,]\s*(\d{1,2}))?\s*节').allMatches(seg).toList();
+      RegExp(r'第\s*(\d{1,2}(?:[-至、,]\s*\d{1,2})*)\s*节').allMatches(seg).toList();
   if (secMatches.isEmpty) return null;
 
   // 周次来源：{…} 组优先（闭括号允许含 ')'，如 "{1-16(单)周}"），其次 (…) 组，再回退整段
@@ -144,25 +145,54 @@ List<Map<String, dynamic>>? _parseSegment(String seg, List<String> issues) {
 
   final out = <Map<String, dynamic>>[];
   for (final sm in secMatches) {
-    final start = int.parse(sm.group(1)!);
-    final end = sm.group(2) != null ? int.parse(sm.group(2)!) : start;
-    if (start < 1 || end < start || end > 13) {
+    // 枚举串拆成小节段再合并连号：「11,12,13」→ 单槽 11-13；「1,3」→ 两槽（不臆造第 2 节）；
+    // 「a-b」为区间（降序即畸形，整串跳过——守住既有「第9-4节 不产出」边界）。
+    final spans = <List<int>>[];
+    var bad = false;
+    for (final tok in sm.group(1)!.split(RegExp(r'[,、]'))) {
+      final rm =
+          RegExp(r'^(\d{1,2})\s*(?:[-至]\s*(\d{1,2}))?$').firstMatch(tok.trim());
+      if (rm == null) {
+        bad = true;
+        break;
+      }
+      final a = int.parse(rm.group(1)!);
+      final b = rm.group(2) != null ? int.parse(rm.group(2)!) : a;
+      if (a < 1 || b < a || b > 13) {
+        bad = true;
+        break;
+      }
+      spans.add([a, b]);
+    }
+    if (bad || spans.isEmpty) {
       issues.add('节次超出合理范围，已跳过：${_short(seg)}');
       continue;
     }
-    for (final day in days) {
-      if (parity != 0) {
-        // 单双周逐周展开（parity-aware；不压缩成整段，避免与另一奇偶周课程假冲突）
-        for (final r in ranges) {
-          for (var w = r[0]; w <= r[1]; w++) {
-            if (parity == 1 && w.isEven) continue;
-            if (parity == 2 && w.isOdd) continue;
-            out.add({'day': day, 'start': start, 'end': end, 'week_start': w, 'week_end': w});
-          }
-        }
+    final runs = <List<int>>[];
+    for (final sp in spans) {
+      if (runs.isNotEmpty && sp[0] == runs.last[1] + 1) {
+        runs.last[1] = sp[1];
       } else {
-        for (final r in ranges) {
-          out.add({'day': day, 'start': start, 'end': end, 'week_start': r[0], 'week_end': r[1]});
+        runs.add(List.of(sp));
+      }
+    }
+    for (final run in runs) {
+      final start = run[0];
+      final end = run[1];
+      for (final day in days) {
+        if (parity != 0) {
+          // 单双周逐周展开（parity-aware；不压缩成整段，避免与另一奇偶周课程假冲突）
+          for (final r in ranges) {
+            for (var w = r[0]; w <= r[1]; w++) {
+              if (parity == 1 && w.isEven) continue;
+              if (parity == 2 && w.isOdd) continue;
+              out.add({'day': day, 'start': start, 'end': end, 'week_start': w, 'week_end': w});
+            }
+          }
+        } else {
+          for (final r in ranges) {
+            out.add({'day': day, 'start': start, 'end': end, 'week_start': r[0], 'week_end': r[1]});
+          }
         }
       }
     }

@@ -132,10 +132,13 @@ void main() {
       XkCourse(
           kcmc: '微积分（甲）Ⅰ',
           kch: 'MATH1135G',
-          jxbmc: '02',
           teacher: '李四',
           sksj: '周四第3,4节',
-          cdmc: '紫金港东1-101'),
+          cdmc: '紫金港东1-101',
+          // LIVE 实证：教务 JxbList 行 jxbmc 恒空，班号取自 xkkh 尾段
+          raw: const {
+            'xkkh': '(2026-2027-1)-MATH1135G-0015103-2'
+          }),
     ];
     final jxbStore = TeacherRatingStore.fromJson(const {
       '汪国军': {'avg': 9.4, 'count': 148, 'source': '查老师'},
@@ -167,10 +170,73 @@ void main() {
     expect(find.textContaining('周二第1,2节'), findsOneWidget);
     expect(find.textContaining('紫金港东2-203'), findsOneWidget);
     expect(find.textContaining('容量 60/已选 42'), findsOneWidget);
-    expect(find.textContaining('教学班 02'), findsOneWidget);
+    expect(find.textContaining('教学班 0015103'), findsOneWidget);
     // 平行班教师不同：命中的显示分数，未命中的显示「暂无」
     expect(find.text('评分 9.4/10（148 人评 · 查老师）'), findsOneWidget);
     expect(find.text('评分：暂无'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('一行多教师（jsxm 双师）：每个教师各出一行评分', (tester) async {
+    const bare = XkCourse(kcmc: '中外教育改革专题研究', kch: '03121740');
+    const jxbs = [
+      XkCourse(
+          kcmc: '中外教育改革专题研究',
+          kch: '03121740',
+          jxbmc: '01',
+          teacher: '商丽浩 / 刘海峰', // 教务 jsxm「商丽浩<br>刘海峰」清洗后形态
+          sksj: '周四第6,7节 / 周五第1,2节',
+          cdmc: '紫金港东1-207'),
+    ];
+    final jxbStore = TeacherRatingStore.fromJson(const {
+      '商丽浩': {'avg': 9.2, 'count': 55, 'source': '查老师'},
+    });
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 380,
+            child: CourseBubble(
+              course: bare,
+              ratings: jxbStore,
+              teachingClasses: jxbs,
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.tap(find.byType(CourseBubble));
+    await tester.pumpAndSettle();
+    // 双师分别成行：命中者带分数（行首标名），未命中者「评分：暂无」（同样标名）
+    expect(find.text('商丽浩：评分 9.2/10（55 人评 · 查老师）'), findsOneWidget);
+    expect(find.text('刘海峰：评分：暂无'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('教学班拉取失败：展开后如实提示原因（不再静默只显示课程级评分）',
+      (tester) async {
+    const bare = XkCourse(kcmc: '认知神经科学专题', kch: '06123090');
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 380,
+            child: CourseBubble(
+              course: bare,
+              ratings: TeacherRatingStore.empty,
+              jxbNote: '教学班暂不可用：限频退避（再点一次重试）',
+            ),
+          ),
+        ),
+      ),
+    ));
+    // 收起态不提示（未拉取前不打扰浏览）
+    expect(find.textContaining('教学班暂不可用'), findsNothing);
+    await tester.tap(find.byType(CourseBubble));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('教学班暂不可用：限频退避'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

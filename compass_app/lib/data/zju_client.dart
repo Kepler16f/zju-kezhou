@@ -2177,8 +2177,10 @@ class ZjuClient {
     final courseKey = course.kch.trim().isNotEmpty
         ? course.kch.trim()
         : course.kcmc.trim();
-    final cacheKey = 'xk_jxb_${_cacheToken(term)}_${_cacheToken(round.xkkzId)}'
-        '_${_cacheToken(round.kklxdm)}_${_cacheToken(courseKey)}';
+    // 缓存键去入口维度：LIVE 实证（2026-10-20）dl='' 最小集与入口无关，
+    // 同一门课在分类/合并视图（_roundOf 可能猜错入口）应命中同一份教学班。
+    final cacheKey =
+        'xk_jxb_${_cacheToken(term)}_${_cacheToken(courseKey)}';
 
     Future<XkListParseResult?> fromCache() async {
       final cached = await store.readCache(cacheKey);
@@ -2225,7 +2227,31 @@ class ZjuClient {
           (hiddenFields['zydm'] ?? hiddenFields['zyh_id'] ?? hiddenFields['bh_id'] ?? '')
               .trim();
       final rawXkkh = '${course.raw['xkkh'] ?? ''}'.trim();
-      final body = <String, String>{
+      // 课程池 xkkh 真实形态为 'T(2026-2027-1)-01188070'（2026-10 LIVE 缓存实测）；
+      // JxbList 部分实现对带 T( 前缀的课号回空，去掉前缀留作后备档。
+      final xkkhStripped =
+          rawXkkh.replaceFirst(RegExp(r'^T'), '').trim();
+      final courseCode = course.kch.trim();
+      // 请求阶梯（v0.13.7 bug 修复：此前直接带“课程所属入口 dl + 整包隐藏域”，
+      // 合并视图猜错入口或服务端按 dl 过滤时大面积回空；参照 ZJU-MOTIS 实证
+      // 调用改为 dl='' 最小参数集优先）：
+      //   1) 最小集：dl=''（不按入口过滤）+ xn/xq/kcdm/xkkh + ylxs='0'；
+      //   2) 最小集去 T( 前缀课号；
+      //   3) 全集兜底（KcList 同构参数，旧行为）。
+      final minimalBody = <String, String>{
+        'dl': '',
+        if (xn.isNotEmpty) 'xn': xn,
+        if (xq.isNotEmpty) 'xq': xq,
+        if (courseCode.isNotEmpty) 'kcdm': courseCode,
+        'kcmc': course.kcmc.trim(),
+        if (rawXkkh.isNotEmpty) 'xkkh': rawXkkh,
+        'ylxs': '0',
+        'kspage': '1',
+        'jspage': '1000',
+        'nd': '$now',
+        'time': '0',
+      };
+      final fullBody = <String, String>{
         ...hiddenFields,
         'dl': round.xkkzId,
         'lx': round.kklxdm.isEmpty ? 'bl' : round.kklxdm,
@@ -2247,25 +2273,49 @@ class ZjuClient {
         'gnmkdm': _xkGhbMenu,
         if ((_studentId ?? '').isNotEmpty) 'su': _studentId!,
       });
-      final text = await _postQuery(uri, body,
-          referer: '$_zdbk/jwglxt/$_xkGhbIndexPath'
-              '?gnmkdm=$_xkGhbMenu&layout=default$_suParam');
-      // 教学班行若只带课号不带课名，用课程名补齐后再解析（否则整行会被丢弃）。
-      List<dynamic> rows;
-      try {
-        final decoded = json.decode(text);
-        if (decoded is List) {
-          rows = _fillJxbCourseName(decoded, course);
-        } else if (decoded is Map) {
-          rows = _fillJxbCourseName(
-              (decoded['tmpList'] ?? decoded['items'] ?? decoded['rows'] ?? const [])
-                  as List,
-              course);
-        } else {
+      final referer = '$_zdbk/jwglxt/$_xkGhbIndexPath'
+          '?gnmkdm=$_xkGhbMenu&layout=default$_suParam';
+      // 一次查询：返回原始文本与（可解析出的）教学班行；行若只带课号不带课名，
+      // 用课程名补齐（否则整行会被解析器丢弃）。
+      Future<(String, List<dynamic>)> fetchOnce(Map<String, String> bodyOnce) async {
+        final text = await _postQuery(uri, bodyOnce, referer: referer);
+        List<dynamic> rows;
+        try {
+          final decoded = json.decode(text);
+          if (decoded is List) {
+            rows = _fillJxbCourseName(decoded, course);
+          } else if (decoded is Map) {
+            rows = _fillJxbCourseName(
+                (decoded['tmpList'] ?? decoded['items'] ?? decoded['rows'] ?? const [])
+                    as List,
+                course);
+          } else {
+            rows = const [];
+          }
+        } catch (_) {
           rows = const [];
         }
-      } catch (_) {
-        rows = const [];
+        return (text, rows);
+      }
+
+      var (text, rows) = await fetchOnce(minimalBody);
+      if (rows.isEmpty && xkkhStripped.isNotEmpty && xkkhStripped != rawXkkh) {
+        // 最小集空结果 → 去 T( 前缀课号再试（空 JSON 才续跑；风控页立即止损，
+        // 不叠加请求轰炸 WAF 软封禁）。
+        if (!_jxbLooksBlocked(text)) {
+          final retried = await fetchOnce({
+            ...minimalBody,
+            'xkkh': xkkhStripped,
+          });
+          text = retried.$1;
+          rows = retried.$2;
+        }
+      }
+      if (rows.isEmpty && !_jxbLooksBlocked(text)) {
+        // 仍空且非风控 → 全集兜底一次（旧行为；跨专业/特殊入口课可能仍需 dl 上下文）。
+        final retried = await fetchOnce(fullBody);
+        text = retried.$1;
+        rows = retried.$2;
       }
       if (rows.isEmpty) {
         // 非 JSON（风控/登录页）与真空结果都交给通用解析器判定：
@@ -2307,6 +2357,22 @@ class ZjuClient {
           XkListParseResult(
               courses: const [], state: 'unavailable', issues: ['教学班获取失败：$e']);
     }
+  }
+
+  /// 阶梯间止损判定：响应是否呈风控/登录页特征（与 parseXkCourseList 的
+  /// blocked 口径一致——只认特征字段，课程名里出现「验证码」三字不误杀）。
+  /// 为真时不再追加下一档请求，避免在 WAF 软封禁上叠加轰炸。
+  bool _jxbLooksBlocked(String text) {
+    final t = text.trim();
+    if (t.isEmpty) return false; // 空响应不是软封禁信号
+    if (t.startsWith('[') || t.startsWith('{')) return false; // JSON 即数据侧结论
+    return t.contains('captcha_error') ||
+        t.contains('验证码') ||
+        t.contains('captcha') ||
+        t.contains('login_slogin') ||
+        t.contains('统一身份认证') ||
+        t.contains('登录已失效') ||
+        t.contains('请重新登录');
   }
 
   /// 教学班响应补齐课程名/课号（部分实现只回教学班维度字段）。

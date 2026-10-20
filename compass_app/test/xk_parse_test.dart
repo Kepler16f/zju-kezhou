@@ -81,6 +81,23 @@ void main() {
       }
     });
 
+    test('枚举连排三节（LIVE 实证晚间课）：第11,12,13节 合并为 11-13 单槽', () {
+      final r = parseSksj('周二第11,12,13节');
+      expect(r.slots.length, 1);
+      expect(r.slots.first['start'], 11);
+      expect(r.slots.first['end'], 13);
+      // 非连续枚举不臆造中间节：1,3 → 两槽（1-1 与 3-3）
+      final g = parseSksj('周二第1,3节');
+      expect(g.slots.length, 2);
+      expect(g.slots.map((s) => s['start']).toList(), [1, 3]);
+      // 三节连排叠加周次标注同样成立（此前「周一第6,7,8节{单周}」整段被丢弃）
+      final o = parseSksj('周一第6,7,8节{1-16周}');
+      expect(o.slots.length, 1);
+      expect(o.slots.first['start'], 6);
+      expect(o.slots.first['end'], 8);
+      expect(o.slots.first['week_end'], 16);
+    });
+
     test('教室数字不误吞', () {
       final r = parseSksj('星期一第3-4节{1-16周}紫金港东2-303');
       expect(r.slots.length, 1);
