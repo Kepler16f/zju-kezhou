@@ -1,5 +1,9 @@
 # 课舟 ClassArk · 本科培养方案结构化与选课风险审计（全平台 App）
 
+[![Build all platforms](https://github.com/Kepler16f/zju-kezhou/actions/workflows/buildAll.yml/badge.svg?branch=main)](https://github.com/Kepler16f/zju-kezhou/actions/workflows/buildAll.yml)
+[![Engine check](https://github.com/Kepler16f/zju-kezhou/actions/workflows/_engine-check.yml/badge.svg?branch=main)](https://github.com/Kepler16f/zju-kezhou/actions/workflows/_engine-check.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 > **课舟**（中文名）= 课 + 舟，学海行舟；**ClassArk**（英文名，class 课堂 + ark 方舟）为 iOS 安装包显示名。
 > 仓库、安装包与产物名沿用 `kezhou`（Android / Windows / 鸿蒙 / CI）。
 
