@@ -1245,7 +1245,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   if (engine == null) {
                     return {'error': '培养方案引擎尚未加载，请稍候重试'};
                   }
-                  return engine.main(record);
+                  // engine.main 成功返回 {'report','report_json'} 包装 map，
+                  // 页面契约要的是平铺 report（学生端 main 也取 out['report']）；
+                  // 直接透传包装 map 会让 ReportSection 强转 report['totals'] 命中
+                  // null → 教师端「学业达成审计」整块红屏（v0.13.11 修复）。
+                  final out = engine.main(record);
+                  if (out.containsKey('error')) return out;
+                  return (out['report'] as Map).cast<String, dynamic>();
                 },
                 onRegisterPlan: (major, plan) =>
                     _engine?.registerRuntimePlan(major, plan),

@@ -111,6 +111,27 @@ void main() {
     expect(find.text('复制审阅意见'), findsOneWidget);
   });
 
+  testWidgets('回归 v0.13.11：onAudit 返回包装 map 也须正常渲染（不红屏）',
+      (tester) async {
+    // 生产里 engine.main 成功返回 {'report','report_json'} 包装 map；
+    // 教师端接线曾漏解包导致 ReportSection 强转 report['totals'] 命中 null 红屏。
+    // 本用例注入包装形状，验证页面兜底解包后审计区正常渲染。
+    await tester.binding.setSurfaceSize(const Size(1200, 3000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(_wrap(TeacherReviewPage(
+      onAudit: (_) => {'report': fakeReport(), 'report_json': '{}'},
+      onRegisterPlan: (_, __) {},
+    )));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), _samplePackJson());
+    await tester.tap(find.text('导入粘贴内容'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('匿名同学 的学业档案'), findsOneWidget);
+    expect(find.text('应修'), findsOneWidget);
+    expect(find.textContaining('专业核心课'), findsWidgets);
+  });
+
   testWidgets('导入非法内容 → 明确拒入错误', (tester) async {
     await tester.pumpWidget(_wrap(TeacherReviewPage(
       onAudit: (_) => fakeReport(),

@@ -6,7 +6,7 @@
 library;
 
 /// 完整版本号（含构建号），如 "0.10.9+9"。
-const String kAppVersion = '0.13.10+24';
+const String kAppVersion = '0.13.11+25';
 
 /// 展示用短版本（形如 "0.10.9"）。
 String get kAppVersionShort => kAppVersion.split('+').first;

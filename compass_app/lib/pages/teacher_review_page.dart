@@ -137,7 +137,15 @@ class _TeacherReviewPageState extends State<TeacherReviewPage> {
       widget.onRegisterPlan(major, plan);
     }
     try {
-      final report = widget.onAudit(sharePackToRecord(pack));
+      var report = widget.onAudit(sharePackToRecord(pack));
+      // 防御性解包：engine.main 成功时返回 {'report','report_json'} 包装 map，
+      // 页面契约要平铺 report。调用方漏解包时这里兜住，避免 ReportSection
+      // 强转 report['totals'] 命中 null 红屏（v0.13.11）。
+      if (!report.containsKey('error') &&
+          report['report'] is Map &&
+          !report.containsKey('totals')) {
+        report = (report['report'] as Map).cast<String, dynamic>();
+      }
       if (report.containsKey('error')) {
         setState(() => _error = '审计失败：${report['error']}'
             '${plan == null ? '（分享包未内嵌方案，且本机无该专业方案缓存）' : ''}');
