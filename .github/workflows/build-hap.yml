@@ -119,14 +119,16 @@ jobs:
           fi
           mkdir -p build/ohos
           echo "$HAP_SIGN_KEY_B64" | base64 -d > build/ohos/sign.key
-          echo "$HAP_SIGN_CER_B64" | base64 -d > build/ohos/sign.cer
+          echo "$HAP_SIGN_CER_B64" | base64 -d > build/ohos/sign.pem
+          # 签名工具的 appCertFile 要 DER；openssl 造 p12 要 PEM —— 两种格式都备好
+          openssl x509 -in build/ohos/sign.pem -outform DER -out build/ohos/sign.cer
           echo "$HAP_SIGN_P7B_B64" | base64 -d > build/ohos/sign.p7b
           chmod 600 build/ohos/sign.key build/ohos/keystore.p12 2>/dev/null
           # 现场生成 p12：显式给出 store 与 key 口令（两者必须一致，否则
           # Java KeyStore 取 key 时报 "Given final block not properly padded"）
           openssl pkcs12 -export \
             -inkey build/ohos/sign.key \
-            -in build/ohos/sign.cer \
+            -in build/ohos/sign.pem \
             -out build/ohos/keystore.p12 \
             -name "$HAP_KEY_ALIAS" \
             -passout "pass:$HAP_STORE_PASSWORD" \
