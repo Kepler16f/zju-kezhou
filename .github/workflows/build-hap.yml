@@ -104,25 +104,44 @@ jobs:
           done
           exit 1
 
-      - name: 准备签名材料（可选：四件齐全才签名）
+      - name: 准备签名材料（可选：现场生成 p12 并自检）
         env:
-          HAP_SIGN_P12_B64: ${{ secrets.HAP_SIGN_P12_B64 }}
+          HAP_SIGN_KEY_B64: ${{ secrets.HAP_SIGN_KEY_B64 }}
           HAP_SIGN_CER_B64: ${{ secrets.HAP_SIGN_CER_B64 }}
           HAP_SIGN_P7B_B64: ${{ secrets.HAP_SIGN_P7B_B64 }}
           HAP_STORE_PASSWORD: ${{ secrets.HAP_STORE_PASSWORD }}
           HAP_KEY_ALIAS: ${{ secrets.HAP_KEY_ALIAS }}
         run: |
           set +e
-          if [ -z "$HAP_SIGN_P12_B64" ] || [ -z "$HAP_SIGN_CER_B64" ] || [ -z "$HAP_SIGN_P7B_B64" ] || [ -z "$HAP_STORE_PASSWORD" ] || [ -z "$HAP_KEY_ALIAS" ]; then
-            echo "::notice::签名材料不全（.p12/.cer/.p7b/口令/别名），跳过签名：产物为未签名 HAP"
+          if [ -z "$HAP_SIGN_KEY_B64" ] || [ -z "$HAP_SIGN_CER_B64" ] || [ -z "$HAP_SIGN_P7B_B64" ] || [ -z "$HAP_STORE_PASSWORD" ] || [ -z "$HAP_KEY_ALIAS" ]; then
+            echo "::notice::签名材料不全（私钥/证书/Profile/口令/别名），跳过签名：产物为未签名 HAP"
             exit 0
           fi
           mkdir -p build/ohos
-          echo "$HAP_SIGN_P12_B64" | base64 -d > build/ohos/kezhou_sign.p12
-          echo "$HAP_SIGN_CER_B64" | base64 -d > build/ohos/kezhou_sign.cer
-          echo "$HAP_SIGN_P7B_B64" | base64 -d > build/ohos/kezhou_sign.p7b
-          chmod 600 build/ohos/kezhou_sign.p12 build/ohos/kezhou_sign.cer build/ohos/kezhou_sign.p7b
-          echo "::notice::签名材料已就位"
+          echo "$HAP_SIGN_KEY_B64" | base64 -d > build/ohos/sign.key
+          echo "$HAP_SIGN_CER_B64" | base64 -d > build/ohos/sign.cer
+          echo "$HAP_SIGN_P7B_B64" | base64 -d > build/ohos/sign.p7b
+          chmod 600 build/ohos/sign.key build/ohos/keystore.p12 2>/dev/null
+          # 现场生成 p12：显式给出 store 与 key 口令（两者必须一致，否则
+          # Java KeyStore 取 key 时报 "Given final block not properly padded"）
+          openssl pkcs12 -export \
+            -inkey build/ohos/sign.key \
+            -in build/ohos/sign.cer \
+            -out build/ohos/keystore.p12 \
+            -name "$HAP_KEY_ALIAS" \
+            -passout "pass:$HAP_STORE_PASSWORD" \
+            -keypassexport "pass:$HAP_STORE_PASSWORD"
+          if [ $? -ne 0 ]; then
+            echo "::warning::p12 生成失败，跳过签名"
+            exit 0
+          fi
+          # 自检：口令能解出私钥（否则签包阶段会莫名失败）
+          if openssl pkcs12 -in build/ohos/keystore.p12 -passin "pass:$HAP_STORE_PASSWORD" -nocerts -nodes > /dev/null 2>&1; then
+            echo "::notice::keystore 自检通过（可解出私钥）"
+          else
+            echo "::warning::keystore 自检失败（口令或密钥不匹配），跳过签名"
+            exit 0
+          fi
 
       - name: Build HAP
         run: |
@@ -142,8 +161,8 @@ jobs:
           HAP_KEY_ALIAS: ${{ secrets.HAP_KEY_ALIAS }}
         run: |
           set +e
-          if [ ! -f build/ohos/kezhou_sign.p12 ]; then
-            echo "::notice::无签名材料，产物保持未签名包"
+          if [ ! -f build/ohos/keystore.p12 ]; then
+            echo "::notice::无 keystore，产物保持未签名包"
             exit 0
           fi
           SIGN_TOOL="$HOS_SDK_HOME/default/openharmony/toolchains/lib/hap-sign-tool.jar"
@@ -155,10 +174,10 @@ jobs:
             -keyAlias "$HAP_KEY_ALIAS" \
             -signAlg SHA256withECDSA \
             -mode localSign \
-            -appCertFile build/ohos/kezhou_sign.cer \
-            -profileFile build/ohos/kezhou_sign.p7b \
+            -appCertFile build/ohos/sign.cer \
+            -profileFile build/ohos/sign.p7b \
             -inFile build/ohos/compass_unsigned.hap \
-            -keystoreFile build/ohos/kezhou_sign.p12 \
+            -keystoreFile build/ohos/keystore.p12 \
             -keystorePwd "$HAP_STORE_PASSWORD" \
             -outFile build/ohos/compass_signed.hap
           if [ -f build/ohos/compass_signed.hap ]; then
