@@ -31,9 +31,6 @@ jobs:
         uses: ErBWs/setup-ohos@v2
         with: {version: 26.0.0.821, cache: true}
 
-      - name: 诊断（临时）：SDK schema 与签名工具扫描
-        run: python3 ../packaging/dump_schema.py "$HOS_SDK_HOME"
-
       - name: Clone Flutter-ohos SDK
         run: |
           FLUTTER_OHOS_DIR="$RUNNER_TEMP/flutter_ohos"
@@ -107,18 +104,7 @@ jobs:
           done
           exit 1
 
-      - name: 诊断（临时）：打印 build-profile 模板与 hvigor 签名 schema
-        run: |
-          echo "===== build-profile.json5 ====="
-          cat ohos/build-profile.json5
-          echo "===== schema 候选 ====="
-          find "$RUNNER_TEMP" /opt /usr/local -name "*.json" 2>/dev/null | grep -iE "schema" | head -10
-          for f in $(find "$RUNNER_TEMP" /opt /usr/local -name "*.json" 2>/dev/null | grep -iE "schema" | head -4); do
-            echo "--- $f"
-            grep -o -E '.{0,160}[Ss]igning[Cc]onfig.{0,320}' "$f" | head -12
-          done
-
-      - name: 准备签名材料（可选：四件齐全则构建期签名）
+      - name: 准备签名材料（可选：四件齐全才签名）
         env:
           HAP_SIGN_P12_B64: ${{ secrets.HAP_SIGN_P12_B64 }}
           HAP_SIGN_CER_B64: ${{ secrets.HAP_SIGN_CER_B64 }}
@@ -128,17 +114,15 @@ jobs:
         run: |
           set +e
           if [ -z "$HAP_SIGN_P12_B64" ] || [ -z "$HAP_SIGN_CER_B64" ] || [ -z "$HAP_SIGN_P7B_B64" ] || [ -z "$HAP_STORE_PASSWORD" ] || [ -z "$HAP_KEY_ALIAS" ]; then
-            echo "::notice::签名四件套不全（.p12/.cer/.p7b/口令/别名），跳过签名：产物为未签名 HAP"
+            echo "::notice::签名材料不全（.p12/.cer/.p7b/口令/别名），跳过签名：产物为未签名 HAP"
             exit 0
           fi
-          echo "$HAP_SIGN_P12_B64" | base64 -d > ohos/kezhou_sign.p12
-          echo "$HAP_SIGN_CER_B64" | base64 -d > ohos/kezhou_sign.cer
-          echo "$HAP_SIGN_P7B_B64" | base64 -d > ohos/kezhou_sign.p7b
-          chmod 600 ohos/kezhou_sign.p12 ohos/kezhou_sign.cer ohos/kezhou_sign.p7b
-          python3 ../packaging/patch_ohos_signing.py ohos ohos/kezhou_sign.p12 ohos/kezhou_sign.cer ohos/kezhou_sign.p7b "$HAP_KEY_ALIAS" "$HAP_STORE_PASSWORD"
-          if [ $? -ne 0 ]; then
-            echo "::warning::签名配置注入失败，继续出未签名包"
-          fi
+          mkdir -p build/ohos
+          echo "$HAP_SIGN_P12_B64" | base64 -d > build/ohos/kezhou_sign.p12
+          echo "$HAP_SIGN_CER_B64" | base64 -d > build/ohos/kezhou_sign.cer
+          echo "$HAP_SIGN_P7B_B64" | base64 -d > build/ohos/kezhou_sign.p7b
+          chmod 600 build/ohos/kezhou_sign.p12 build/ohos/kezhou_sign.cer build/ohos/kezhou_sign.p7b
+          echo "::notice::签名材料已就位"
 
       - name: Build HAP
         run: |
@@ -146,22 +130,44 @@ jobs:
           flutter build hap --release --target-platform ohos-arm64
           STATUS=$?
           set -e
-          # 签名配置生效时产物名不再是 *unsigned*.hap，故取任意 .hap
-          HAP="$(find ohos/entry/build -type f -name '*.hap' 2>/dev/null | head -n 1)"
+          HAP="$(find ohos/entry/build -type f -name '*unsigned*.hap' 2>/dev/null | head -n 1)"
           [ -z "$HAP" ] && { echo "::error::未产出 HAP"; find ohos -name '*.hap'; exit 1; }
           [ "$STATUS" -ne 0 ] && echo "::notice::flutter 退出码 $STATUS（缺签名配置），已回收未签名 HAP"
-          mkdir -p build/ohos
-          if grep -q '"kezhou_release"' ohos/build-profile.json5 2>/dev/null; then
-            cp "$HAP" build/ohos/compass_signed.hap
-            echo "::notice::已用 kezhou_release 配置签名：compass_signed.hap"
-          else
-            cp "$HAP" build/ohos/compass_unsigned.hap
-            echo "::notice::未注入签名配置：compass_unsigned.hap"
-          fi
+          mkdir -p build/ohos && cp "$HAP" build/ohos/compass_unsigned.hap
         timeout-minutes: 40
 
-# 在 build-hap.yml 的「Build HAP」之后追加：可选签名步骤。
-# 有 HAP_SIGN_P12_B64 等 Secret → 产出签名包；没有 → 维持未签名产物，CI 不失败。
+      - name: 签名 HAP（SDK 自带 hap-sign-tool）
+        env:
+          HAP_STORE_PASSWORD: ${{ secrets.HAP_STORE_PASSWORD }}
+          HAP_KEY_ALIAS: ${{ secrets.HAP_KEY_ALIAS }}
+        run: |
+          set +e
+          if [ ! -f build/ohos/kezhou_sign.p12 ]; then
+            echo "::notice::无签名材料，产物保持未签名包"
+            exit 0
+          fi
+          SIGN_TOOL="$HOS_SDK_HOME/default/openharmony/toolchains/lib/hap-sign-tool.jar"
+          if [ ! -f "$SIGN_TOOL" ]; then
+            echo "::error::SDK 内未找到 hap-sign-tool.jar（$SIGN_TOOL）"
+            exit 1
+          fi
+          java -jar "$SIGN_TOOL" sign-app \
+            -keyAlias "$HAP_KEY_ALIAS" \
+            -signAlg SHA256withECDSA \
+            -mode localSign \
+            -appCertFile build/ohos/kezhou_sign.cer \
+            -profileFile build/ohos/kezhou_sign.p7b \
+            -inFile build/ohos/compass_unsigned.hap \
+            -keystoreFile build/ohos/kezhou_sign.p12 \
+            -keystorePwd "$HAP_STORE_PASSWORD" \
+            -outFile build/ohos/compass_signed.hap
+          if [ -f build/ohos/compass_signed.hap ]; then
+            echo "::notice::签名完成：compass_signed.hap"
+            ls -l build/ohos/
+          else
+            echo "::warning::签名未产出 signed 包，保留未签名包"
+          fi
+        timeout-minutes: 15
 
       - uses: actions/upload-artifact@v7
         with:
