@@ -51,6 +51,23 @@
 
 ---
 
+## 0.5 当前进度（2026-10-29 实测）
+
+| 步骤 | 状态 | 证据 |
+| --- | --- | --- |
+| 应用创建 | ✅ | 名称「课舟」，APP ID `6917620387255447256`，包名 `edu.zju.compass`，所属项目 **compass**（新建） |
+| 平台服务协议 | ✅ | 「协议与声明 → 待签署」已清空（共 21 份） |
+| 调试证书 / 发布证书 | ✅ | 官方六步流程图中步骤二、步骤五为绿 |
+| 测试 Profile（步骤四）/ 发布 Profile（步骤六） | ⬜ 待建 | compass 项目 →「Profile」页创建并下载 .p7b |
+| CI 构建 HAP | ✅ | `build-hap.yml` 绿，产物 `compass_unsigned.hap` |
+| CI 签名 | ✅ 机制就绪 | `packaging/patch_ohos_signing.py` 注入 build-profile.json5 的 signingConfigs，构建期由 hvigor 签名；Secret：HAP_SIGN_P12_B64 / HAP_SIGN_CER_B64 / HAP_SIGN_P7B_B64 / HAP_STORE_PASSWORD / HAP_KEY_ALIAS |
+| 测试版本（应用测试） | ⬜ 待上传 | 需已签名 `compass_signed.hap` |
+
+**签名材料自备**：本地已生成 RSA-3072 密钥对与 CSR（`D:\compass\signing\`：`OpenHarmony.csr` /
+`OpenHarmony.p12` / `OpenHarmonyApplication.pem`），p12 已进 GitHub Secret
+（HAP_SIGN_P12_B64 / HAP_STORE_PASSWORD / HAP_KEY_ALIAS，别名 `OpenHarmonyApplication Release`）。
+只缺控制台签发的 **.cer** 与 Profile **.p7b**。
+
 ## 1. 全流程总览
 
 ### 1.1 三条路径（先选路，再干活）
