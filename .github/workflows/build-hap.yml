@@ -104,6 +104,17 @@ jobs:
           done
           exit 1
 
+      - name: 诊断（临时）：打印 build-profile 模板与 hvigor 签名 schema
+        run: |
+          echo "===== build-profile.json5 ====="
+          cat ohos/build-profile.json5
+          echo "===== schema 候选 ====="
+          find "$RUNNER_TEMP" /opt /usr/local -name "*.json" 2>/dev/null | grep -iE "schema" | head -10
+          for f in $(find "$RUNNER_TEMP" /opt /usr/local -name "*.json" 2>/dev/null | grep -iE "schema" | head -4); do
+            echo "--- $f"
+            grep -o -E '.{0,160}[Ss]igning[Cc]onfig.{0,320}' "$f" | head -12
+          done
+
       - name: 准备签名材料（可选：四件齐全则构建期签名）
         env:
           HAP_SIGN_P12_B64: ${{ secrets.HAP_SIGN_P12_B64 }}
