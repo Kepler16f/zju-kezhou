@@ -393,8 +393,27 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('一级 / 二级标题使用主题色 #1F4E79', (tester) async {
+    testWidgets('三级标题层级递减（h1 > h2 > h3），小标题不与大标题同款', (tester) async {
       await tester.pumpWidget(_wrapBody(const PolicyMarkdownBody(
+        '# 文档标题\n\n## 一级章节\n\n### 2.1 小节\n',
+      )));
+      await tester.pump();
+
+      final h1 = _spanStyle(tester, '文档标题');
+      final h2 = _spanStyle(tester, '一级章节');
+      final h3 = _spanStyle(tester, '2.1 小节');
+      expect(h1, isNotNull);
+      expect(h2, isNotNull);
+      expect(h3, isNotNull);
+      expect(h1!.fontSize!, greaterThan(h2!.fontSize!),
+          reason: '文档标题必须大于章标题');
+      expect(h2.fontSize!, greaterThan(h3!.fontSize!),
+          reason: '章标题必须大于小节标题（2.1 不得与一级标题同款）');
+      // 小节标题用浅一档的蓝色，与章标题拉开观感差异
+      expect(h3.color, isNot(h2.color));
+    });
+
+    testWidgets('一级 / 二级标题使用主题色 #1F4E79', (tester) async {      await tester.pumpWidget(_wrapBody(const PolicyMarkdownBody(
         '# 一级标题\n\n## 二级标题\n',
       )));
       await tester.pump();

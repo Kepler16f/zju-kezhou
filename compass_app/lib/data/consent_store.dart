@@ -32,10 +32,10 @@ const String kConsentPolicyVersion = '1.0';
 /// 所同意正文的摘要：assets/privacy_policy.md 的 sha256 前 12 位。
 ///
 /// 来源：对随包发布的 assets/privacy_policy.md（与仓库 docs/隐私政策.md 逐字节相同）计算
-///   sha256 = 5d69dede48157532eabb0388aceb9492bf04f50d0a54be4b47f011963f07810a
+///   sha256 = a4a66b9e542335eb59811deef3ba51ce4955bdda22cbe720643b90efba17154a
 ///   取前 12 位 = 8ac743853766
 /// 正文一旦改动必须重算并同步本常量（否则同意记录与正文脱钩，审计无法自证）。
-const String kConsentPolicySha = '5d69dede4815';
+const String kConsentPolicySha = 'a4a66b9e5423';
 
 /// 隐私政策同意状态存储。
 ///

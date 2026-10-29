@@ -96,7 +96,7 @@ class _ScholarPageState extends State<ScholarPage> {
                     const SizedBox(height: 8),
                     const Text('暂无学业数据', style: TextStyle(fontSize: 15)),
                     const SizedBox(height: 4),
-                    const Text('切到「设置」页，选择样例 / 粘贴成绩 / 登录教务网',
+                    const Text('切到「设置」页，粘贴成绩或登录教务网',
                         style: TextStyle(fontSize: 11.5, color: Colors.grey)),
                     const SizedBox(height: 10),
                     FilledButton.tonalIcon(

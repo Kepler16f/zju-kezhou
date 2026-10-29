@@ -116,9 +116,54 @@ jobs:
           mkdir -p build/ohos && cp "$HAP" build/ohos/compass_unsigned.hap
         timeout-minutes: 40
 
+# 在 build-hap.yml 的「Build HAP」之后追加：可选签名步骤。
+# 有 HAP_SIGN_P12_B64 等 Secret → 产出签名包；没有 → 维持未签名产物，CI 不失败。
+
+      - name: Sign HAP (optional)
+        env:
+          HAP_SIGN_P12_B64: ${{ secrets.HAP_SIGN_P12_B64 }}
+          HAP_SIGN_CER_B64: ${{ secrets.HAP_SIGN_CER_B64 }}
+          HAP_SIGN_P7B_B64: ${{ secrets.HAP_SIGN_P7B_B64 }}
+          HAP_STORE_PASSWORD: ${{ secrets.HAP_STORE_PASSWORD }}
+          HAP_KEY_ALIAS: ${{ secrets.HAP_KEY_ALIAS }}
+          HAP_SIGN_TOOL_URL: ${{ secrets.HAP_SIGN_TOOL_URL }}
+        run: |
+          set +e
+          if [ -z "$HAP_SIGN_P12_B64" ] || [ -z "$HAP_STORE_PASSWORD" ] || [ -z "$HAP_KEY_ALIAS" ]; then
+            echo "::notice::未配置签名 Secret（.p12 / 口令 / 别名），跳过签名，产物仍为未签名包"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/hapsign"
+          cd "$RUNNER_TEMP/hapsign"
+          echo "$HAP_SIGN_P12_B64" | base64 -d > key.p12
+          [ -n "$HAP_SIGN_CER_B64" ] && echo "$HAP_SIGN_CER_B64" | base64 -d > cert.cer
+          [ -n "$HAP_SIGN_P7B_B64" ] && echo "$HAP_SIGN_P7B_B64" | base64 -d > profile.p7b
+          chmod 600 key.p12
+          if [ -z "$HAP_SIGN_TOOL_URL" ]; then
+            echo "::error::已配置 .p12 但缺少 HAP_SIGN_TOOL_URL（hap-sign-tool.jar 下载地址）"
+            exit 1
+          fi
+          curl -fsSL "$HAP_SIGN_TOOL_URL" -o hap-sign-tool.jar
+          HAP_IN="$(find "$GITHUB_WORKSPACE/compass_app/ohos/entry/build" -type f -name '*unsigned*.hap' 2>/dev/null | head -n 1)"
+          [ -z "$HAP_IN" ] && { echo "::error::找不到待签名 HAP"; exit 1; }
+          ARGS=(sign-app -keyAlias "$HAP_KEY_ALIAS" -signAlg SHA256withECDSA -mode localSign -appCertFile cert.cer -profileFile profile.p7b -inFile "$HAP_IN" -keystoreFile key.p12 -keystorePwd "$HAP_STORE_PASSWORD" -outFile signed.hap)
+          [ -f profile.p7b ] || ARGS=(sign-app -keyAlias "$HAP_KEY_ALIAS" -signAlg SHA256withECDSA -mode localSign -appCertFile cert.cer -inFile "$HAP_IN" -keystoreFile key.p12 -keystorePwd "$HAP_STORE_PASSWORD" -outFile signed.hap)
+          java -jar hap-sign-tool.jar "${ARGS[@]}"
+          if [ -f signed.hap ]; then
+            mkdir -p "$GITHUB_WORKSPACE/compass_app/build/ohos"
+            cp signed.hap "$GITHUB_WORKSPACE/compass_app/build/ohos/compass_signed.hap"
+            echo "::notice::签名完成：compass_signed.hap"
+          else
+            echo "::warning::签名未产出 signed.hap，保留未签名包"
+          fi
+        timeout-minutes: 15
+
       - uses: actions/upload-artifact@v7
         with:
           name: compass-hap-unsigned
           archive: false
-          path: compass_app/build/ohos/compass_unsigned.hap
+          # 未签名包必在；签名 Secret 齐备时同 artifact 内附带 compass_signed.hap
+          path: |
+            compass_app/build/ohos/compass_unsigned.hap
+            compass_app/build/ohos/compass_signed.hap
           if-no-files-found: error

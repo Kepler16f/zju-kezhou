@@ -301,25 +301,38 @@ class PolicyMarkdownBody extends StatelessWidget {
       );
 
   Widget _heading(md.Element el, TextStyle base, Color codeBg) {
+    // 三级标题必须有明确视觉层级：h1 文档标题 > h2 章（一、二…）> h3 节（2.1…）
     final size = switch (el.tag) {
-      'h1' => 20.0,
-      'h2' => 17.0,
-      'h3' => 15.5,
+      'h1' => 22.0,
+      'h2' => 19.0,
+      'h3' => 16.0,
       _ => 14.5,
     };
+    final bool top = el.tag == 'h1';
     final bool strong = el.tag == 'h1' || el.tag == 'h2';
+    final bool sub = !strong;
     return Padding(
-      padding: EdgeInsets.only(top: strong ? 12 : 8, bottom: 4),
-      child: Text.rich(_inlineChildren(
-        el.children ?? const <md.Node>[],
-        base.copyWith(
-          fontSize: size,
-          fontWeight: FontWeight.bold,
-          color: strong ? policyColor : subHeadingColor,
-          height: 1.35,
-        ),
-        codeBg,
-      )),
+      padding:
+          EdgeInsets.only(top: top ? 0 : (strong ? 16 : 10), bottom: strong ? 6 : 4),
+      child: Container(
+        // 三级标题左侧竖线：与二级标题一眼可辨，又不抢正文视线
+        decoration: sub
+            ? const BoxDecoration(
+                border:
+                    Border(left: BorderSide(color: Color(0xFFBBD0E6), width: 3)))
+            : null,
+        padding: EdgeInsets.only(left: sub ? 8 : 0),
+        child: Text.rich(_inlineChildren(
+          el.children ?? const <md.Node>[],
+          base.copyWith(
+            fontSize: size,
+            fontWeight: FontWeight.bold,
+            color: strong ? policyColor : subHeadingColor,
+            height: 1.35,
+          ),
+          codeBg,
+        )),
+      ),
     );
   }
 

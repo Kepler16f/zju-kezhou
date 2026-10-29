@@ -522,7 +522,7 @@ gh secret list          # 确认已存在（只显示名字与更新时间，不
 | 阶段 | 文件名 | 位置 | artifact 名 |
 |---|---|---|---|
 | 未签名（现状） | `compass_unsigned.hap` | `compass_app/build/ohos/` | `compass-hap-unsigned` |
-| **签名后（建议名）** | **`compass_signed.hap`** | `compass_app/build/ohos/` | `compass-hap-signed` |
+| **签名后（建议名）** | **`compass_signed.hap`** | `compass_app/build/ohos/` | 与未签名包**同一 artifact** `compass-hap-unsigned`（多 path 上传；签名 Secret 齐备时才出现） |
 
 > 建议命名保持 `kezhou` 系族一致（README:8：仓库、安装包与产物名沿用 `kezhou`）。若要与 Android/Windows 的版本化命名对齐，可改为 `kezhou-<version>-ohos-arm64.hap`，版本号取自 `compass_app/pubspec.yaml:4`。
 >
@@ -534,10 +534,10 @@ gh secret list          # 确认已存在（只显示名字与更新时间，不
 
 ```bash
 gh run list --workflow build-hap.yml --limit 5
-gh run download <run_id> -n compass-hap-signed -D dist/ohos/
+gh run download <run_id> -n compass-hap-unsigned -D dist/ohos/   # 目录内含 unsigned（必有）与 signed（有签名时才有）
 ls -la dist/ohos/
 # archive:false → 下载物没有 .hap 扩展名，按 artifact 名落盘，需改名
-mv dist/ohos/compass-hap-signed dist/ohos/compass_signed.hap
+ls dist/ohos/   # compass_unsigned.hap / compass_signed.hap
 ```
 
 #### 5.3.2 用仓库自带脚本（已处理 `archive:false` 的怪癖）
