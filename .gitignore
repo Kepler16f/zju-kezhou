@@ -25,3 +25,19 @@ docs/render/
 *.pdf
 !docs/**/reference*.pdf
 packaging/_dl_artifacts.py
+
+# ── 签名与证书材料（绝对不入库：泄露即可被仿签）──
+*.p12
+*.pfx
+*.p7b
+*.cer
+*.csr
+*.keystore
+*.jks
+*.pem
+*.key
+signing/
+signs/
+
+# 鸿蒙工程目录由 CI 现场 flutter create 生成（含本机绝对路径），不入库
+compass_app/ohos/

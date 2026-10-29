@@ -148,7 +148,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(1280, 2400));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.runAsync(() async {
-      await tester.pumpWidget(const KeZhouApp());
+      await tester.pumpWidget(const KeZhouApp(requireConsent: false));
       await tester.pump();
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await tester.pump();

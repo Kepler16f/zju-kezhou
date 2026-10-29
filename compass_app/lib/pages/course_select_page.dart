@@ -12,7 +12,6 @@
 ///    输出页脚（kAiFooter）与免责声明（kDisclaimer）由本页硬拼接，模型无权删改。
 library;
 
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -110,7 +109,6 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   final Map<String, XkListParseResult> _lists = {}; // 入口复合键 -> 列表结果
   String? _selectedRoundId; // 存入口复合键（_rk），不再裸 xkkzId
   TimetableParseResult? _timetable;
-  bool _demoLoaded = false; // 演示数据已加载：真实刷新成功时必须清掉演示残留，防混显
 
   bool _loadingIndex = false;
   final Set<String> _loadingRounds = {}; // 按入口复合键维护（快速切 chip 不再互相丢弃请求）
@@ -494,7 +492,6 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
         _timetableError = null;
         _selectedRoundId = null;
         _error = null;
-        _demoLoaded = false;
         _aiHistory.clear();
         _aiCtl.clear();
         _aiError = null;
@@ -516,76 +513,12 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   /// 首次进入本页：只做一次入口拉取（不做跨轮扇出）。
   void _onActivated() {
     if (_loadingIndex || !widget.loggedIn) return;
-    if (_demoLoaded) {
-      // 演示数据 → 已登录：主动用真实数据替换演示（否则演示一直顶着真实登录态）。
-      // 用"事实"（登录 + 演示在场）判定，不依赖"登录发生在哪一帧"的竞态（评审L1）。
-      _loadIndex(refresh: true);
-      return;
-    }
     if (_index != null) return;
     _loadIndex();
   }
 
-  /// 加载离线演示数据（合成样例，即录屏场景 6 的固化输入）。
-  /// 演示模式下不触碰网络；「刷新入口」等按钮在未登录时被守卫拦截。
-  Future<void> _loadDemoData() async {
-    try {
-      final raw =
-          await rootBundle.loadString('assets/samples/xk_demo_candidates.json');
-      final obj = json.decode(raw) as Map<String, dynamic>;
-      final rounds = <XkRound>[];
-      final lists = <String, XkListParseResult>{};
-      for (final r in (obj['rounds'] as List? ?? const [])) {
-        if (r is! Map) continue;
-        final id = '${r['xkkz_id']}';
-        if (id.isEmpty) continue;
-        final label = '${r['label'] ?? id}';
-        final round = XkRound(xkkzId: id, label: label);
-        rounds.add(round);
-        // 与真实链路同键（_rk）：演示列表也按入口复合键存取，选中态才能对上
-        lists[_rk(round)] = parseXkCourseList(
-            json.encode({'tmpList': r['rows'] ?? const []}),
-            xkkzId: id,
-            label: label);
-      }
-      final tt = obj['timetable'];
-      if (!mounted) return;
-      setState(() {
-        _index = XkIndexParseResult(
-          rounds: rounds,
-          xkxnm: '${obj['xkxnm'] ?? ''}',
-          xkxqm: '${obj['xkxqm'] ?? ''}',
-          issues: const ['演示数据（合成样例，非教务实时数据）'],
-          queryCourseHits: rounds.length,
-        );
-        _lists
-          ..clear()
-          ..addAll(lists);
-        _listsVersion++;
-        _roundErrors.clear();
-        _selectedRoundId = rounds.isNotEmpty ? _rk(rounds.first) : null;
-        _error = null;
-        _demoLoaded = true;
-        // 需求 #5：演示数据同样默认全量（全部入口列表已就位）→ 默认呈现合并视图
-        _view = _View.merged;
-        if (tt is Map) {
-          _timetable = TimetableParseResult(
-            slots: (tt['slots'] as List? ?? const [])
-                .whereType<Map>()
-                .map((m) => m.cast<String, dynamic>())
-                .toList(),
-            courses: ((tt['courses'] as List? ?? const [])).map((e) => '$e').toList(),
-          );
-        }
-      });
-      _publishAiContext();
-    } catch (e) {
-      if (mounted) setState(() => _error = '演示数据加载失败：$e');
-    }
-  }
-
   Future<void> _loadIndex({bool refresh = false}) async {
-    if (!widget.loggedIn) return; // 演示数据模式：未登录不触碰教务接口
+    if (!widget.loggedIn) return; // 未登录不触碰教务接口
     if (_loadingIndex) return;
     setState(() {
       _loadingIndex = true;
@@ -594,29 +527,10 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
     try {
       final r = await widget.client.fetchXkIndex(refresh: refresh);
       if (!mounted || !widget.loggedIn) return; // 登出/清除与在飞请求的竞态守卫
-      // 演示数据在场而真实入口不可用（缓存降级/空结果）：保留演示，绝不销毁且不可回退
-      if (_demoLoaded && (r.fromCache || r.rounds.isEmpty)) {
-        setState(() {
-          _loadingIndex = false;
-          _error = '教务入口刷新失败（${r.issues.isNotEmpty ? r.issues.first : '无数据'}）：'
-              '仍显示演示数据，可稍后重试';
-        });
-        return;
-      }
       _listGeneration++; // 换代：旧世代在飞的单轮请求此后写回一律作废
       setState(() {
         _index = r;
         _loadingIndex = false;
-        if (_demoLoaded) {
-          // 真实数据接管：清掉演示残留（列表/选中/课表），防止演示与真实混显
-          _lists.clear();
-          _listsVersion++;
-          _roundErrors.clear();
-          _selectedRoundId = null;
-          _timetable = null;
-          _timetableError = null;
-          _demoLoaded = false;
-        }
         // 显式刷新：丢掉空结果/缓存结果，强制重新请求（否则旧 empty 会一直粘住）。
         if (refresh) {
           _lists.removeWhere(
@@ -654,7 +568,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
       // 需求 #5（默认全量加载）：入口列表就绪即自动对全部入口串行拉取（复用
       // _aggregateAll 的节流/退避纪律：间隔 ≥1.1s、可取消、软封禁即停），页面默认
       // 呈现合并视图，加载中显示"已加载 x/y"；「汇总全部入口」保留为手动重新聚合。
-      if (r.rounds.isNotEmpty && mounted && widget.loggedIn && !_demoLoaded) {
+      if (r.rounds.isNotEmpty && mounted && widget.loggedIn) {
         setState(() => _view = _View.merged);
         await _aggregateAll(auto: true);
       }
@@ -829,10 +743,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
   Future<void> _aggregateAll({bool auto = false}) async {
     final rounds = _index?.rounds ?? const [];
     if (rounds.isEmpty || _aggregating || _loadingIndex) return;
-    if (!widget.loggedIn) {
-      setState(() => _view = _View.merged); // 演示数据：直接切汇总视图（数据已在本地）
-      return;
-    }
+    if (!widget.loggedIn) return; // 未登录不聚合（不触碰教务接口）
     final hf = _index?.hiddenFields ?? const <String, String>{};
     final xnm = _index?.xkxnm;
     final xqm = _index?.xkxqm;
@@ -1138,14 +1049,8 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                   icon: const Icon(Icons.login),
                   label: const Text('去设置页登录'),
                 ),
-                const SizedBox(height: 4),
-                TextButton.icon(
-                  onPressed: _loadDemoData,
-                  icon: const Icon(Icons.science_outlined, size: 18),
-                  label: const Text('加载演示数据（合成样例）'),
-                ),
                 if (_error != null) ...[
-                  // 演示数据加载失败等错误必须可见（此前该状态被登录引导吞掉，评审L1）
+                  // 拉取失败等错误必须可见（此前该状态被登录引导吞掉，评审L1）
                   const SizedBox(height: 6),
                   Text(_error!,
                       textAlign: TextAlign.center,
@@ -1174,7 +1079,7 @@ class _CourseSelectPageState extends State<CourseSelectPage> {
                         height: 16,
                         child: CircularProgressIndicator(strokeWidth: 2)),
                   TextButton.icon(
-                    // 演示模式（未登录）与汇总中禁用：不发无意义请求（评审L1 反馈缺失）
+                    // 未登录与汇总中禁用：不发无意义请求（评审L1 反馈缺失）
                     onPressed: (_loadingIndex || _aggregating || !widget.loggedIn)
                         ? null
                         : () {

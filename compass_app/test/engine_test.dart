@@ -180,7 +180,7 @@ void main() {
 
   group('end to end', () {
     test('demo sample full report', () {
-      final rec1 = json.decode(File('assets/samples/demo1_cs_full.json').readAsStringSync())
+      final rec1 = json.decode(File('test/fixtures/demo1_cs_full.json').readAsStringSync())
           as Map<String, dynamic>;
       final r = engine.build(rec1, cs);
       final types = r['warnings'].map((w) => w['type']).toSet();
@@ -191,7 +191,7 @@ void main() {
       expect(r['disclaimer'], '本报告仅供与导师沟通参考，正式认定以教务系统为准。');
     });
     test('se sample colors', () {
-      final rec3 = json.decode(File('assets/samples/demo3_se_full.json').readAsStringSync())
+      final rec3 = json.decode(File('test/fixtures/demo3_se_full.json').readAsStringSync())
           as Map<String, dynamic>;
       final r = engine.build(rec3, se);
       expect(_module(r, 'general_required')['earned'], 21.0);
@@ -201,7 +201,7 @@ void main() {
 
   // ===== 跨引擎金标：把 Dart 输出落盘，由 CI 与 Python 产物逐字段比对 =====
   test('emit dart report for parity check', () {
-    final out = engine.main(json.decode(File('assets/samples/demo1_cs_full.json').readAsStringSync()));
+    final out = engine.main(json.decode(File('test/fixtures/demo1_cs_full.json').readAsStringSync()));
     File('test/golden_dart_report.json')
         .writeAsStringSync(const JsonEncoder.withIndent('  ').convert(out['report']));
   });

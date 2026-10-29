@@ -18,8 +18,9 @@ import '../data/xk_parse.dart';
 import '../engine/analytics.dart';
 import '../engine/audit.dart' show kForeignLangCaps;
 import '../engine/foreign_grade_rule.dart';
+import 'privacy_policy_page.dart';
 
-enum DataMode { sample, paste, zju }
+enum DataMode { paste, zju }
 
 class SettingsPage extends StatefulWidget {
   final DataMode mode;
@@ -422,10 +423,6 @@ class _SettingsPageState extends State<SettingsPage> {
                 child: SegmentedButton<DataMode>(
                   segments: const [
                     ButtonSegment(
-                        value: DataMode.sample,
-                        label: Text('样例'),
-                        icon: Icon(Icons.science_outlined)),
-                    ButtonSegment(
                         value: DataMode.paste,
                         label: Text('粘贴'),
                         icon: Icon(Icons.content_paste_outlined)),
@@ -565,7 +562,6 @@ class _SettingsPageState extends State<SettingsPage> {
                             child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.checklist),
                     label: Text(switch (mode) {
-                      DataMode.sample => '运行样例审计',
                       DataMode.paste => '解析并审计',
                       DataMode.zju => '登录教务网并拉取',
                     }),
@@ -713,6 +709,18 @@ class _SettingsPageState extends State<SettingsPage> {
                     style: TextStyle(fontSize: 11)),
                 onTap: () => _showCompliance(context),
               ),
+              const Divider(height: 1, indent: 16),
+              ListTile(
+                leading: const Icon(Icons.description_outlined),
+                title: const Text('隐私政策'),
+                subtitle: const Text('我们收集什么、存在哪、什么时候删除；同意记录仅存本机',
+                    style: TextStyle(fontSize: 11)),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const PrivacyPolicyPage(),
+                  ),
+                ),
+              ),
             ],
           ),
         ),
@@ -764,7 +772,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   /// 数据概览 + 我的培养方案（诉求 #10/#11）。
-  /// 教务模式显示真实匹配方案；样例/粘贴模式明确标注为内置样例，绝不冒充。
+  /// 教务模式显示真实匹配方案；粘贴模式明确标注为内置方案，绝不冒充。
   Widget _dataAndPlanBlock(
     BuildContext context, {
     required List<Map<String, dynamic>> courses,
@@ -849,7 +857,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 '当前方案',
                 '${builtin.zymc}'
                 '${builtin.gradeLabel.isEmpty ? '' : '（${builtin.gradeLabel}）'}'),
-            _dataLine('方案来源', '内置样例方案（非教务实时方案）'),
+            _dataLine('方案来源', '内置方案（教务实时方案的离线回退）'),
           ],
           if (planNote != null && planNote.trim().isNotEmpty)
             Padding(

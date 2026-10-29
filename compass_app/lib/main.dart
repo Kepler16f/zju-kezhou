@@ -43,6 +43,7 @@ import 'engine/selection.dart' show exportRowsFromPlanned, plannedCoursesFromCho
 import 'pages/course_select_page.dart';
 import 'pages/curriculum_plan_page.dart';
 import 'pages/scholar_page.dart';
+import 'pages/privacy_gate.dart';
 import 'pages/settings_page.dart';
 import 'pages/teacher_review_page.dart';
 import 'widgets/ai_chat.dart';
@@ -160,7 +161,12 @@ class _FriendlyError extends StatelessWidget {
 }
 
 class KeZhouApp extends StatelessWidget {
-  const KeZhouApp({super.key});
+  const KeZhouApp({super.key, this.requireConsent = true});
+
+  /// 是否启用首启隐私同意门禁。
+  /// 生产路径恒为 true；测试用 false 跳过门禁（门禁依赖 path_provider，
+  /// 测试环境无原生插件，fail-closed 会让业务页永远不出现）。
+  final bool requireConsent;
 
   @override
   Widget build(BuildContext context) {
@@ -193,7 +199,9 @@ class KeZhouApp extends StatelessWidget {
           child: child!,
         ),
       ),
-      home: const HomePage(),
+      home: requireConsent
+          ? const PrivacyGate(child: HomePage())
+          : const HomePage(),
     );
   }
 }
@@ -231,7 +239,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _foreignLevel;
   Map<String, dynamic>? _lastRecord; // 最近一次审计的完整 record（改等级后重算用）
 
-  DataMode _mode = DataMode.sample;
+  DataMode _mode = DataMode.zju;
   String _major = 'computer_science'; // 始终为内置 key（下拉框合法值）
   String _current = '2026-A';
   final _userCtl = TextEditingController();
@@ -262,8 +270,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _studentName; // 教务档案姓名（仅实名导出时使用，默认匿名路径不碰它）
 
   static const majors = {
-    'computer_science': '计算机科学与技术（样例方案）',
-    'software_engineering': '软件工程（样例方案）',
+    'computer_science': '计算机科学与技术（内置方案）',
+    'software_engineering': '软件工程（内置方案）',
   };
 
   @override
@@ -361,7 +369,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final closeToTray = await _store.loadCloseToTray();
     _windowCloseToTray = closeToTray;
     if (mounted) setState(() => _closeToTray = closeToTray);
-    // 本地排除标记随会话恢复（不依赖登录，粘贴/样例模式同样生效）
+    // 本地排除标记随会话恢复（不依赖登录，粘贴模式同样生效）
     final marksRaw = await _store.readCache('course_marks');
     final marks = parseMarks(marksRaw);
     if (marks.isNotEmpty && mounted) setState(() => _marks = marks);
@@ -507,7 +515,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       List<Map<String, String>>? aiAdvice,
       List<Map<String, dynamic>>? simulatedCourses}) async {
     if (_courses.isEmpty || _report == null) {
-      return '尚未完成学业审计：先在设置页运行一次审计（登录教务或样例均可）';
+      return '尚未完成学业审计：先在设置页运行一次审计（登录教务或粘贴成绩均可）';
     }
     final prev = _lastStudent ?? const <String, dynamic>{};
     final student = <String, dynamic>{
@@ -632,22 +640,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     unawaited(_saveSession());
   }
 
-  Future<void> _fromSample() async {
-    final name = _major == 'computer_science' ? 'demo1_cs_full.json' : 'demo3_se_full.json';
-    final rec = json.decode(await rootBundle.loadString('assets/samples/$name'))
-        as Map<String, dynamic>;
-    setState(() {
-      _busy = true;
-      _recordSourceLabel = '内置样例（$name）';
-      _planQuality = null;
-      _matchedPlan = null; // 样例模式不冒充教务匹配方案
-      _choosed = null; // 样例无已选/课表数据，切源即清（方案页对应区块不展示）
-      _timetable = null;
-    });
-    await _runAudit(rec);
-    if (mounted) setState(() => _busy = false);
-  }
-
   Future<void> _fromPaste() async {
     setState(() {
       _busy = true;
@@ -726,7 +718,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       });
 
       // 本学期已选（在修未出成绩，诉求 #8）：best-effort，失败静默；
-      // 仅 SSO 会话可用时调用（样例/粘贴模式不联网拉此数据）。
+      // 仅 SSO 会话可用时调用（粘贴模式不联网拉此数据）。
       try {
         final xnXq = _xnXqOf(_current);
         if (_client.ssoTicket != null && xnXq != null) {
@@ -1031,7 +1023,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       pasteCtl: _pasteCtl,
       busy: _busy,
       onRun: switch (_mode) {
-        DataMode.sample => _fromSample,
         DataMode.paste => _fromPaste,
         DataMode.zju => () => _fromZju(),
       },
@@ -1336,7 +1327,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onGoPlan: () => setState(() => _tabIndex = tabPlan),
             onGoTimetable: () => setState(() => _tabIndex = tabPlan),
             onRefresh: () async => switch (_mode) {
-              DataMode.sample => _fromSample(),
               DataMode.paste => _fromPaste(),
               DataMode.zju => _fromZju(),
             },
