@@ -31,6 +31,9 @@ jobs:
         uses: ErBWs/setup-ohos@v2
         with: {version: 26.0.0.821, cache: true}
 
+      - name: 诊断（临时）：SDK schema 与签名工具扫描
+        run: python3 ../packaging/dump_schema.py "$HOS_SDK_HOME"
+
       - name: Clone Flutter-ohos SDK
         run: |
           FLUTTER_OHOS_DIR="$RUNNER_TEMP/flutter_ohos"
