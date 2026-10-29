@@ -129,8 +129,8 @@ jobs:
           HAP_SIGN_TOOL_URL: ${{ secrets.HAP_SIGN_TOOL_URL }}
         run: |
           set +e
-          if [ -z "$HAP_SIGN_P12_B64" ] || [ -z "$HAP_STORE_PASSWORD" ] || [ -z "$HAP_KEY_ALIAS" ]; then
-            echo "::notice::未配置签名 Secret（.p12 / 口令 / 别名），跳过签名，产物仍为未签名包"
+          if [ -z "$HAP_SIGN_P12_B64" ] || [ -z "$HAP_STORE_PASSWORD" ] || [ -z "$HAP_KEY_ALIAS" ] || [ -z "$HAP_SIGN_TOOL_URL" ]; then
+            echo "::notice::签名材料不全（.p12 / 口令 / 别名 / 签名工具地址 任一缺失），跳过签名，产物仍为未签名包"
             exit 0
           fi
           mkdir -p "$RUNNER_TEMP/hapsign"
@@ -144,7 +144,7 @@ jobs:
             exit 1
           fi
           curl -fsSL "$HAP_SIGN_TOOL_URL" -o hap-sign-tool.jar
-          HAP_IN="$(find "$GITHUB_WORKSPACE/compass_app/ohos/entry/build" -type f -name '*unsigned*.hap' 2>/dev/null | head -n 1)"
+          HAP_IN="$GITHUB_WORKSPACE/compass_app/build/ohos/compass_unsigned.hap"
           [ -z "$HAP_IN" ] && { echo "::error::找不到待签名 HAP"; exit 1; }
           ARGS=(sign-app -keyAlias "$HAP_KEY_ALIAS" -signAlg SHA256withECDSA -mode localSign -appCertFile cert.cer -profileFile profile.p7b -inFile "$HAP_IN" -keystoreFile key.p12 -keystorePwd "$HAP_STORE_PASSWORD" -outFile signed.hap)
           [ -f profile.p7b ] || ARGS=(sign-app -keyAlias "$HAP_KEY_ALIAS" -signAlg SHA256withECDSA -mode localSign -appCertFile cert.cer -inFile "$HAP_IN" -keystoreFile key.p12 -keystorePwd "$HAP_STORE_PASSWORD" -outFile signed.hap)
