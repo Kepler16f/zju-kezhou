@@ -126,13 +126,13 @@ jobs:
           chmod 600 build/ohos/sign.key build/ohos/keystore.p12 2>/dev/null
           # 现场生成 p12：显式给出 store 与 key 口令（两者必须一致，否则
           # Java KeyStore 取 key 时报 "Given final block not properly padded"）
-          openssl pkcs12 -export \
-            -inkey build/ohos/sign.key \
-            -in build/ohos/sign.pem \
-            -out build/ohos/keystore.p12 \
-            -name "$HAP_KEY_ALIAS" \
-            -passout "pass:$HAP_STORE_PASSWORD" \
-            -keypassexport "pass:$HAP_STORE_PASSWORD"
+          PKCS12_ARGS=(-export -inkey build/ohos/sign.key -in build/ohos/sign.pem
+            -out build/ohos/keystore.p12 -name "$HAP_KEY_ALIAS" -passout "pass:$HAP_STORE_PASSWORD")
+          # -keypassexport 仅 OpenSSL 3.0+ 支持；老版本默认 key 口令 = 库口令，直接退回
+          openssl pkcs12 "${PKCS12_ARGS[@]}" -keypassexport "pass:$HAP_STORE_PASSWORD" 2>/dev/null
+          if [ $? -ne 0 ]; then
+            openssl pkcs12 "${PKCS12_ARGS[@]}"
+          fi
           if [ $? -ne 0 ]; then
             echo "::warning::p12 生成失败，跳过签名"
             exit 0
