@@ -157,14 +157,14 @@ jobs:
           mkdir -p build/ohos && cp "$HAP" build/ohos/compass_unsigned.hap
         timeout-minutes: 40
 
-      - name: 签名 HAP（SDK 自带 hap-sign-tool）
+      - name: 签名 HAP（多方案：默认 / 老式PBE / JKS）
         env:
           HAP_STORE_PASSWORD: ${{ secrets.HAP_STORE_PASSWORD }}
           HAP_KEY_ALIAS: ${{ secrets.HAP_KEY_ALIAS }}
         run: |
           set +e
-          if [ ! -f build/ohos/keystore.p12 ]; then
-            echo "::notice::无 keystore，产物保持未签名包"
+          if [ ! -f build/ohos/sign.key ]; then
+            echo "::notice::无签名材料，产物保持未签名包"
             exit 0
           fi
           SIGN_TOOL="$HOS_SDK_HOME/default/openharmony/toolchains/lib/hap-sign-tool.jar"
@@ -172,23 +172,58 @@ jobs:
             echo "::error::SDK 内未找到 hap-sign-tool.jar（$SIGN_TOOL）"
             exit 1
           fi
-          java -jar "$SIGN_TOOL" sign-app \
-            -keyAlias "$HAP_KEY_ALIAS" \
-            -signAlg SHA256withECDSA \
-            -mode localSign \
-            -appCertFile build/ohos/sign.cer \
-            -profileFile build/ohos/sign.p7b \
-            -inFile build/ohos/compass_unsigned.hap \
-            -keystoreFile build/ohos/keystore.p12 \
-            -keystorePwd "$HAP_STORE_PASSWORD" \
-            -outFile build/ohos/compass_signed.hap
-          if [ -f build/ohos/compass_signed.hap ]; then
-            echo "::notice::签名完成：compass_signed.hap"
-            ls -l build/ohos/
-          else
-            echo "::warning::签名未产出 signed 包，保留未签名包"
+          PW="$HAP_STORE_PASSWORD"
+          ALIAS="$HAP_KEY_ALIAS"
+          COMMON=(-inkey build/ohos/sign.key -in build/ohos/sign.pem
+                  -name "$ALIAS" -passout "pass:$PW")
+
+          # 方案 A：默认（PBES2/AES）
+          openssl pkcs12 -export "${COMMON[@]}" -out build/ohos/ks_a.p12 2>/dev/null
+          # 方案 B：老式 PBE-SHA1-3DES + SHA1 MAC（Java 兼容性最好）
+          openssl pkcs12 -export "${COMMON[@]}" -out build/ohos/ks_b.p12             -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1 2>/dev/null
+          # 方案 C：由方案 B 转成 JKS（Java 原生格式）
+          if [ -f build/ohos/ks_b.p12 ]; then
+            keytool -importkeystore -srckeystore build/ohos/ks_b.p12 -srcstoretype PKCS12 \
+              -srcstorepass "$PW" -destkeystore build/ohos/ks_c.jks -deststoretype JKS \
+              -deststorepass "$PW" -destkeypass "$PW" -srcalias "$ALIAS" -destalias "$ALIAS" 2>/dev/null
           fi
-        timeout-minutes: 15
+
+          for KS in build/ohos/ks_a.p12 build/ohos/ks_b.p12 build/ohos/ks_c.jks; do
+            [ -f "$KS" ] || continue
+            echo "::notice::尝试 keystore $KS"
+            # Java 侧探针：keytool 能列出条目且能取出私钥，才值得交给签名工具
+            if keytool -list -keystore "$KS" -storetype $([ "${KS##*.}" = "jks" ] && echo JKS || echo PKCS12) \
+                 -storepass "$PW" > /tmp/ks_list.txt 2>/tmp/ks_err.txt; then
+              if keytool -list -v -keystore "$KS" -storetype $([ "${KS##*.}" = "jks" ] && echo JKS || echo PKCS12) \
+                   -storepass "$PW" 2>&1 | grep -q "PrivateKeyEntry"; then
+                echo "::notice::keytool 可读出私钥，使用 $KS"
+                java -jar "$SIGN_TOOL" sign-app \
+                  -keyAlias "$ALIAS" \
+                  -signAlg SHA256withECDSA \
+                  -mode localSign \
+                  -appCertFile build/ohos/sign.cer \
+                  -profileFile build/ohos/sign.p7b \
+                  -inFile build/ohos/compass_unsigned.hap \
+                  -keystoreFile "$KS" \
+                  -keystorePwd "$PW" \
+                  -outFile build/ohos/compass_signed.hap
+                if [ -f build/ohos/compass_signed.hap ]; then
+                  echo "::notice::签名完成：compass_signed.hap"
+                  ls -l build/ohos/
+                  exit 0
+                fi
+                echo "::warning::$KS 未能签出结果，尝试下一个方案"
+              else
+                echo "::warning::$KS keytool 读不到私钥（见 /tmp/ks_err.txt），尝试下一个方案"
+                head -3 /tmp/ks_err.txt || true
+              fi
+            else
+              echo "::warning::$KS keytool 无法打开，尝试下一个方案"
+              head -3 /tmp/ks_err.txt || true
+            fi
+          done
+          echo "::warning::所有方案均未产出 signed 包，保留未签名包"
+        timeout-minutes: 20
 
       - uses: actions/upload-artifact@v7
         with:
