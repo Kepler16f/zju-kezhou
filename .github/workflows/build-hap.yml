@@ -177,6 +177,15 @@ jobs:
           COMMON=(-inkey build/ohos/sign.key -in build/ohos/sign.pem
                   -name "$ALIAS" -passout "pass:$PW")
 
+          # 私钥是 RSA 还是 EC 决定 signAlg：AGC 下发的证书跟随 CSR 算法，
+          # 传错算法签名工具直接失败。RSA-3072 用 SHA256withRSA，ECC 用 SHA256withECDSA。
+          if openssl pkey -in build/ohos/sign.key -text -noout 2>/dev/null | grep -q "RSA"; then
+            SIGN_ALG="SHA256withRSA"
+          else
+            SIGN_ALG="SHA256withECDSA"
+          fi
+          echo "::notice::签名算法 $SIGN_ALG"
+
           # 方案 A：默认（PBES2/AES）
           openssl pkcs12 -export "${COMMON[@]}" -out build/ohos/ks_a.p12 2>/dev/null
           # 方案 B：老式 PBE-SHA1-3DES + SHA1 MAC（Java 兼容性最好）
@@ -199,7 +208,7 @@ jobs:
                 echo "::notice::keytool 可读出私钥，使用 $KS"
                 java -jar "$SIGN_TOOL" sign-app \
                   -keyAlias "$ALIAS" \
-                  -signAlg SHA256withECDSA \
+                  -signAlg "$SIGN_ALG" \
                   -mode localSign \
                   -appCertFile build/ohos/sign.cer \
                   -profileFile build/ohos/sign.p7b \
