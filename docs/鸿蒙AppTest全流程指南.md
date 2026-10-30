@@ -521,6 +521,23 @@ gh secret list          # 确认已存在（只显示名字与更新时间，不
 
 ---
 
+### 4.4 签名材料：必须用 RSA（2026-10-29 实测结论）
+
+Java 侧的 hap-sign-tool **读不了 EC(P-256) 私钥**（OpenJDK PKCS12KeyStore 缺陷），报
+`Get Key failed: Given final block not properly padded`（像口令错，实为算法不兼容）；PKCS12 默认形态、
+老式 PBE-SHA1-3DES、JKS 转换三种都试过，全失败。
+
+- 签名工具在 SDK 内，无需外链：`$HOS_SDK_HOME/default/openharmony/toolchains/lib/hap-sign-tool.jar`
+- 造 keystore 的两个格式坑：`openssl pkcs12 -export -in` 要 **PEM**（DER 会报 `pkcs12: Use -help for summary`），
+  签名工具的 `-appCertFile` 要 **DER**；`-keypassexport` 仅 OpenSSL 3.0+ 支持，老版本需退回默认口令
+- hvigor `build-profile.json5` 注入 `signingConfigs` 走不通（schema 校验卡在 `app.signingConfigs[0].type`）
+
+现有 `edu_zju_compass.p7b` 绑的是 **EC** 证书 → 不能用于签名，必须换 RSA 证书并重建 Profile。
+已备好自签 RSA-3072 材料：`D:\compass\signing\kezhou_release.cer`（上传用 DER）/
+`kezhou_release.pem` / `kezhou_release_key.pem`；指纹
+`D5:8F:5E:10:6A:EA:15:48:3D:68:83:06:53:B3:A2:0B:78:8B:79:FB:FB:5F:52:3A:6B:01:05:09:56:9A:62:D7`。
+Profile 的 JSON 只含 `bundle-name`（无 app-id），故**同包名可复用**，但证书指纹须与签名证书一致。
+
 ## 5. 步骤四：构建与产物
 
 ### 5.1 CI 触发方式（3 条路，别混淆）
